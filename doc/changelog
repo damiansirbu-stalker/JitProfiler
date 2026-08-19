@@ -1,0 +1,7 @@
+next
+  Summary: first release, CPU and allocation sampling profiler
+
+  - CPU profile via jit.profile: VM-state split (JIT / interpreter / C / GC / compiler) and ranked views by leaf, script, root, and framework-vs-handlers, plus a SpeedScope flamegraph.
+  - Allocation profile via jit.allocprof: per-function bytes with the same views.
+  - ASCII text reports to appdata/logs/ with an at-a-glance summary header.
+  - Capability guard: on an exe without the profiler primitives the commands no-op with a message naming the build needed.

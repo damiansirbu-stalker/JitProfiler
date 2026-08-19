@@ -1,0 +1,295 @@
+-- ============================================================================
+-- JitProfiler -- engine-native LuaJIT sampling profiler for STALKER Anomaly
+--
+-- Consumes the LuaJIT profiling primitives backported into the demonized engine:
+--   jit.profile    -- timer sampling of the running stack, WITH the VM state of
+--                     each sample. The JIT stays on, so it measures real perf at
+--                     near-zero overhead and covers the whole modpack in one
+--                     capture -- no wrapping, no module selection, no guessing.
+--   jit.allocprof  -- per-function allocation attribution; finds the GC-churn that
+--                     drives stutter (a session mode -- runs with the JIT off).
+--
+-- One capture yields a headline SUMMARY plus these views, for CPU and allocation:
+--   BY LEAF     the hot function (+ the VM state it runs in, for CPU)
+--   BY SCRIPT   the same, summed per script file
+--   BY ROOT     the outermost frame -- the callback/loop DRIVING the cost
+--   BY VM STATE (CPU) time split across JIT-compiled / interpreter / C / GC / compiler
+--   FRAMEWORK   callback-dispatch overhead split from real handler work
+-- ...and a SpeedScope .folded flamegraph.
+--
+-- Console (needs a demonized build with the profiler primitives, launched -dbg):
+--   CPU:    run_string JitProfiler.start()   ...play 30-60s...   run_string JitProfiler.stop()
+--   ALLOC:  run_string JitProfiler.astart()  ...play 30-60s...   run_string JitProfiler.astop()
+--
+-- Output -> appdata/logs/JitProfiler_*   (drag a .folded into https://www.speedscope.app)
+-- ============================================================================
+
+local TOP_N       = 40   -- rows per text view (the .folded keeps every stack)
+local STACK_DEPTH = 12   -- frames captured per sample
+
+-- Per-sample VM state reported by jit.profile (lj_profile.c): what the VM was
+-- doing when the timer fired. This is the insight instrumentation cannot give.
+local VMSTATE = {
+    N = "JIT-compiled (native)",
+    I = "interpreter",
+    C = "C / engine call",
+    G = "garbage collector",
+    J = "JIT compiler",
+}
+local VMORDER = { "N", "I", "C", "G", "J" }
+
+-- Callback-dispatch machinery: framework cost, not a mod's own work. Matched on
+-- the leaf function name so the FRAMEWORK view separates plumbing from handlers.
+local DISPATCH = {
+    make_callback = true, SendScriptCallback = true, callback = true,
+    callback_set = true, callback_unset = true, spairs = true,
+}
+
+-- ---- capability guard ------------------------------------------------------
+-- On a stock (non-profiler) exe these requires error; report it plainly instead
+-- of a stack trace, and leave the commands as no-ops that say what's needed.
+local ok_p, profile   = pcall(require, "jit.profile")
+local ok_a, allocprof = pcall(require, "jit.allocprof")
+if not (ok_p and ok_a and profile and allocprof) then
+    local function absent()
+        printf("%s", "!JitProfiler: this exe lacks jit.profile/jit.allocprof. "
+            .. "It needs a demonized build with the profiler primitives baked in.")
+    end
+    start, stop, astart, astop = absent, absent, absent, absent
+    printf("%s", "JitProfiler loaded, but the profiler engine primitives are ABSENT on this exe.")
+    return
+end
+
+-- ---- helpers ---------------------------------------------------------------
+local function log(fmt, ...) printf("%s", string.format(fmt, ...)) end
+
+local function out_path(name)
+    local ok, base = pcall(function() return getFS():update_path("$logs$", "") end)
+    return (ok and base or "") .. name
+end
+
+local function write_lines(path, lines)
+    local f = io.open(path, "w")
+    if not f then log("!JitProfiler: cannot write %s", tostring(path)); return nil end
+    for i = 1, #lines do f:write(lines[i]); f:write("\n") end
+    f:close()
+    return path
+end
+
+local function tip(msg)
+    if db and db.actor then news_manager.send_tip(db.actor, msg, nil, nil, 4000) end
+end
+
+-- monotonic milliseconds if the modded-exes timer is present, else 0 (duration best-effort)
+local function now_ms()
+    local ok, t = pcall(function() return time_global() end)
+    return (ok and type(t) == "number") and t or 0
+end
+
+-- Reduce a frame to the ORIGINAL SCRIPT FILE: "name@foo.script:123" (or
+-- "foo.script:123", or "[C]:-1"). Pulls the basename out even when LuaJIT
+-- truncated the long path to "...cripts\foo.script:123" (short_src is a fixed
+-- buffer), so the source file is always named cleanly, never a mangled path.
+local function short(frame)
+    local nm   = frame:match("^([%w_]+)@")
+    local file = frame:match("([%w_%.%-]+%.script:%-?%d+)")
+              or frame:match("([%w_%.%-]+%.lua:%-?%d+)")
+              or frame:match("(%[C%]:%-?%d+)")
+              or frame
+    return nm and (nm .. "@" .. file) or file
+end
+
+local function script_of(frame)   -- "foo.script" for BY-SCRIPT aggregation
+    return (short(frame):match("([%w_%.%-]+%.script)")) or short(frame)
+end
+
+local function leaf_name(frame)   -- "make_callback" for FRAMEWORK matching
+    return frame:match("^([%w_]+)@") or ""
+end
+
+local function human_bytes(v)
+    if v >= 1048576 then return string.format("%.1f MB", v / 1048576) end
+    if v >= 1024    then return string.format("%.1f KB", v / 1024) end
+    return string.format("%.0f B", v)
+end
+local function human_count(v) return string.format("%d", v) end
+
+-- ASCII percentage bar (renders in any editor/encoding; no Unicode)
+local BARW = 20
+local function bar(p)
+    local n = math.floor((p / 100) * BARW + 0.5)
+    if n > BARW then n = BARW elseif n < 0 then n = 0 end
+    return "[" .. string.rep("#", n) .. string.rep(" ", BARW - n) .. "]"
+end
+
+-- native dumpstack is leaf-first; SpeedScope .folded wants root-first (paths shortened)
+local function reverse_stack(s)
+    local parts, n = {}, 0
+    for p in string.gmatch(s, "[^;]+") do n = n + 1; parts[n] = short(p) end
+    local out = {}
+    for i = n, 1, -1 do out[#out + 1] = parts[i] end
+    return table.concat(out, ";")
+end
+
+-- ---- ranking / views -------------------------------------------------------
+local function sorted_entries(map)
+    local a = {}
+    for k, v in pairs(map) do a[#a + 1] = { k, v } end
+    table.sort(a, function(x, y) return x[2] > y[2] end)
+    return a
+end
+
+local function pct(v, total) return total > 0 and (100.0 * v / total) or 0 end
+
+-- append a ranked top-N view of {key -> weight} to `lines`
+local function view(lines, title, map, total, fmt)
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- " .. title .. " " .. string.rep("-", math.max(2, 68 - #title))
+    local a = sorted_entries(map)
+    for i = 1, math.min(TOP_N, #a) do
+        local p = pct(a[i][2], total)
+        lines[#lines + 1] = string.format("  %6.2f%% %s %12s  %s", p, bar(p), fmt(a[i][2]), a[i][1])
+    end
+    if #a > TOP_N then lines[#lines + 1] = string.format("  ... %d more rows", #a - TOP_N) end
+end
+
+-- derive leaf / by-script / root / framework maps from a stack map (rawstack -> weight)
+local function derive(by_stack)
+    local leaf, by_script, root, framework = {}, {}, {}, {}
+    for st, w in pairs(by_stack) do
+        local first, last
+        for p in string.gmatch(st, "[^;]+") do
+            if not first then first = p end
+            last = p
+        end
+        first, last = first or "?", last or "?"
+        local lf = short(first)
+        leaf[lf]                 = (leaf[lf] or 0) + w
+        by_script[script_of(first)] = (by_script[script_of(first)] or 0) + w
+        root[short(last)]        = (root[short(last)] or 0) + w
+        local b = DISPATCH[leaf_name(first)] and "[framework] callback dispatch"
+                  or "[handlers] mod + engine work"
+        framework[b]             = (framework[b] or 0) + w
+    end
+    return leaf, by_script, root, framework
+end
+
+local function count_keys(m) local n = 0 for _ in pairs(m) do n = n + 1 end return n end
+
+local function write_folded(kind, by_stack)
+    local fol = {}
+    for st, w in pairs(by_stack) do fol[#fol + 1] = reverse_stack(st) .. " " .. string.format("%.0f", w) end
+    return write_lines(out_path("JitProfiler_" .. kind .. ".folded"), fol)
+end
+
+-- ============================ CPU (jit.profile) =============================
+local cpu = { stacks = {}, state = {}, total = 0, iv = 5, t0 = 0 }
+
+local function cpu_cb(thread, count, vmstate)
+    local st = profile.dumpstack(thread, "", STACK_DEPTH)
+    if st and st ~= "" then cpu.stacks[st] = (cpu.stacks[st] or 0) + count end
+    cpu.state[vmstate] = (cpu.state[vmstate] or 0) + count
+    cpu.total = cpu.total + count
+end
+
+function start(interval_ms)
+    cpu.stacks, cpu.state, cpu.total = {}, {}, 0
+    cpu.iv = math.floor(tonumber(interval_ms) or 5); if cpu.iv < 1 then cpu.iv = 1 end
+    cpu.t0 = now_ms()
+    profile.start("i" .. tostring(cpu.iv), cpu_cb)
+    log("JitProfiler/cpu: sampling ON (every %d ms). JIT stays on; play, then JitProfiler.stop().", cpu.iv)
+    tip("JitProfiler CPU ON")
+end
+
+function stop()
+    profile.stop()
+    local total = cpu.total
+    local leaf, by_script, root, framework = derive(cpu.stacks)
+
+    -- headline
+    local dur = (now_ms() - cpu.t0) / 1000.0
+    local top_root = sorted_entries(root)[1]
+    local top_leaf = sorted_entries(leaf)[1]
+    local RULE = "================================================================================"
+
+    local lines = {
+        RULE,
+        "  JitProfiler  -  CPU sampling profile   (engine-native; the JIT stays on)",
+        string.format("  modded_exes %s   |   %d samples @ %d ms   |   ~%.0f s   |   %d stacks",
+            tostring(_G.MODDED_EXES_VERSION or "?"), total, cpu.iv, dur, count_keys(cpu.stacks)),
+        RULE,
+        "",
+        "  WHERE THE LUA TIME GOES  (VM state at each sample)",
+    }
+    for _, s in ipairs(VMORDER) do
+        local w = cpu.state[s] or 0
+        if w > 0 then
+            local p = pct(w, total)
+            local flag = (s == "G" and p >= 3) and "  <- allocation pressure: run JitProfiler.astart()" or ""
+            lines[#lines + 1] = string.format("    %s  %-20s %s %5.1f%%%s", s, VMSTATE[s] or s, bar(p), p, flag)
+        end
+    end
+    lines[#lines + 1] = ""
+    if top_root then lines[#lines + 1] = string.format("  TOP DRIVER  %5.1f%%   %s", pct(top_root[2], total), top_root[1]) end
+    if top_leaf then lines[#lines + 1] = string.format("  TOP LEAF    %5.1f%%   %s", pct(top_leaf[2], total), top_leaf[1]) end
+
+    view(lines, "BY LEAF   the hot function", leaf, total, human_count)
+    view(lines, "BY SCRIPT   summed per script file",                  by_script,   total, human_count)
+    view(lines, "BY ROOT   the outermost frame -- what drives the cost", root,      total, human_count)
+    view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", framework, total, human_count)
+
+    local rpath = write_lines(out_path("JitProfiler_cpu_report.txt"), lines)
+    local fpath = write_folded("cpu", cpu.stacks)
+    log("JitProfiler/cpu: report -> %s | flamegraph -> %s (speedscope.app)", tostring(rpath), tostring(fpath))
+    tip("JitProfiler CPU report written")
+end
+
+-- ======================= ALLOCATION (jit.allocprof) =========================
+-- Exact per-allocation attribution; needs the JIT off (traces bypass the drain).
+local alloc = { depth = STACK_DEPTH, t0 = 0 }
+
+function astart(depth)
+    alloc.depth = math.floor(tonumber(depth) or STACK_DEPTH); if alloc.depth < 1 then alloc.depth = 1 end
+    alloc.t0 = now_ms()
+    if jit then jit.flush(); jit.off() end
+    allocprof.start(alloc.depth)
+    log("JitProfiler/alloc: EXACT ON (JIT off, depth %d). Runs slower; play, then JitProfiler.astop().", alloc.depth)
+    tip("JitProfiler ALLOC ON")
+end
+
+function astop()
+    allocprof.stop()
+    if jit then jit.on() end
+    local stacks, total = allocprof.dump(true), 0   -- { {key="leaf;..;root", bytes=}, ... }
+    local by_stack = {}
+    for i = 1, #stacks do by_stack[stacks[i].key] = stacks[i].bytes; total = total + stacks[i].bytes end
+    local leaf, by_script, root, framework = derive(by_stack)
+
+    local dur = (now_ms() - alloc.t0) / 1000.0
+    local top_root = sorted_entries(root)[1]
+    local top_leaf = sorted_entries(leaf)[1]
+    local RULE = "================================================================================"
+    local lines = {
+        RULE,
+        "  JitProfiler  -  allocation profile   (exact per-function attribution)",
+        string.format("  modded_exes %s   |   %s allocated   |   ~%.0f s   |   %d stacks",
+            tostring(_G.MODDED_EXES_VERSION or "?"), human_bytes(total), dur, count_keys(by_stack)),
+        RULE,
+        "",
+        "  WHO GENERATES THE GARBAGE  (GC churn is the stutter source)",
+    }
+    if top_leaf then lines[#lines + 1] = string.format("  TOP ALLOCATOR  %5.1f%%   %s", pct(top_leaf[2], total), top_leaf[1]) end
+    if top_root then lines[#lines + 1] = string.format("  TOP DRIVER     %5.1f%%   %s", pct(top_root[2], total), top_root[1]) end
+
+    view(lines, "BY LEAF   who allocates",                          leaf,      total, human_bytes)
+    view(lines, "BY SCRIPT   summed per script file",               by_script, total, human_bytes)
+    view(lines, "BY ROOT   the outermost frame -- what drives it",  root,      total, human_bytes)
+    view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", framework, total, human_bytes)
+
+    local rpath = write_lines(out_path("JitProfiler_alloc_report.txt"), lines)
+    local fpath = write_folded("alloc", by_stack)
+    log("JitProfiler/alloc: report -> %s | flamegraph -> %s (speedscope.app)", tostring(rpath), tostring(fpath))
+    tip("JitProfiler ALLOC report written")
+end
+
+log("JitProfiler ready.  CPU: JitProfiler.start()/.stop()   ALLOC: JitProfiler.astart()/.astop()   -> appdata/logs/JitProfiler_*")
