@@ -19,7 +19,8 @@
 --
 -- Console (needs a demonized build with the profiler primitives, launched -dbg):
 --   CPU:    run_string JitProfiler.start()   ...play 30-60s...   run_string JitProfiler.stop()
---   ALLOC:  run_string JitProfiler.astart()  ...play 30-60s...   run_string JitProfiler.astop()
+--   ALLOC:  run_string JitProfiler.astart()  ...play as long as you like...   run_string JitProfiler.astop()
+--           auto-dumps a numbered window report whenever its tables near full; JitProfiler.asnap() forces one
 --
 -- Output -> appdata/logs/JitProfiler_*   (drag a .folded into https://www.speedscope.app)
 -- ============================================================================
@@ -55,7 +56,7 @@ if not (ok_p and ok_a and profile and allocprof) then
         printf("%s", "!JitProfiler: this exe lacks jit.profile/jit.allocprof. "
             .. "It needs a demonized build with the profiler primitives baked in.")
     end
-    start, stop, astart, astop = absent, absent, absent, absent
+    start, stop, astart, asnap, astop = absent, absent, absent, absent, absent
     printf("%s", "JitProfiler loaded, but the profiler engine primitives are ABSENT on this exe.")
     return
 end
@@ -182,8 +183,12 @@ local function write_folded(kind, by_stack)
     return write_lines(out_path("JitProfiler_" .. kind .. ".folded"), fol)
 end
 
+-- Forward-declared so the CPU and allocation profilers can see each other's state
+-- (each refuses to start while the other runs -- they share the engine hook).
+local alloc
+
 -- ============================ CPU (jit.profile) =============================
-local cpu = { stacks = {}, state = {}, total = 0, iv = 5, t0 = 0 }
+local cpu = { stacks = {}, state = {}, total = 0, iv = 5, t0 = 0, active = false }
 
 local function cpu_cb(thread, count, vmstate)
     local st = profile.dumpstack(thread, "", STACK_DEPTH)
@@ -193,15 +198,20 @@ local function cpu_cb(thread, count, vmstate)
 end
 
 function start(interval_ms)
+    if cpu.active then log("JitProfiler/cpu: already running -- JitProfiler.stop() first."); return end
+    if alloc.capturing then log("JitProfiler/cpu: allocation profiler is running -- JitProfiler.astop() first."); return end
     cpu.stacks, cpu.state, cpu.total = {}, {}, 0
     cpu.iv = math.floor(tonumber(interval_ms) or 5); if cpu.iv < 1 then cpu.iv = 1 end
     cpu.t0 = now_ms()
+    cpu.active = true
     profile.start("i" .. tostring(cpu.iv), cpu_cb)
     log("JitProfiler/cpu: sampling ON (every %d ms). JIT stays on; play, then JitProfiler.stop().", cpu.iv)
     tip("JitProfiler CPU ON")
 end
 
 function stop()
+    if not cpu.active then log("JitProfiler/cpu: not running."); return end
+    cpu.active = false
     profile.stop()
     local total = cpu.total
     local leaf, by_script, root, framework = derive(cpu.stacks)
@@ -246,38 +256,44 @@ end
 
 -- ======================= ALLOCATION (jit.allocprof) =========================
 -- Exact per-allocation attribution; needs the JIT off (traces bypass the drain).
-local alloc = { depth = STACK_DEPTH, t0 = 0 }
+alloc = { depth = STACK_DEPTH, t0 = 0, snap_t0 = 0, snap_n = 0,
+          capturing = false, jit_was_on = false }
+local AUTO_SNAP_PCT = 90   -- auto-dump-and-reset when a table reaches this % full
 
-function astart(depth)
-    alloc.depth = math.floor(tonumber(depth) or STACK_DEPTH); if alloc.depth < 1 then alloc.depth = 1 end
-    alloc.t0 = now_ms()
-    if jit then jit.flush(); jit.off() end
-    allocprof.start(alloc.depth)
-    log("JitProfiler/alloc: EXACT ON (JIT off, depth %d). Runs slower; play, then JitProfiler.astop().", alloc.depth)
-    tip("JitProfiler ALLOC ON")
-end
-
-function astop()
-    allocprof.stop()
-    if jit then jit.on() end
-    local stacks, total = allocprof.dump(true), 0   -- { {key="leaf;..;root", bytes=}, ... }
+-- Turn a `dump` result into the report text + folded flamegraph and write them.
+-- `suffix` is "" for the final report (JitProfiler_alloc_report.txt) or "_snapN"
+-- for a mid-session snapshot; `title` labels the banner; `dur` is the window seconds.
+local function alloc_write(stacks, dur, suffix, title)
+    local total, dropped = 0, tonumber(stacks.dropped) or 0
     local by_stack = {}
     for i = 1, #stacks do by_stack[stacks[i].key] = stacks[i].bytes; total = total + stacks[i].bytes end
     local leaf, by_script, root, framework = derive(by_stack)
 
-    local dur = (now_ms() - alloc.t0) / 1000.0
+    -- Only flag a real capture failure: drains=0 means the hook never fired, or
+    -- no stacks at all. A nonzero `pending` is normal (bytes in flight since the
+    -- last instruction) and is NOT a failure, so it does not warn.
+    local drains, pend = tonumber(stacks.drains) or 0, tonumber(stacks.pending) or 0
+    if drains == 0 or #stacks == 0 then
+        log("!JitProfiler/alloc: capture problem -- drains=%.0f  seen=%s  pending=%s  entries=%d",
+            drains, human_bytes(tonumber(stacks.seen) or 0), human_bytes(pend), #stacks)
+    end
+
     local top_root = sorted_entries(root)[1]
     local top_leaf = sorted_entries(leaf)[1]
     local RULE = "================================================================================"
     local lines = {
         RULE,
-        "  JitProfiler  -  allocation profile   (exact per-function attribution)",
+        "  JitProfiler  -  " .. title,
         string.format("  modded_exes %s   |   %s allocated   |   ~%.0f s   |   %d stacks",
             tostring(_G.MODDED_EXES_VERSION or "?"), human_bytes(total), dur, count_keys(by_stack)),
         RULE,
         "",
         "  WHO GENERATES THE GARBAGE  (GC churn is the stutter source)",
     }
+    if dropped > 0 then
+        lines[#lines + 1] = string.format(
+            "  NOTE  window exceeded table capacity; %s not attributed -- snapshot/stop sooner", human_bytes(dropped))
+    end
     if top_leaf then lines[#lines + 1] = string.format("  TOP ALLOCATOR  %5.1f%%   %s", pct(top_leaf[2], total), top_leaf[1]) end
     if top_root then lines[#lines + 1] = string.format("  TOP DRIVER     %5.1f%%   %s", pct(top_root[2], total), top_root[1]) end
 
@@ -286,10 +302,76 @@ function astop()
     view(lines, "BY ROOT   the outermost frame -- what drives it",  root,      total, human_bytes)
     view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", framework, total, human_bytes)
 
-    local rpath = write_lines(out_path("JitProfiler_alloc_report.txt"), lines)
-    local fpath = write_folded("alloc", by_stack)
+    local rpath = write_lines(out_path("JitProfiler_alloc" .. suffix .. "_report.txt"), lines)
+    local fpath = write_folded("alloc" .. suffix, by_stack)
     log("JitProfiler/alloc: report -> %s | flamegraph -> %s (speedscope.app)", tostring(rpath), tostring(fpath))
+    return total
+end
+
+-- Read whether the JIT is currently on, so astop can RESTORE that exact state
+-- instead of blindly forcing it on (which would corrupt a JIT-already-off session).
+local function jit_is_on()
+    if not jit then return false end
+    local ok, on = pcall(jit.status)
+    return ok and on and true or false
+end
+
+function astart(depth)
+    if alloc.capturing then log("JitProfiler/alloc: already running -- JitProfiler.astop() first."); return end
+    if cpu.active then log("JitProfiler/alloc: CPU profiler is running -- JitProfiler.stop() first."); return end
+    -- depth 1 = leaf only, which the engine skips the stack table for; the views below
+    -- need a root frame, so keep at least 2.
+    alloc.depth = math.floor(tonumber(depth) or STACK_DEPTH); if alloc.depth < 2 then alloc.depth = 2 end
+    alloc.t0 = now_ms()
+    alloc.snap_t0 = alloc.t0
+    alloc.snap_n = 0
+    alloc.jit_was_on = jit_is_on()        -- snapshot to restore exactly on stop
+    if jit then jit.flush(); jit.off() end
+    allocprof.start(alloc.depth)
+    alloc.capturing = true
+    log("JitProfiler/alloc: ON (JIT off, byte-sampled, depth %d). Play, then JitProfiler.astop(). Auto-dumps at %d%% full.", alloc.depth, AUTO_SNAP_PCT)
+    tip("JitProfiler ALLOC ON")
+end
+
+-- Snapshot the current window to a numbered report and KEEP capturing (the engine
+-- clears its tables on the dump-with-reset), so a long session never fills them.
+-- Called manually or automatically from alloc_tick when a table nears full.
+function asnap(auto)
+    if not alloc.capturing then log("JitProfiler/alloc: not running."); return end
+    -- Disarm the per-instruction hook while we read + build the report, else the
+    -- Lua post-processing runs under the JIT-off drain (~50x slow, a long freeze)
+    -- and its own allocations refill the tables. Re-armed right after.
+    allocprof.pause()
+    alloc.snap_n = alloc.snap_n + 1
+    local stacks = allocprof.dump(true, true)   -- read + reset (fast now, hook off)
+    local dur = (now_ms() - alloc.snap_t0) / 1000.0
+    alloc_write(stacks, dur, "_snap" .. tostring(alloc.snap_n),
+        "allocation snapshot " .. tostring(alloc.snap_n)
+        .. (auto and " (auto, table full)" or "") .. "   (byte-sampled; total exact)")
+    alloc.snap_t0 = now_ms()
+    allocprof.resume()                          -- continue capturing the next window
+    tip("JitProfiler ALLOC snapshot " .. tostring(alloc.snap_n))
+end
+
+function astop()
+    if not alloc.capturing then log("JitProfiler/alloc: not running."); return end
+    alloc.capturing = false
+    allocprof.stop()
+    -- Restore the JIT to exactly the state astart found it in (do NOT force it on).
+    if jit and alloc.jit_was_on then jit.on() end
+    local stacks = allocprof.dump(true)         -- { {key="leaf;..;root", bytes=}, ..., dropped= }
+    local dur = (now_ms() - alloc.t0) / 1000.0
+    alloc_write(stacks, dur, "", "allocation profile   (byte-sampled; total exact)")
     tip("JitProfiler ALLOC report written")
 end
 
-log("JitProfiler ready.  CPU: JitProfiler.start()/.stop()   ALLOC: JitProfiler.astart()/.astop()   -> appdata/logs/JitProfiler_*")
+-- Per-frame tick (registered once at load). While capturing, auto-snapshot before
+-- a table fills so a long session never drops samples. Near-free when idle (one
+-- field read + early return); the usage() call is a single C int read.
+local function alloc_tick()
+    if not alloc.capturing then return end
+    if allocprof.usage() >= AUTO_SNAP_PCT then asnap(true) end
+end
+if RegisterScriptCallback then RegisterScriptCallback("actor_on_update", alloc_tick) end
+
+log("JitProfiler ready.  CPU: JitProfiler.start()/.stop()   ALLOC: JitProfiler.astart()/.asnap()/.astop()   -> appdata/logs/JitProfiler_*")

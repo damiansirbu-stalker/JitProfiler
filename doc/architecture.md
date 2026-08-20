@@ -20,5 +20,11 @@ The allocation report carries the same stack views weighted by bytes.
 ## Output
 `appdata/logs/JitProfiler_{cpu,alloc}_report.txt` (ranked text) and `_{cpu,alloc}.folded` (SpeedScope). ASCII only.
 
+## Limitations
+- CPU sampling is interpreter-anchored (the backport is phase 1, without the JIT `prof_mode`). The VM-state split is accurate, because the state is latched at timer fire; but the stacks for samples taken while a JIT trace runs are attributed at the next trace exit, so the `N` (JIT-compiled) share is a floor and native hot-loop stacks are under-resolved.
+- Allocation attribution is at bytecode-instruction granularity: the bytes allocated since the last instruction are credited to the function running at the next instruction. With the JIT off this is the same function almost always, but bytes allocated inside a C/engine call or during GC are credited to the next Lua frame.
+- The CPU and allocation profilers are mutually exclusive: both drive the same engine hook, so the engine refuses to start one while the other runs.
+- The allocation report captures into fixed engine-side tables; if a capture exceeds their capacity the report prints a NOTE naming the bytes it could not attribute, rather than silently under-counting.
+
 ## Requires
 A demonized build exposing `jit.profile` + `jit.allocprof`. On a stock exe the mod detects their absence and no-ops with a message.
