@@ -1,4 +1,4 @@
-# JitProfiler: engine-native LuaJIT profiler for STALKER Anomaly
+# JitProfiler: engine-native LuaJIT sampling profiler for STALKER Anomaly
 
 Samples the running Lua stack on the engine's own timer, so the JIT stays on and the overhead stays near zero.
 One capture covers a whole modpack with no wrapping and no module selection, and it reports where the Lua time goes, ranks the hot functions and scripts, and writes a SpeedScope flamegraph.
