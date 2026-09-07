@@ -27,6 +27,7 @@
 
 local TOP_N       = 40   -- rows per text view (the .folded keeps every stack)
 local STACK_DEPTH = 12   -- frames captured per sample
+local CPU_MAX_STACKS = 50000  -- ceiling on distinct CPU stacks kept, so a long capture cannot exhaust the 32-bit LuaJIT heap; a real profile holds far fewer
 
 -- Per-sample VM state reported by jit.profile (lj_profile.c): what the VM was
 -- doing when the timer fired. This is the insight instrumentation cannot give.
@@ -188,11 +189,20 @@ end
 local alloc
 
 -- ============================ CPU (jit.profile) =============================
-local cpu = { stacks = {}, state = {}, total = 0, iv = 5, t0 = 0, active = false }
+local cpu = { stacks = {}, state = {}, total = 0, nstacks = 0, dropped = 0, iv = 5, t0 = 0, active = false }
 
 local function cpu_cb(thread, count, vmstate)
     local st = profile.dumpstack(thread, "", STACK_DEPTH)
-    if st and st ~= "" then cpu.stacks[st] = (cpu.stacks[st] or 0) + count end
+    if st and st ~= "" then
+        local cur = cpu.stacks[st]
+        if cur then
+            cpu.stacks[st] = cur + count
+        elseif cpu.nstacks < CPU_MAX_STACKS then
+            cpu.stacks[st], cpu.nstacks = count, cpu.nstacks + 1
+        else
+            cpu.dropped = cpu.dropped + count
+        end
+    end
     cpu.state[vmstate] = (cpu.state[vmstate] or 0) + count
     cpu.total = cpu.total + count
 end
@@ -200,7 +210,7 @@ end
 function start(interval_ms)
     if cpu.active then log("JitProfiler/cpu: already running -- JitProfiler.stop() first."); return end
     if alloc.capturing then log("JitProfiler/cpu: allocation profiler is running -- JitProfiler.astop() first."); return end
-    cpu.stacks, cpu.state, cpu.total = {}, {}, 0
+    cpu.stacks, cpu.state, cpu.total, cpu.nstacks, cpu.dropped = {}, {}, 0, 0, 0
     cpu.iv = math.floor(tonumber(interval_ms) or 5); if cpu.iv < 1 then cpu.iv = 1 end
     cpu.t0 = now_ms()
     cpu.active = true
@@ -221,12 +231,15 @@ function stop()
     local top_root = sorted_entries(root)[1]
     local top_leaf = sorted_entries(leaf)[1]
     local RULE = "================================================================================"
+    local stacks_note = cpu.dropped > 0
+        and string.format("%d stacks (capped; +%s beyond the ceiling not attributed)", cpu.nstacks, human_count(cpu.dropped))
+        or  string.format("%d stacks", cpu.nstacks)
 
     local lines = {
         RULE,
         "  JitProfiler  -  CPU sampling profile   (engine-native; the JIT stays on)",
-        string.format("  modded_exes %s   |   %d samples @ %d ms   |   ~%.0f s   |   %d stacks",
-            tostring(_G.MODDED_EXES_VERSION or "?"), total, cpu.iv, dur, count_keys(cpu.stacks)),
+        string.format("  modded_exes %s   |   %d samples @ %d ms   |   ~%.0f s   |   %s",
+            tostring(_G.MODDED_EXES_VERSION or "?"), total, cpu.iv, dur, stacks_note),
         RULE,
         "",
         "  WHERE THE LUA TIME GOES  (VM state at each sample)",
