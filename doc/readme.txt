@@ -1,8 +1,8 @@
 JitProfiler: engine-native LuaJIT sampling profiler for STALKER Anomaly, by Damian
-Version: next
+Version: next (xlibs 1.8.3)
 GitHub: https://github.com/damiansirbu-stalker/JitProfiler
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
-Bugs, suggestions: https://github.com/damiansirbu-stalker/JitProfiler/issues
+Report bugs and suggestions at https://github.com/damiansirbu-stalker/JitProfiler/issues
 
 Alife Collection:
 AlifeAmbience: https://github.com/damiansirbu-stalker/AlifeAmbience
@@ -18,34 +18,55 @@ JitProfiler: https://github.com/damiansirbu-stalker/JitProfiler
 TestZone: https://github.com/damiansirbu-stalker/TestZone
 xlibs: https://www.moddb.com/mods/stalker-anomaly/addons/xlibs-1001
 
-JitProfiler samples the running Lua stack on the engine's own timer. The JIT stays on, overhead is near-zero, and one capture covers the whole modpack with no wrapping and no module selection. It is sampling, not instrumentation. It reads two primitives backported into the demonized engine: jit.profile (CPU) and jit.allocprof (allocation).
+JitProfiler samples the running Lua stack on the engine's own timer.
+The JIT stays on, overhead is near-zero, and one capture covers the whole modpack with no wrapping and no module selection.
+It reads the primitives backported into the demonized engine, jit.profile for CPU and jit.allocprof for allocation, and attributes cost to the mod that owns each hot script.
 
 Requirements:
 Anomaly 1.5.3
-A demonized modded-exes build with the JitProfiler primitives (jit.profile, jit.allocprof) baked in.
+A demonized modded-exes build with the JitProfiler primitives (jit.profile, jit.allocprof).
+xlibs (used for logging).
 Launch with -dbg (MO2 launch arguments) so the console accepts run_string.
 
 Install (MO2):
-1. Install JitProfiler. Load order does not matter.
+1. Install xlibs and JitProfiler. Load order does not matter.
 
 Usage (in-game console, ~):
-CPU profile (which code eats Lua time; the JIT stays on):
-  run_string JitProfiler.start()
-  ...play the scene 30-60s...
-  run_string JitProfiler.stop()
 
-Allocation profile (which code generates GC garbage; JIT off, slower):
-  run_string JitProfiler.astart()
-  ...play 30-60s...
-  run_string JitProfiler.astop()
+The CPU profile shows which code eats Lua time, with the JIT on:
+```
+run_string JitProfiler.start_cpu()
+-- play the scene 30-60 seconds
+run_string JitProfiler.stop_cpu()
+```
+start_cpu(interval_ms, depth) overrides the 5 ms and depth 12 defaults. start_cpu(1) samples more often, start_cpu(5, 20) traces deeper.
 
-Output (appdata/logs/):
-  JitProfiler_cpu_report.txt     ranked text report
-  JitProfiler_cpu.folded         flamegraph for https://www.speedscope.app
-  JitProfiler_alloc_report.txt
-  JitProfiler_alloc.folded
+The allocation profile shows which code generates GC garbage, with the JIT off and slower:
+```
+run_string JitProfiler.start_alloc()
+-- play 30-60 seconds
+run_string JitProfiler.stop_alloc()
+```
+Allocation counts exact bytes, so only depth is tunable, as start_alloc(20). A long session auto-writes numbered snapshots. Call JitProfiler.write_snapshot() to force one.
 
-The report opens with a VM-state split: how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler. The GC share flags allocation pressure without a separate run. Then ranked views: by leaf (hot function), by script, by root (the outermost frame driving the cost), and framework vs handlers. The allocation report carries the same views by bytes.
+Fold the vanilla baseline to focus on your mods:
+```
+run_string JitProfiler.set_fold_anomaly(true)
+```
+Then stop as usual.
+
+The reports go to appdata/logs/:
+```
+JitProfiler_cpu_report.txt     ranked text report
+JitProfiler_cpu.folded         flamegraph for speedscope.app
+JitProfiler_alloc_report.txt   ranked text report
+JitProfiler_alloc.folded       flamegraph
+```
+
+The report opens with a VM-state split: how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.
+The GC share flags allocation pressure without a separate run.
+Then the ranked views: BY MOD self (where the code ran) and total (every mod on the stack), BY LEAF (hot function), BY SCRIPT, BY ROOT (outermost frame driving the cost), and framework vs handlers.
+The allocation report carries the same views by bytes.
 
 On a stock exe without the primitives, the commands print which build is needed and do nothing else.
 
@@ -53,7 +74,7 @@ Credits:
 LuaJIT and jit.profile by Mike Pall. Profiler primitives backported into the demonized modded exes (themrdemonized/xray-monolith).
 
 Usage and License:
-  Modpacks: allowed and encouraged. Keep the readme and license files.
-  Addons, patches, integrations: allowed. Credit "JitProfiler by Damian Sirbu" visibly on your mod page.
-  Reproducing the implementation in other software: not allowed, even with credit.
-  Full license in LICENSE file and on GitHub.
+- Modpacks: allowed and encouraged. Keep the readme and license files.
+- Addons, patches, integrations: allowed. Credit "JitProfiler by Damian Sirbu" visibly on your mod page.
+- Reproducing the implementation in other software: not allowed, even with credit.
+- Full license in the LICENSE file and on GitHub.

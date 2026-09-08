@@ -1,30 +1,58 @@
 # JitProfiler Architecture
 
-Engine-native LuaJIT sampling profiler for STALKER Anomaly. Two decoupled layers.
+Engine-native LuaJIT sampling profiler for STALKER Anomaly.
+It has an engine layer and a mod layer.
 
-1. Engine primitives (C, compiled into the exe): `jit.profile`, LuaJIT 2.1's timer-driven stack sampler backported into demonized's LuaJIT 2.0.4 without GC64 (so saves stay compatible, dodging the GC64 savefile break that has the full 2.1 upgrade on hold); and `jit.allocprof`, per-function allocation attribution on the allocator seam. These are the raw capability, delivered in the demonized engine, not in this mod.
+The engine layer is C, compiled into the demonized exe.
+`jit.profile` is LuaJIT 2.1's timer stack sampler, backported into 2.0.4 without GC64 so saves stay compatible.
+`jit.allocprof` accounts exact per-allocation bytes on the allocator seam.
+Both are raw capability delivered in the engine, not in this mod.
 
-2. This mod (Lua): `JitProfiler.script`, the front-end. It drives the primitives from the console, aggregates the samples, and writes the text reports and SpeedScope flamegraphs. It contains no engine code and depends on no other mod.
+The mod layer is Lua, `JitProfiler.script`, the front-end.
+It drives the primitives from the console and aggregates the samples.
+It resolves each script to its owning mod, then writes the reports and SpeedScope flamegraphs.
+It logs through xlibs `xlog`.
 
-## Sampling, not instrumentation
-`jit.profile` fires a timer on a dedicated thread and records the running stack plus the VM state at each tick, with the JIT still compiled. Overhead is near-zero, and the whole modpack is covered in one capture with no per-call wrapper and no module selection.
+## CPU: sampling, not instrumentation
+`jit.profile` fires a timer on a dedicated thread and records the running stack and the VM state on every fire, with the JIT compiled.
+Overhead stays near-zero.
+One capture covers the whole modpack with no per-call wrapper and no module selection.
+Interval and stack depth are per-capture arguments to `start_cpu`.
 
-## Views (post-processed from the captured stacks)
-- VM state: `N` JIT-compiled, `I` interpreter, `C` engine call, `G` garbage collector, `J` JIT compiler. The share of each shows where the Lua time actually goes; a high `G` is GC pressure.
-- By leaf: the hot function (`name@script:line`).
-- By script: summed per file.
-- By root: the outermost frame, i.e. the callback or loop driving the cost.
-- Framework vs handlers: callback-dispatch machinery (`make_callback`, `SendScriptCallback`, `spairs`) split from real work.
-The allocation report carries the same stack views weighted by bytes.
+## Allocation: exact bytes, JIT off
+`jit.allocprof` counts every allocation at the allocator seam.
+It drains the pending bytes to the current stack on each bytecode instruction, with the JIT off for the session.
+Byte totals are exact.
+Attribution is instruction-granular.
+
+## Per-mod attribution
+GAMMA merges every mod into one `gamedata/scripts`, so the script path never names the mod.
+The resolver reads each hot script's real backing path through MO2/USVFS, over `GetFinalPathNameByHandle` on a LuaJIT FFI handle.
+It takes the `mods\<X>` folder as the owner.
+A loose base file or a packed `db0` reads as anomaly.
+The resolve runs at report time.
+Each result caches per script.
+An absent FFI degrades every owner to unknown.
+
+## Metrics and views
+Per unit, JitProfiler reports the pprof flat and cum metrics.
+SELF is the flat metric, exclusive, the leaf frame when the sample fired.
+TOTAL is the cum metric, inclusive, any frame on the stack counted once per sample, so it does not sum to 100%.
+The views are BY MOD self and total, BY LEAF, BY SCRIPT, BY ROOT, FRAMEWORK vs handlers, and the VM-state split for CPU.
+The fold toggle drops the anomaly baseline from the owned views.
 
 ## Output
-`appdata/logs/JitProfiler_{cpu,alloc}_report.txt` (ranked text) and `_{cpu,alloc}.folded` (SpeedScope). ASCII only.
+`appdata/logs/JitProfiler_{cpu,alloc}[_snapN]_report.txt` is the ranked text.
+`_{cpu,alloc}.folded` is the SpeedScope collapsed-stacks flamegraph.
+Both are ASCII only.
 
 ## Limitations
-- CPU sampling is interpreter-anchored (the backport is phase 1, without the JIT `prof_mode`). The VM-state split is accurate, because the state is latched at timer fire; but the stacks for samples taken while a JIT trace runs are attributed at the next trace exit, so the `N` (JIT-compiled) share is a floor and native hot-loop stacks are under-resolved.
-- Allocation attribution is at bytecode-instruction granularity: the bytes allocated since the last instruction are credited to the function running at the next instruction. With the JIT off this is the same function almost always, but bytes allocated inside a C/engine call or during GC are credited to the next Lua frame.
-- The CPU and allocation profilers are mutually exclusive: both drive the same engine hook, so the engine refuses to start one while the other runs.
-- The allocation report captures into fixed engine-side tables; if a capture exceeds their capacity the report prints a NOTE naming the bytes it could not attribute, rather than silently under-counting.
+- Inclusive counts and the flamegraph are bounded by the captured stack depth. A frame beyond the depth is not counted, so raise depth to trace deeper.
+- The CPU JIT-compiled share is a floor, because phase-1 sampling is interpreter-anchored and under-counts JIT traces.
+- Allocation attribution is instruction-granular, so bytes from a C or GC path are credited to the next Lua frame.
+- Per-mod attribution needs an MO2/USVFS install. Elsewhere it degrades to script level.
+- CPU and allocation are mutually exclusive. Each refuses to start while the other runs.
 
 ## Requires
-A demonized build exposing `jit.profile` + `jit.allocprof`. On a stock exe the mod detects their absence and no-ops with a message.
+A demonized build exposing `jit.profile` and `jit.allocprof`, and xlibs for `xlog`.
+On a stock exe the mod detects the missing primitives and stubs the commands.

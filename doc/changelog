@@ -4,4 +4,7 @@ next
   - CPU profile via jit.profile: VM-state split (JIT / interpreter / C / GC / compiler) and ranked views by leaf, script, root, and framework-vs-handlers, plus a SpeedScope flamegraph.
   - Allocation profile via jit.allocprof: per-function bytes with the same views.
   - ASCII text reports to appdata/logs/ with an at-a-glance summary header.
+  - Per-mod attribution: every view names the mod that owns each hot script, resolved live from its real path, with a self column for where the code ran and a total column for every mod on the stack.
+  - Configurable capture: start_cpu(interval_ms, depth) and start_alloc(depth) tune the sample rate and stack depth, with sane defaults otherwise.
+  - Fold toggle: drops the vanilla baseline so only mod cost shows.
   - Capability guard: on an exe without the profiler primitives the commands no-op with a message naming the build needed.
