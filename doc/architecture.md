@@ -42,8 +42,9 @@ The views are BY MOD self and total, BY LEAF, BY SCRIPT, BY ROOT, FRAMEWORK vs h
 The fold toggle drops the anomaly baseline from the owned views.
 
 ## Output
-`appdata/logs/JitProfiler_{cpu,alloc}[_snapN]_report.txt` is the ranked text.
-`_{cpu,alloc}.folded` is the SpeedScope collapsed-stacks flamegraph.
+`appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
+`jitprofiler_{cpu,mem}[_snapN]_<timestamp>.folded` is the SpeedScope collapsed-stacks flamegraph.
+The timestamp is the capture's wall-clock time, so successive runs never overwrite.
 Both are ASCII only.
 
 ## Limitations

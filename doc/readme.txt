@@ -57,10 +57,10 @@ Then stop as usual.
 
 The reports go to appdata/logs/:
 ```
-JitProfiler_cpu_report.txt     ranked text report
-JitProfiler_cpu.folded         flamegraph for speedscope.app
-JitProfiler_alloc_report.txt   ranked text report
-JitProfiler_alloc.folded       flamegraph
+jitprofiler_cpu_<timestamp>.txt     ranked text report
+jitprofiler_cpu_<timestamp>.folded  flamegraph for speedscope.app
+jitprofiler_mem_<timestamp>.txt     ranked text report
+jitprofiler_mem_<timestamp>.folded  flamegraph
 ```
 
 The report opens with a VM-state split: how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.

@@ -13,7 +13,7 @@ local OWNER_UNKNOWN       = "unknown"
 local OWNER_MOD           = "mod: "
 
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
-local pcall, tostring, tonumber, require, io = pcall, tostring, tonumber, require, io
+local pcall, tostring, tonumber, require, io, os = pcall, tostring, tonumber, require, io, os
 local format = string.format
 local getFS, time_global, jit = getFS, time_global, jit
 local RegisterScriptCallback = RegisterScriptCallback
@@ -35,13 +35,12 @@ local DISPATCH = {
 }
 
 -- xlog resolves at call time: JitProfiler evaluates before xlibs, so the logger is built on first use.
-local log_handle, INFO_LEVEL
+local log_handle
 local function log(fmt, ...)
     if not log_handle then
         log_handle = xlog.get_logger("JitProfiler", { outfile = "jitprofiler.log", level = "INFO" })
-        INFO_LEVEL = xlog.get_levels().INFO
     end
-    log_handle:write(INFO_LEVEL, fmt, ...)
+    log_handle.info(fmt, ...)
 end
 
 --- @safety SAFE - require() of an optional module runs under pcall; a missing module yields nil for the guard below.
@@ -78,6 +77,10 @@ end
 
 local function get_time_ms()
     return (time_global and time_global()) or 0
+end
+
+local function get_timestamp()
+    return os.date("%Y%m%d_%H%M%S")
 end
 
 -- Reduce a frame to name@script:line, pulling the basename cleanly out of a truncated short_src.
@@ -250,7 +253,7 @@ end
 local function write_folded(kind, by_stack)
     local folded = {}
     for stack, weight in pairs(by_stack) do folded[#folded + 1] = build_folded_stack(stack) .. " " .. format("%.0f", weight) end
-    return write_lines(build_log_path("JitProfiler_" .. kind .. ".folded"), folded)
+    return write_lines(build_log_path("jitprofiler_" .. kind .. ".folded"), folded)
 end
 
 -- Forward-declared so the CPU and allocation profilers can see each other and stay mutually exclusive.
@@ -330,8 +333,9 @@ function stop_cpu()
     build_view(lines, "BY ROOT   the outermost frame -- what drives the cost", root, total, format_count, { owned = true })
     build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", framework, total, format_count)
 
-    local report_path = write_lines(build_log_path("JitProfiler_cpu_report.txt"), lines)
-    local folded_path = write_folded("cpu", cpu.stacks)
+    local stamp = get_timestamp()
+    local report_path = write_lines(build_log_path("jitprofiler_cpu_" .. stamp .. ".txt"), lines)
+    local folded_path = write_folded("cpu_" .. stamp, cpu.stacks)
     log("JitProfiler/cpu: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     show_tip("JitProfiler CPU report written")
 end
@@ -377,8 +381,9 @@ local function write_alloc_report(stacks, duration_sec, suffix, title)
     build_view(lines, "BY ROOT   the outermost frame -- what drives it", root, total, format_bytes, { owned = true })
     build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", framework, total, format_bytes)
 
-    local report_path = write_lines(build_log_path("JitProfiler_alloc" .. suffix .. "_report.txt"), lines)
-    local folded_path = write_folded("alloc" .. suffix, by_stack)
+    local stamp = get_timestamp()
+    local report_path = write_lines(build_log_path("jitprofiler_mem" .. suffix .. "_" .. stamp .. ".txt"), lines)
+    local folded_path = write_folded("mem" .. suffix .. "_" .. stamp, by_stack)
     log("JitProfiler/alloc: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     return total
 end
@@ -447,5 +452,5 @@ end
 function on_game_start()
     RegisterScriptCallback("actor_on_update", update_alloc)
     log("JitProfiler ready.  CPU: start_cpu([ms],[depth]) / stop_cpu().  ALLOC: start_alloc([depth]) / write_snapshot() / stop_alloc().")
-    log("JitProfiler: set_fold_anomaly(true) folds the vanilla baseline.  Reports go to appdata/logs/JitProfiler_*.")
+    log("JitProfiler: set_fold_anomaly(true) folds the vanilla baseline.  Reports go to appdata/logs/jitprofiler_*.")
 end
