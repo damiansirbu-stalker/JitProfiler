@@ -91,12 +91,13 @@ local function get_timestamp()
 end
 
 -- Reduce a frame to name@script:line, pulling the basename cleanly out of a truncated short_src.
+-- On a truncated frame with no file token, return it unchanged: it already carries name@..., so prepending would double the name.
 local function get_short_frame(frame)
-    local name = frame:match("^([%w_]+)@")
     local file = frame:match("([%w_%.%-]+%.script:%-?%d+)")
               or frame:match("([%w_%.%-]+%.lua:%-?%d+)")
               or frame:match("(%[C%]:%-?%d+)")
-              or frame
+    if not file then return frame end
+    local name = frame:match("^([%w_]+)@")
     return name and (name .. "@" .. file) or file
 end
 
