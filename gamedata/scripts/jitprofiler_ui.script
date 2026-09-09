@@ -11,6 +11,7 @@ local WINDOW_W = 640
 local WINDOW_H = 460
 local TABLE_H  = 240
 local VMBAR_W  = 130
+local BAR_W    = 80
 local TOP_NEIGHBORS = 8
 local BYTES_PER_MB  = 1048576
 local BYTES_PER_KB  = 1024
@@ -23,10 +24,11 @@ local VIEW_FRAMEWORK = "framework"
 local COLOR_BG    = fcolor():set(0.102, 0.102, 0.102, 0.96)
 local COLOR_CREAM = fcolor():set(0.831, 0.788, 0.659, 1.0)
 local COLOR_DIM   = fcolor():set(0.30, 0.28, 0.22, 1.0)
+local COLOR_BAR   = fcolor():set(0.62, 0.56, 0.40, 1.0)
 
 -- Cached sizes so the render path allocates no vectors per frame.
 local VZERO       = vector2(0, 0)
-local BAR_FILL    = vector2(-1, 0)
+local BAR_SIZE    = vector2(BAR_W, 0)
 local VMBAR_SIZE  = vector2(VMBAR_W, 0)
 local WINDOW_SIZE = vector2(WINDOW_W, WINDOW_H)
 local TABLE_SIZE  = vector2(0, TABLE_H)
@@ -100,6 +102,13 @@ local function format_clock(sec)
     return format("%d:%02d", math.floor(whole / 60), whole % 60)
 end
 
+-- Fixed-width bar with the percent as text beside it, so the number sits on the dark background at a consistent spot.
+local function render_bar(pct)
+    ImGui.ProgressBar(pct / 100, BAR_SIZE, "")
+    ImGui.SameLine()
+    ImGui.Text(format("%.1f%%", pct))
+end
+
 local function select_frame(cap, key)
     selected_frame = key
     selected_neighbors = key and JitProfiler.compute_neighbors(cap.kind, key) or nil
@@ -158,7 +167,7 @@ local function render_bymod_row(cap, entry, total_map)
     ImGui.TableNextColumn()
     ImGui.Text(owner)
     ImGui.TableNextColumn()
-    ImGui.ProgressBar(self_pct / 100, BAR_FILL, format("%.1f%%", self_pct))
+    render_bar(self_pct)
     ImGui.TableNextColumn()
     ImGui.Text(format("%.1f%%", total_pct))
     ImGui.TableNextColumn()
@@ -195,7 +204,7 @@ local function render_view_row(cap, view, entry)
     ImGui.TableNextColumn()
     ImGui.Text(owner)
     ImGui.TableNextColumn()
-    ImGui.ProgressBar(pct / 100, BAR_FILL, format("%.1f%%", pct))
+    render_bar(pct)
     ImGui.TableNextColumn()
     ImGui.Text(format_weight(cap.kind, weight))
 end
@@ -203,9 +212,9 @@ end
 local function render_view_table(cap, view)
     local entries = get_rows(cap)
     if not ImGui.BeginTable("jf_view", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
-    ImGui.TableSetupColumn("Frame", 0, 280, 0)
+    ImGui.TableSetupColumn("Frame", 0, 260, 0)
     ImGui.TableSetupColumn("Mod", 0, 150, 0)
-    ImGui.TableSetupColumn("%", 0, 120, 0)
+    ImGui.TableSetupColumn("%", 0, 140, 0)
     ImGui.TableSetupColumn("Value", 0, 90, 0)
     ImGui.TableHeadersRow()
     for i = 1, #entries do render_view_row(cap, view, entries[i]) end
@@ -246,8 +255,10 @@ local function render_vmstate_bar(state, weight, total)
     ImGui.PopStyleColor(1)
     ImGui.SameLine(120)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, state.color)
-    ImGui.ProgressBar(frac, VMBAR_SIZE, format("%.1f%%", frac * 100))
+    ImGui.ProgressBar(frac, VMBAR_SIZE, "")
     ImGui.PopStyleColor(1)
+    ImGui.SameLine()
+    ImGui.Text(format("%.1f%%", frac * 100))
 end
 
 local function render_vmstate(cap)
@@ -295,6 +306,7 @@ local function render_panel()
     ImGui.SetNextWindowSize(WINDOW_SIZE, ImGuiCond.FirstUseEver)
     ImGui.PushStyleColor(ImGuiCol.WindowBg, COLOR_BG)
     ImGui.PushStyleColor(ImGuiCol.Text, COLOR_CREAM)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, COLOR_BAR)
     local expanded, open = ImGui.Begin("JitProfiler", panel_open, 0)
     panel_open = open
     if expanded then
@@ -312,7 +324,7 @@ local function render_panel()
         end
     end
     ImGui.End()
-    ImGui.PopStyleColor(2)
+    ImGui.PopStyleColor(3)
 end
 
 local function render_menu()
