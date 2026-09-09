@@ -1,16 +1,69 @@
---- jitprofiler_ui: in-game ImGui panel over the last JitProfiler capture; opens from the ImGui menu bar.
+--- jitprofiler_ui: in-game ImGui panel plus a running banner over the last JitProfiler capture; opens from the ImGui menu bar.
 local ImGui, JitProfiler = ImGui, JitProfiler
-local vector2, ImGuiCond, ImGuiWindowFlags = vector2, ImGuiCond, ImGuiWindowFlags
-local pairs, format, table = pairs, string.format, table
-local RegisterScriptCallback = RegisterScriptCallback
+local ImGuiCond, ImGuiWindowFlags, ImGuiCol = ImGuiCond, ImGuiWindowFlags, ImGuiCol
+local ImGuiTableFlags, ImGuiSelectableFlags = ImGuiTableFlags, ImGuiSelectableFlags
+local vector2, fcolor, bit = vector2, fcolor, bit
+local rawget, rawset = rawget, rawset
+local pairs, math, table = pairs, math, table
+local format, RegisterScriptCallback = string.format, RegisterScriptCallback
 
-local WINDOW_W = 560
-local WINDOW_H = 420
+local WINDOW_W = 640
+local WINDOW_H = 460
+local TABLE_H  = 240
+local VMBAR_W  = 130
+local TOP_NEIGHBORS = 8
+local BYTES_PER_MB  = 1048576
+local BYTES_PER_KB  = 1024
+local OWNER_ANOMALY = "anomaly"
+local KIND_CPU = "cpu"
+local KIND_MEM = "mem"
+local VIEW_BY_MOD = "by_mod"
+local VIEW_FRAMEWORK = "framework"
+
+local COLOR_BG    = fcolor():set(0.102, 0.102, 0.102, 0.96)
+local COLOR_CREAM = fcolor():set(0.831, 0.788, 0.659, 1.0)
+local COLOR_DIM   = fcolor():set(0.30, 0.28, 0.22, 1.0)
+
+-- Cached sizes so the render path allocates no vectors per frame.
+local VZERO       = vector2(0, 0)
+local BAR_FILL    = vector2(-1, 0)
+local VMBAR_SIZE  = vector2(VMBAR_W, 0)
+local WINDOW_SIZE = vector2(WINDOW_W, WINDOW_H)
+local TABLE_SIZE  = vector2(0, TABLE_H)
+local BTN_SIZE    = vector2(96, 0)
+local BANNER_POS  = vector2(24, 120)
+
+-- The CPU VM-state strip, one colored bar per state code in cap.meta.vmstate.
+local VMSTATE = {
+    { code = "N", label = "native",      color = fcolor():set(0.46, 0.80, 0.46, 1) },
+    { code = "I", label = "interpreter", color = fcolor():set(0.85, 0.80, 0.40, 1) },
+    { code = "C", label = "C / engine",  color = fcolor():set(0.45, 0.65, 0.90, 1) },
+    { code = "G", label = "GC",          color = fcolor():set(0.90, 0.45, 0.45, 1) },
+    { code = "J", label = "JIT compile", color = fcolor():set(0.75, 0.55, 0.85, 1) },
+}
+
+-- The selectable views over a retained capture; BY MOD joins the self and total maps, frame-keyed views drill down.
+local VIEWS = {
+    { key = VIEW_BY_MOD,    label = "BY MOD",    frame_keyed = false },
+    { key = "leaf",         label = "BY LEAF",   frame_keyed = true },
+    { key = "by_script",    label = "BY SCRIPT", frame_keyed = false },
+    { key = "root",         label = "BY ROOT",   frame_keyed = true },
+    { key = VIEW_FRAMEWORK, label = "FRAMEWORK", frame_keyed = false },
+}
+
+local WF = ImGuiWindowFlags
+local BANNER_FLAGS = bit.bor(WF.NoTitleBar, WF.NoResize, WF.NoMove, WF.NoSavedSettings,
+    WF.AlwaysAutoResize, WF.NoFocusOnAppearing, WF.NoInputs, WF.NoNav)
+local TABLE_FLAGS = bit.bor(ImGuiTableFlags.RowBg, ImGuiTableFlags.BordersInnerH, ImGuiTableFlags.ScrollY)
+local SPAN_ALL = ImGuiSelectableFlags.SpanAllColumns
 
 local panel_open = false
-local registered = false
+local active_tab = KIND_CPU
+local view_index = 1
+local fold_anomaly = false
+local selected_frame = nil
+local selected_neighbors = nil
 
--- Sort a weight map into a descending list of {key, weight}.
 local function sort_entries(map)
     local entries = {}
     for key, weight in pairs(map) do entries[#entries + 1] = { key, weight } end
@@ -18,52 +71,259 @@ local function sort_entries(map)
     return entries
 end
 
-local function render_capture(cap)
-    ImGui.Text(format("CPU   %d samples   ~%.0f s   %s", cap.meta.samples, cap.meta.duration, cap.meta.stamp))
-    ImGui.Separator()
-    local total = cap.total
-    local entries = sort_entries(cap.views.by_mod)
-    for i = 1, #entries do
-        local percent = total > 0 and (100.0 * entries[i][2] / total) or 0
-        ImGui.Text(format("%7.2f%%   %s", percent, entries[i][1]))
+local function format_weight(kind, value)
+    if kind ~= KIND_MEM then return format("%d", value) end
+    if value >= BYTES_PER_MB then return format("%.1f MB", value / BYTES_PER_MB) end
+    if value >= BYTES_PER_KB then return format("%.1f KB", value / BYTES_PER_KB) end
+    return format("%.0f B", value)
+end
+
+local function select_frame(cap, key)
+    selected_frame = key
+    selected_neighbors = key and JitProfiler.compute_neighbors(cap.kind, key) or nil
+end
+
+-- One capture-control button; grays out while the opposite axis runs, since the two are mutually exclusive.
+local function render_capture_button(kind)
+    local this_on = (kind == KIND_CPU) and JitProfiler.is_cpu_active() or JitProfiler.is_mem_active()
+    local other_on = (kind == KIND_CPU) and JitProfiler.is_mem_active() or JitProfiler.is_cpu_active()
+    local label = (this_on and "Stop " or "Start ") .. ((kind == KIND_CPU) and "CPU" or "MEM")
+    if other_on and not this_on then
+        ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
+        ImGui.Button(label .. "##cap" .. kind, BTN_SIZE)
+        ImGui.PopStyleColor(1)
+        return
     end
+    if not ImGui.Button(label .. "##cap" .. kind, BTN_SIZE) then return end
+    if kind == KIND_CPU then
+        if this_on then JitProfiler.stop_cpu() else JitProfiler.start_cpu() end
+    elseif this_on then
+        JitProfiler.stop_alloc()
+    else
+        JitProfiler.start_alloc()
+    end
+end
+
+local function render_tab_button(kind, label)
+    local sel = (active_tab == kind)
+    if sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
+    if ImGui.Button(label .. "##tab", BTN_SIZE) and active_tab ~= kind then
+        active_tab = kind
+        selected_frame = nil
+        selected_neighbors = nil
+    end
+    if sel then ImGui.PopStyleColor(1) end
+end
+
+local function render_view_selector(i)
+    local sel = (view_index == i)
+    if sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
+    if ImGui.Button(VIEWS[i].label .. "##view", VZERO) then
+        view_index = i
+        selected_frame = nil
+        selected_neighbors = nil
+    end
+    if sel then ImGui.PopStyleColor(1) end
+end
+
+local function render_bymod_row(cap, entry, total_map)
+    local owner, weight = entry[1], entry[2]
+    if fold_anomaly and owner == OWNER_ANOMALY then return end
+    local total = cap.total
+    local self_pct = total > 0 and 100 * weight / total or 0
+    local total_pct = total > 0 and 100 * (total_map[owner] or 0) / total or 0
+    ImGui.TableNextRow()
+    ImGui.TableNextColumn()
+    ImGui.Text(owner)
+    ImGui.TableNextColumn()
+    ImGui.ProgressBar(self_pct / 100, BAR_FILL, format("%.1f%%", self_pct))
+    ImGui.TableNextColumn()
+    ImGui.Text(format("%.1f%%", total_pct))
+    ImGui.TableNextColumn()
+    ImGui.Text(format_weight(cap.kind, weight))
+end
+
+local function render_bymod_table(cap)
+    local total_map = cap.views.by_mod_total
+    local entries = sort_entries(cap.views.by_mod)
+    if not ImGui.BeginTable("jf_bymod", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
+    ImGui.TableSetupColumn("Mod", 0, 180, 0)
+    ImGui.TableSetupColumn("Self %", 0, 150, 0)
+    ImGui.TableSetupColumn("Total %", 0, 80, 0)
+    ImGui.TableSetupColumn("Value", 0, 90, 0)
+    ImGui.TableHeadersRow()
+    for i = 1, #entries do render_bymod_row(cap, entries[i], total_map) end
+    ImGui.EndTable()
+end
+
+local function render_view_row(cap, view, entry)
+    local key, weight = entry[1], entry[2]
+    local owner = (view.key == VIEW_FRAMEWORK) and "-" or JitProfiler.get_owner(key)
+    if fold_anomaly and owner == OWNER_ANOMALY then return end
+    local pct = cap.total > 0 and 100 * weight / cap.total or 0
+    ImGui.TableNextRow()
+    ImGui.TableNextColumn()
+    if view.frame_keyed then
+        local is_sel = (selected_frame == key)
+        if ImGui.Selectable(key .. "##row", is_sel, SPAN_ALL, VZERO) then
+            select_frame(cap, is_sel and nil or key)
+        end
+    else
+        ImGui.Text(key)
+    end
+    ImGui.TableNextColumn()
+    ImGui.Text(owner)
+    ImGui.TableNextColumn()
+    ImGui.ProgressBar(pct / 100, BAR_FILL, format("%.1f%%", pct))
+    ImGui.TableNextColumn()
+    ImGui.Text(format_weight(cap.kind, weight))
+end
+
+local function render_view_table(cap, view)
+    local entries = sort_entries(cap.views[view.key])
+    if not ImGui.BeginTable("jf_view", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
+    ImGui.TableSetupColumn("Frame", 0, 280, 0)
+    ImGui.TableSetupColumn("Mod", 0, 150, 0)
+    ImGui.TableSetupColumn("%", 0, 120, 0)
+    ImGui.TableSetupColumn("Value", 0, 90, 0)
+    ImGui.TableHeadersRow()
+    for i = 1, #entries do render_view_row(cap, view, entries[i]) end
+    ImGui.EndTable()
+end
+
+local function render_table(cap)
+    local view = VIEWS[view_index]
+    if view.key == VIEW_BY_MOD then render_bymod_table(cap) else render_view_table(cap, view) end
+end
+
+local function render_ranked(title, list, total)
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+    ImGui.Text(title)
+    ImGui.PopStyleColor(1)
+    if #list == 0 then ImGui.Text("  (none)"); return end
+    local shown = math.min(#list, TOP_NEIGHBORS)
+    for i = 1, shown do
+        local pct = total > 0 and 100 * list[i][2] / total or 0
+        ImGui.Text(format("  %5.1f%%  %s", pct, list[i][1]))
+    end
+end
+
+-- The stack neighbors of the selected frame: callers stand toward the root, callees toward the leaf.
+local function render_neighbors(cap)
+    if not (selected_frame and selected_neighbors) then return end
+    ImGui.Separator()
+    ImGui.Text("SELECTED  " .. selected_frame)
+    render_ranked("CALLERS (toward root)", selected_neighbors.callers, cap.total)
+    render_ranked("CALLEES (toward leaf)", selected_neighbors.callees, cap.total)
+end
+
+local function render_vmstate_bar(state, weight, total)
+    if weight <= 0 then return end
+    local frac = weight / total
+    ImGui.PushStyleColor(ImGuiCol.Text, state.color)
+    ImGui.Text(format("%-12s", state.label))
+    ImGui.PopStyleColor(1)
+    ImGui.SameLine(120)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, state.color)
+    ImGui.ProgressBar(frac, VMBAR_SIZE, format("%.1f%%", frac * 100))
+    ImGui.PopStyleColor(1)
+end
+
+local function render_vmstate(cap)
+    local vm = cap.meta.vmstate
+    local total = cap.total
+    if not vm or total <= 0 then return end
+    for i = 1, #VMSTATE do
+        render_vmstate_bar(VMSTATE[i], vm[VMSTATE[i].code] or 0, total)
+    end
+end
+
+local function render_controls()
+    render_capture_button(KIND_CPU)
+    ImGui.SameLine()
+    render_capture_button(KIND_MEM)
+    ImGui.SameLine(0, 20)
+    local _, new_fold = ImGui.Checkbox("Fold anomaly", fold_anomaly)
+    fold_anomaly = new_fold
+    ImGui.Spacing()
+    for i = 1, #VIEWS do
+        render_view_selector(i)
+        if i < #VIEWS then ImGui.SameLine() end
+    end
+end
+
+local function render_tab(cap)
+    if cap.kind == KIND_CPU then
+        ImGui.Text(format("%d samples   ~%.0fs   %s", cap.meta.samples or 0, cap.meta.duration or 0, cap.meta.stamp or "?"))
+        ImGui.Separator()
+        render_vmstate(cap)
+    else
+        ImGui.Text(format("%s allocated   ~%.0fs   %s", format_weight(KIND_MEM, cap.total), cap.meta.duration or 0, cap.meta.stamp or "?"))
+    end
+    ImGui.Separator()
+    render_table(cap)
+    render_neighbors(cap)
 end
 
 local function render_panel()
     if not panel_open then return end
-    ImGui.SetNextWindowSize(vector2(WINDOW_W, WINDOW_H), ImGuiCond.FirstUseEver)
-    local expanded, open = ImGui.Begin("JitProfiler", panel_open, ImGuiWindowFlags.None)
+    ImGui.SetNextWindowSize(WINDOW_SIZE, ImGuiCond.FirstUseEver)
+    ImGui.PushStyleColor(ImGuiCol.WindowBg, COLOR_BG)
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_CREAM)
+    local expanded, open = ImGui.Begin("JitProfiler", panel_open, 0)
     panel_open = open
     if expanded then
-        local cap = JitProfiler.get_last_capture and JitProfiler.get_last_capture("cpu")
+        render_controls()
+        ImGui.Separator()
+        render_tab_button(KIND_CPU, "CPU")
+        ImGui.SameLine()
+        render_tab_button(KIND_MEM, "MEM")
+        ImGui.Separator()
+        local cap = JitProfiler.get_last_capture(active_tab)
         if cap then
-            render_capture(cap)
+            render_tab(cap)
         else
-            ImGui.Text("No capture yet.  Run start_cpu() then stop_cpu().")
+            ImGui.Text("No capture yet.  Start " .. ((active_tab == KIND_CPU) and "CPU" or "MEM") .. ", play, then Stop.")
         end
     end
     ImGui.End()
+    ImGui.PopStyleColor(2)
 end
 
 local function render_menu()
-    if ImGui.BeginMenu("JitProfiler") then
-        local _
-        _, panel_open = ImGui.MenuItem("Panel", nil, panel_open, true)
-        ImGui.EndMenu()
-    end
+    if not ImGui.BeginMenu("JitProfiler") then return end
+    local _
+    _, panel_open = ImGui.MenuItem("Panel", nil, panel_open, true)
+    ImGui.EndMenu()
 end
 
--- Register the panel with the ImGui menu bar once its Groups API is present.
+-- Always-on corner banner via the Unique group; renders every frame, shows only while a capture runs.
+local function render_banner()
+    local cpu_on = JitProfiler.is_cpu_active()
+    if not (cpu_on or JitProfiler.is_mem_active()) then return end
+    ImGui.SetNextWindowPos(BANNER_POS, ImGuiCond.Always)
+    ImGui.PushStyleColor(ImGuiCol.WindowBg, COLOR_BG)
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_CREAM)
+    local expanded = ImGui.Begin("##jf_banner", true, BANNER_FLAGS)
+    if expanded then ImGui.Text(cpu_on and "CPU PROFILER" or "MEM PROFILER") end
+    ImGui.End()
+    ImGui.PopStyleColor(2)
+end
+
+-- Register the panel, menu, and banner once the ImGui Groups API is present; the _G flag survives the chunk double-load.
 local function try_init()
-    if registered then return true end
+    if rawget(_G, "__jitprofiler_ui_registered") then return true end
     if not (ImGui and ImGui.Groups and ImGui.Groups.Widget) then return false end
     local widget = ImGui.Groups.Widget
+    rawset(_G, "__jitprofiler_ui_registered", true)
     widget("MenuBar", render_menu)
     widget("Main", render_panel)
-    registered = true
+    widget("Unique", render_banner)
     return true
 end
 
 function on_game_start()
+    if rawget(_G, "__jitprofiler_ui_started") then return end
+    rawset(_G, "__jitprofiler_ui_started", true)
     RegisterScriptCallback("actor_on_update", try_init)
 end

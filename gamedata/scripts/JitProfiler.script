@@ -17,6 +17,7 @@ local pcall, tostring, tonumber, require, io, os = pcall, tostring, tonumber, re
 local format = string.format
 local getFS, time_global, jit = getFS, time_global, jit
 local RegisterScriptCallback = RegisterScriptCallback
+local rawget, rawset = rawget, rawset
 
 -- Per-sample VM state from jit.profile: what the VM was doing when the timer fired.
 local VMSTATE = {
@@ -55,6 +56,11 @@ local allocprof = find_module("jit.allocprof")
 if not (profile and allocprof) then
     local function log_absent() log("!JitProfiler: this exe lacks jit.profile/jit.allocprof; it needs a demonized profiler build.") end
     start_cpu, stop_cpu, start_alloc, stop_alloc, write_snapshot, set_fold_anomaly = log_absent, log_absent, log_absent, log_absent, log_absent, log_absent
+    is_cpu_active = function() return false end
+    is_mem_active = function() return false end
+    get_last_capture = function() return nil end
+    get_owner = function() return OWNER_UNKNOWN end
+    compute_neighbors = function() return nil end
     return
 end
 
@@ -175,12 +181,6 @@ local function get_script_owner(script_file)
     return owner
 end
 
--- Owner of a view key via the script it names.
-local function get_key_owner(key)
-    local script_file = key:match("([%w_%.%-]+%.script)") or key:match("([%w_%.%-]+%.lua)")
-    return script_file and get_script_owner(script_file) or OWNER_UNKNOWN
-end
-
 local function sort_entries(map)
     local entries = {}
     for key, weight in pairs(map) do entries[#entries + 1] = { key, weight } end
@@ -200,7 +200,7 @@ local function build_view(lines, title, map, total, fmt, opts)
     for i = 1, #entries do
         if shown >= TOP_N then break end
         local key, weight = entries[i][1], entries[i][2]
-        local owner = owned and get_key_owner(key) or nil
+        local owner = owned and get_owner(key) or nil
         if owned and fold_anomaly and owner == OWNER_ANOMALY then
             skipped = skipped + 1
         else
@@ -224,7 +224,7 @@ local function compute_views(by_stack)
         for frame in string.gmatch(stack, "[^;]+") do
             if not first then first = frame end
             last = frame
-            seen[get_key_owner(frame)] = true
+            seen[get_owner(frame)] = true
         end
         first, last = first or "?", last or "?"
         local leaf_key = get_short_frame(first)
@@ -475,7 +475,48 @@ function get_last_capture(kind)
     return last_capture[kind]
 end
 
+--- @return string the owning mod (or anomaly/unknown) for a view key, resolved through the script it names.
+function get_owner(key)
+    local script_file = key:match("([%w_%.%-]+%.script)") or key:match("([%w_%.%-]+%.lua)")
+    return script_file and get_script_owner(script_file) or OWNER_UNKNOWN
+end
+
+function is_cpu_active()
+    return cpu.active
+end
+
+function is_mem_active()
+    return alloc.capturing
+end
+
+-- One stack's contribution to a frame's neighbors: callers stand toward root (i+1), callees toward leaf (i-1).
+local function collect_neighbors(entry, frame, out)
+    local frames, count = {}, 0
+    for raw in string.gmatch(entry.stack, "[^;]+") do count = count + 1; frames[count] = get_short_frame(raw) end
+    for i = 1, count do
+        local matched = frames[i] == frame
+        local up = matched and frames[i + 1]
+        local down = matched and frames[i - 1]
+        if up then out.callers[up] = (out.callers[up] or 0) + entry.weight end
+        if down then out.callees[down] = (out.callees[down] or 0) + entry.weight end
+    end
+end
+
+-- Callers (toward root) and callees (toward leaf) of a frame, summed across the retained leaf-first stacks.
+function compute_neighbors(kind, frame)
+    local cap = last_capture[kind]
+    if not (cap and frame) then return nil end
+    local out = { callers = {}, callees = {} }
+    for stack, weight in pairs(cap.by_stack) do
+        collect_neighbors({ stack = stack, weight = weight }, frame, out)
+    end
+    return { callers = sort_entries(out.callers), callees = sort_entries(out.callees) }
+end
+
+-- The chunk executes twice (see the _G capture anchor above), so guard the one-time callback registration.
 function on_game_start()
+    if rawget(_G, "__jitprofiler_started") then return end
+    rawset(_G, "__jitprofiler_started", true)
     RegisterScriptCallback("actor_on_update", update_alloc)
     log("JitProfiler ready.  CPU: start_cpu([ms],[depth]) / stop_cpu().  ALLOC: start_alloc([depth]) / write_snapshot() / stop_alloc().")
     log("JitProfiler: set_fold_anomaly(true) folds the vanilla baseline.  Reports go to appdata/logs/jitprofiler_*.")
