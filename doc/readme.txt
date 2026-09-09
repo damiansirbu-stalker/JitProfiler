@@ -71,6 +71,10 @@ Start or stop the CPU or memory capture from the panel.
 Switch the ranked view (by mod, leaf, script, root, framework), and select a row to read the callers and callees of that frame.
 A small corner banner shows while a capture runs.
 
+Configuration (MCM):
+The JitProfiler MCM page holds the capture defaults for the sample interval, stack depth, report rows, auto-snapshot threshold, and the report fold.
+The panel and the console commands use these defaults, and a console argument to start_cpu or start_alloc overrides the matching value for that capture.
+
 The reports go to appdata/logs/:
 ```
 jitprofiler_cpu_<timestamp>.txt     ranked text report

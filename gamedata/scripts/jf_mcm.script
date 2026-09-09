@@ -1,0 +1,69 @@
+--- jf_mcm: MCM configuration for JitProfiler (capture defaults, version footer, reset)
+
+defaults = {
+    interval = 5,
+    depth = 12,
+    top_n = 40,
+    auto_snap = 90,
+    fold = false,
+}
+
+local pairs, RegisterScriptCallback = pairs, RegisterScriptCallback
+
+local function build_path(key)
+    return "jf/" .. key
+end
+
+cfg, get_config, load_config = xmcm.create_config("jf", defaults, build_path)
+
+-- Reset every MCM option to its default, save, reload, then close with On_Cancel.
+-- @src ui_mcm.script:949: On_Discard's Reset_opt frees btn_reset_all mid-click and SEH-fires on some exe builds; On_Cancel keeps the control alive.
+local function _apply_defaults(gui, msg)
+    local config = axr_main.config
+    for k, v in pairs(defaults) do
+        config:w_value("mcm", build_path(k), v)
+    end
+    config:save()
+    load_config()
+    if gui then
+        if gui.owner and gui.owner.SetMsg then gui.owner:SetMsg(msg, 5) end
+        if gui.On_Cancel then gui:On_Cancel() end
+    end
+    if db.actor then
+        news_manager.send_tip(db.actor, msg, nil, nil, 5000)
+    end
+end
+
+function btn_reset_all(gui)
+    _apply_defaults(gui, game.translate_string("st_jf_reset_all_done"))
+end
+
+function on_mcm_load()
+    return {
+        id = "jf",
+        sh = true,
+        gr = {
+            { id = "title", type = "slide", link = "jf_mcm_banner",
+                text = "ui_mcm_jf_title", size = {512, 50}, spacing = 20 },
+            { id = "desc", type = "desc", text = "ui_mcm_jf_desc" },
+            { id = "div_top", type = "line" },
+            { id = "interval", type = "track", val = 2, min = 1, max = 20, step = 1, def = 5 },
+            { id = "depth", type = "track", val = 2, min = 4, max = 32, step = 1, def = 12 },
+            { id = "top_n", type = "track", val = 2, min = 10, max = 100, step = 5, def = 40 },
+            { id = "auto_snap", type = "track", val = 2, min = 50, max = 99, step = 1, def = 90 },
+            { id = "fold", type = "check", val = 1, def = false },
+            { id = "div_footer", type = "line" },
+            { id = "platform", type = "desc", text = "ui_mcm_xmcm_footer",
+                ui_hook_functor = { _jitprofiler_deps.platform_functor() }, clr = {255, 212, 201, 168} },
+            { id = "div_reset", type = "line" },
+            { id = "reset_warning", type = "desc", text = "ui_mcm_jf_reset_warning", clr = {255, 240, 200, 80} },
+            { id = "btn_reset_all", type = "button", functor_ui = { btn_reset_all } },
+        },
+    }
+end
+
+function on_game_start()
+    load_config()
+    RegisterScriptCallback("on_option_change", load_config)
+    RegisterScriptCallback("mcm_option_restore_default", load_config)
+end

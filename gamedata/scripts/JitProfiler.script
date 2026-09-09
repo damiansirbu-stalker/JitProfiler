@@ -135,8 +135,14 @@ end
 -- Per-mod origin resolver: the owning mod from the file's real backing path via MO2/USVFS.
 local origin_cache = {}
 local resolve_ready = false
-local fold_anomaly = false
+local fold_override
 local ffi, k32
+
+-- MCM capture default, read live from jf_mcm; a console argument still overrides per capture.
+local function get_mcm_number(key, fallback)
+    local cfg = jf_mcm and jf_mcm.cfg
+    return (cfg and tonumber(cfg[key])) or fallback
+end
 
 --- @safety SAFE - each optional FFI step runs under pcall; any failure leaves resolve_ready false and owners unknown.
 local function init_ffi()
@@ -193,15 +199,21 @@ local function compute_pct(value, total) return total > 0 and (100.0 * value / t
 -- Append a ranked top-N view; opts.owned resolves each row's mod and honours fold_anomaly.
 local function build_view(lines, title, map, total, fmt, opts)
     local owned = opts and opts.owned
+    local top_n = get_mcm_number("top_n", TOP_N)
+    local fold = fold_override
+    if fold == nil then
+        local cfg = jf_mcm and jf_mcm.cfg
+        fold = (cfg and cfg.fold) and true or false
+    end
     lines[#lines + 1] = ""
     lines[#lines + 1] = "-- " .. title .. " " .. string.rep("-", math.max(2, 68 - #title))
     local entries = sort_entries(map)
     local shown, skipped = 0, 0
     for i = 1, #entries do
-        if shown >= TOP_N then break end
+        if shown >= top_n then break end
         local key, weight = entries[i][1], entries[i][2]
         local owner = owned and get_owner(key) or nil
-        if owned and fold_anomaly and owner == OWNER_ANOMALY then
+        if owned and fold and owner == OWNER_ANOMALY then
             skipped = skipped + 1
         else
             local percent = compute_pct(weight, total)
@@ -288,8 +300,8 @@ function start_cpu(interval_ms, depth)
     if cpu.active then log("JitProfiler/cpu: already running -- JitProfiler.stop_cpu() first."); return end
     if alloc.capturing then log("JitProfiler/cpu: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
     cpu.stacks, cpu.state, cpu.total, cpu.nstacks, cpu.dropped = {}, {}, 0, 0, 0
-    cpu.iv = math.floor(tonumber(interval_ms) or CPU_INTERVAL_MS); if cpu.iv < 1 then cpu.iv = 1 end
-    cpu.depth = math.floor(tonumber(depth) or DEFAULT_STACK_DEPTH); if cpu.depth < 1 then cpu.depth = 1 end
+    cpu.iv = math.floor(tonumber(interval_ms) or get_mcm_number("interval", CPU_INTERVAL_MS)); if cpu.iv < 1 then cpu.iv = 1 end
+    cpu.depth = math.floor(tonumber(depth) or get_mcm_number("depth", DEFAULT_STACK_DEPTH)); if cpu.depth < 1 then cpu.depth = 1 end
     cpu.t0 = get_time_ms()
     cpu.active = true
     profile.start("i" .. tostring(cpu.iv), collect_cpu_sample)
@@ -354,7 +366,7 @@ function stop_cpu()
 end
 
 -- Allocation profiler: exact per-allocation bytes, drained at instruction boundaries with the JIT off.
-alloc = { depth = DEFAULT_STACK_DEPTH, t0 = 0, snap_t0 = 0, snap_n = 0,
+alloc = { depth = DEFAULT_STACK_DEPTH, t0 = 0, snap_t0 = 0, snap_n = 0, snap_pct = AUTO_SNAP_PCT,
           capturing = false, jit_was_on = false }
 
 -- Turn a dump result into the text report and folded flamegraph, then write both.
@@ -416,15 +428,16 @@ end
 function start_alloc(depth)
     if alloc.capturing then log("JitProfiler/alloc: already running -- JitProfiler.stop_alloc() first."); return end
     if cpu.active then log("JitProfiler/alloc: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
-    alloc.depth = math.floor(tonumber(depth) or DEFAULT_STACK_DEPTH); if alloc.depth < 2 then alloc.depth = 2 end
+    alloc.depth = math.floor(tonumber(depth) or get_mcm_number("depth", DEFAULT_STACK_DEPTH)); if alloc.depth < 2 then alloc.depth = 2 end
     alloc.t0 = get_time_ms()
     alloc.snap_t0 = alloc.t0
     alloc.snap_n = 0
     alloc.jit_was_on = is_jit_on()
     if jit then jit.flush(); jit.off() end
+    alloc.snap_pct = get_mcm_number("auto_snap", AUTO_SNAP_PCT)
     allocprof.start(alloc.depth)
     alloc.capturing = true
-    log("JitProfiler/alloc: ON (JIT off, exact bytes, depth %d). Play, then JitProfiler.stop_alloc(). Auto-dumps at %d%% full.", alloc.depth, AUTO_SNAP_PCT)
+    log("JitProfiler/alloc: ON (JIT off, exact bytes, depth %d). Play, then JitProfiler.stop_alloc(). Auto-dumps at %d%% full.", alloc.depth, alloc.snap_pct)
     show_tip("JitProfiler ALLOC ON")
 end
 
@@ -462,12 +475,12 @@ end
 -- Per-frame heartbeat that auto-snapshots before a table fills, near-free when idle.
 local function update_alloc()
     if not alloc.capturing then return end
-    if allocprof.usage() >= AUTO_SNAP_PCT then write_snapshot(true) end
+    if allocprof.usage() >= alloc.snap_pct then write_snapshot(true) end
 end
 -- Fold the anomaly baseline rows out of the owned views, read at the next report.
 function set_fold_anomaly(on)
-    fold_anomaly = on and true or false
-    log("JitProfiler: fold anomaly = %s (applies to the next report)", tostring(fold_anomaly))
+    fold_override = on and true or false
+    log("JitProfiler: fold anomaly = %s (applies to the next report)", tostring(fold_override))
 end
 
 --- @return table|nil the retained aggregate for kind "cpu" or "mem", or nil when nothing was captured yet.

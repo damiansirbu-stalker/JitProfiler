@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<string_table>
+    <string id="ui_mcm_menu_jf">
+        <text>JitProfiler</text>
+    </string>
+
+    <string id="ui_mcm_jf_title">
+        <text>JitProfiler</text>
+    </string>
+    <string id="ui_mcm_jf_desc">
+        <text>JitProfiler samples the running Lua stack on the engine timer and names the mod behind each hot script. These are the capture defaults. The in-game panel and the console commands both use them, and a console argument overrides the matching value for a single capture.</text>
+    </string>
+
+    <string id="ui_mcm_jf_interval">
+        <text>CPU sample interval (ms)</text>
+    </string>
+    <string id="ui_mcm_jf_interval_desc">
+        <text>How often the CPU sampler fires. Lower samples more often and costs a little more per second; higher is cheaper and coarser. A console argument to start_cpu overrides this for that capture.</text>
+    </string>
+    <string id="ui_mcm_jf_depth">
+        <text>Stack depth</text>
+    </string>
+    <string id="ui_mcm_jf_depth_desc">
+        <text>How many stack frames each sample records. Deeper traces reach further toward the root and fill the callers and callees view, at a higher cost per sample. Applies to both the CPU and the allocation capture.</text>
+    </string>
+    <string id="ui_mcm_jf_top_n">
+        <text>Report rows</text>
+    </string>
+    <string id="ui_mcm_jf_top_n_desc">
+        <text>How many rows each ranked view prints in the text report. The in-game panel lists every row regardless of this value.</text>
+    </string>
+    <string id="ui_mcm_jf_auto_snap">
+        <text>Auto-snapshot at (percent full)</text>
+    </string>
+    <string id="ui_mcm_jf_auto_snap_desc">
+        <text>During an allocation capture the profiler writes a numbered snapshot and keeps going once its table reaches this fraction of capacity, so a long session never overflows the table.</text>
+    </string>
+    <string id="ui_mcm_jf_fold">
+        <text>Fold the vanilla baseline in reports</text>
+    </string>
+    <string id="ui_mcm_jf_fold_desc">
+        <text>Drops the anomaly rows from the owned views in the text report, leaving mod cost. The console set_fold_anomaly overrides this for the session.</text>
+    </string>
+
+    <string id="ui_mcm_jf_reset_warning">
+        <text>Warning: save or discard pending MCM changes first; otherwise they override the reset on the next Accept.</text>
+    </string>
+    <string id="ui_mcm_jf_btn_reset_all">
+        <text>Reset to defaults</text>
+    </string>
+    <string id="ui_mcm_jf_btn_reset_all_desc">
+        <text>Restore all JitProfiler MCM settings to their defaults.</text>
+    </string>
+
+    <string id="st_jf_reset_all_done">
+        <text>JitProfiler: all settings restored to defaults.</text>
+    </string>
+</string_table>
