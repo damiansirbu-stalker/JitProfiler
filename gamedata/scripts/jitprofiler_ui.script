@@ -63,11 +63,28 @@ local view_index = 1
 local fold_anomaly = false
 local selected_frame = nil
 local selected_neighbors = nil
+local rows_sig, rows_cache
 
 local function sort_entries(map)
     local entries = {}
     for key, weight in pairs(map) do entries[#entries + 1] = { key, weight } end
     table.sort(entries, function(left, right) return left[2] > right[2] end)
+    return entries
+end
+
+-- The retained capture is static, so sort and resolve each row's owner once per tab/view/capture, not per frame.
+local function get_rows(cap)
+    local view = VIEWS[view_index]
+    local sig = active_tab .. ":" .. view_index .. ":" .. (cap.meta.stamp or "?")
+    if sig == rows_sig then return rows_cache end
+    local entries = sort_entries((view.key == VIEW_BY_MOD) and cap.views.by_mod or cap.views[view.key])
+    if view.key ~= VIEW_BY_MOD then
+        for i = 1, #entries do
+            entries[i][3] = (view.key == VIEW_FRAMEWORK) and "-" or JitProfiler.get_owner(entries[i][1])
+        end
+    end
+    rows_cache, rows_sig = entries, sig
+    selected_frame, selected_neighbors = nil, nil
     return entries
 end
 
@@ -145,7 +162,7 @@ end
 
 local function render_bymod_table(cap)
     local total_map = cap.views.by_mod_total
-    local entries = sort_entries(cap.views.by_mod)
+    local entries = get_rows(cap)
     if not ImGui.BeginTable("jf_bymod", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Mod", 0, 180, 0)
     ImGui.TableSetupColumn("Self %", 0, 150, 0)
@@ -157,8 +174,7 @@ local function render_bymod_table(cap)
 end
 
 local function render_view_row(cap, view, entry)
-    local key, weight = entry[1], entry[2]
-    local owner = (view.key == VIEW_FRAMEWORK) and "-" or JitProfiler.get_owner(key)
+    local key, weight, owner = entry[1], entry[2], entry[3]
     if fold_anomaly and owner == OWNER_ANOMALY then return end
     local pct = cap.total > 0 and 100 * weight / cap.total or 0
     ImGui.TableNextRow()
@@ -180,7 +196,7 @@ local function render_view_row(cap, view, entry)
 end
 
 local function render_view_table(cap, view)
-    local entries = sort_entries(cap.views[view.key])
+    local entries = get_rows(cap)
     if not ImGui.BeginTable("jf_view", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Frame", 0, 280, 0)
     ImGui.TableSetupColumn("Mod", 0, 150, 0)
