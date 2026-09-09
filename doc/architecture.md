@@ -71,14 +71,16 @@ The CPU tab adds the VM-state strip. A fold-anomaly toggle drops the vanilla bas
 A corner banner in the Unique group renders every frame and shows only while a capture runs.
 The chunk executes twice, so registration and the retained capture anchor to `_G` singletons.
 
-## MCM
-`jf_mcm.script` adds a flat MCM page through `xmcm.create_config` for the capture defaults.
-`JitProfiler.script` reads `jf_mcm.cfg` at capture time through `get_mcm_number`.
-An auto-stop duration above 0 ends a running capture from the `update_capture` heartbeat and writes its report.
-A forgotten allocation capture then never holds the JIT off past the limit.
-A console argument to `start_cpu` or `start_alloc` still overrides the matching value for that call.
-The console `set_fold_anomaly` overrides the report fold for the session, and otherwise the MCM fold applies.
-The page also carries the shared version and compatibility footer from `_jitprofiler_deps.platform_functor`.
+## Settings and MCM
+Capture settings live in the panel, not in MCM.
+`JitProfiler.script` keeps them as session state anchored to `_G`, edited from the panel through `get_setting` and `set_setting`.
+They cover interval, depth, report rows, the auto-snapshot threshold, auto-stop, and fold.
+A console argument to `start_cpu` or `start_alloc` overrides one capture, and nothing is persisted.
+An auto-stop duration above 0 ends a running capture from the `update_capture` heartbeat and writes its report, so a forgotten allocation capture never holds the JIT off past the limit.
+
+`jf_mcm.script` is an about page through `xmcm.create_config`.
+It carries the description, the usage and SpeedScope notes, the version and compatibility footer from `_jitprofiler_deps.platform_functor`, and one persistent toggle, `show_imgui`.
+The panel, menu, and banner read `show_imgui` through a cached flag and draw nothing while it is off, so JitProfiler leaves the ImGui menu bar.
 
 ## Limitations
 - Inclusive counts and the flamegraph are bounded by the captured stack depth. A frame beyond the depth is not counted, so raise depth to trace deeper.

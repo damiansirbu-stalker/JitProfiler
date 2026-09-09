@@ -272,6 +272,7 @@ local function render_vmstate(cap)
 end
 
 local function render_controls()
+    fold_anomaly = JitProfiler.get_setting("fold")
     render_capture_button(KIND_CPU)
     ImGui.SameLine()
     render_capture_button(KIND_MEM)
@@ -281,12 +282,28 @@ local function render_controls()
     end
     ImGui.SameLine(0, 20)
     local _, new_fold = ImGui.Checkbox("Fold anomaly", fold_anomaly)
+    if new_fold ~= fold_anomaly then JitProfiler.set_setting("fold", new_fold) end
     fold_anomaly = new_fold
     ImGui.Spacing()
     for i = 1, #VIEWS do
         render_view_selector(i)
         if i < #VIEWS then ImGui.SameLine() end
     end
+end
+
+-- One integer capture setting as a whole-number slider, written back to the session state on change.
+local function render_int_setting(key, label, min, max)
+    local changed, value = ImGui.SliderFloat(label, JitProfiler.get_setting(key), min, max, "%.0f")
+    if changed then JitProfiler.set_setting(key, math.floor(value + 0.5)) end
+end
+
+local function render_settings()
+    if not ImGui.CollapsingHeader("Settings") then return end
+    render_int_setting("interval", "CPU interval (ms)", 1, 20)
+    render_int_setting("depth", "Stack depth", 4, 64)
+    render_int_setting("top_n", "Report rows", 10, 100)
+    render_int_setting("auto_snap", "Auto-snapshot at (%)", 50, 99)
+    render_int_setting("duration", "Auto-stop after (s)", 0, 600)
 end
 
 local function render_tab(cap)
@@ -306,8 +323,14 @@ local function render_tab(cap)
     render_neighbors(cap)
 end
 
+-- The MCM toggle for the ImGui overlay; defaults to shown until the config loads. Cached table read, no per-frame ini parse.
+local function is_overlay_enabled()
+    local cfg = jf_mcm and jf_mcm.cfg
+    return not cfg or cfg.show_imgui ~= false
+end
+
 local function render_panel()
-    if not panel_open then return end
+    if not (panel_open and is_overlay_enabled()) then return end
     ImGui.SetNextWindowSize(WINDOW_SIZE, ImGuiCond.FirstUseEver)
     ImGui.PushStyleColor(ImGuiCol.WindowBg, COLOR_BG)
     ImGui.PushStyleColor(ImGuiCol.Text, COLOR_CREAM)
@@ -327,12 +350,15 @@ local function render_panel()
         else
             ImGui.Text("No capture yet.  Start " .. ((active_tab == KIND_CPU) and "CPU" or "MEM") .. ", play, then Stop.")
         end
+        ImGui.Separator()
+        render_settings()
     end
     ImGui.End()
     ImGui.PopStyleColor(3)
 end
 
 local function render_menu()
+    if not is_overlay_enabled() then return end
     if not ImGui.BeginMenu("JitProfiler") then return end
     local _
     _, panel_open = ImGui.MenuItem("Panel", nil, panel_open, true)
@@ -341,6 +367,7 @@ end
 
 -- Always-on corner banner via the Unique group; renders every frame, shows only while a capture runs.
 local function render_banner()
+    if not is_overlay_enabled() then return end
     local cpu_on = JitProfiler.is_cpu_active()
     if not (cpu_on or JitProfiler.is_mem_active()) then return end
     local label = cpu_on and "CPU PROFILER" or "MEM PROFILER"

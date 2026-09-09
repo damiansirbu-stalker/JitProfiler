@@ -7,9 +7,10 @@ next
     Start and Stop buttons for the CPU and allocation captures, a ranked table for each view
     (by mod, leaf, script, root, framework) with a bar per row, a caller and callee breakdown
     for any selected frame, and the CPU VM-state strip. A corner banner marks a live capture.
-  - Added an MCM page: capture defaults for the CPU sample interval, stack depth, report rows,
-    auto-snapshot threshold, and the report fold, plus a version and compatibility footer. The
-    panel and console commands read these defaults, and a console argument overrides one capture.
+  - Capture settings live in the in-game panel and are session-only. The panel Settings section
+    holds the sample interval, stack depth, report rows, auto-snapshot threshold, auto-stop, and
+    fold, and a console argument still overrides one capture. MCM is an about page with a toggle
+    for whether JitProfiler shows in the ImGui overlay.
   - Added an optional capture auto-stop. A duration set in the MCM ends a running capture on
     its own after that many seconds and writes its report. It is a safety limit for the
     allocation profile, which holds the JIT off until the capture ends.

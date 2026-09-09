@@ -64,6 +64,8 @@ if not (profile and allocprof) then
     get_last_capture = function() return nil end
     get_owner = function() return OWNER_UNKNOWN end
     get_owner_label = function() return OWNER_UNKNOWN end
+    get_setting = function() return 0 end
+    set_setting = function() end
     compute_neighbors = function() return nil end
     return
 end
@@ -143,10 +145,12 @@ local resolve_ready = false
 local fold_override
 local ffi, k32
 
--- MCM capture default, read live from jf_mcm; a console argument still overrides per capture.
-local function get_mcm_number(key, fallback)
-    local cfg = jf_mcm and jf_mcm.cfg
-    return (cfg and tonumber(cfg[key])) or fallback
+-- Session capture settings, anchored to _G so the two chunk generations share one table. Edited from the panel, never persisted.
+local settings = rawget(_G, "__jitprofiler_settings")
+if not settings then
+    settings = { interval = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, top_n = TOP_N,
+                 auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false }
+    rawset(_G, "__jitprofiler_settings", settings)
 end
 
 --- @safety SAFE - each optional FFI step runs under pcall; any failure leaves resolve_ready false and owners unknown.
@@ -208,12 +212,9 @@ local function compute_pct(value, total) return total > 0 and (100.0 * value / t
 -- Append a ranked top-N view; opts.owned resolves each row's mod and honours the report fold.
 local function build_view(lines, title, map, total, fmt, opts)
     local owned = opts and opts.owned
-    local top_n = get_mcm_number("top_n", TOP_N)
+    local top_n = settings.top_n
     local fold = fold_override
-    if fold == nil then
-        local cfg = jf_mcm and jf_mcm.cfg
-        fold = (cfg and cfg.fold) and true or false
-    end
+    if fold == nil then fold = settings.fold and true or false end
     lines[#lines + 1] = ""
     lines[#lines + 1] = "-- " .. title .. " " .. string.rep("-", math.max(2, 68 - #title))
     local entries = sort_entries(map)
@@ -320,10 +321,10 @@ function start_cpu(interval_ms, depth)
     if cpu.active then log("JitProfiler/cpu: already running -- JitProfiler.stop_cpu() first."); return end
     if alloc.capturing then log("JitProfiler/cpu: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
     cpu.stacks, cpu.state, cpu.total, cpu.nstacks, cpu.dropped = {}, {}, 0, 0, 0
-    cpu.iv = math.floor(tonumber(interval_ms) or get_mcm_number("interval", CPU_INTERVAL_MS)); if cpu.iv < 1 then cpu.iv = 1 end
-    cpu.depth = math.floor(tonumber(depth) or get_mcm_number("depth", DEFAULT_STACK_DEPTH)); if cpu.depth < 1 then cpu.depth = 1 end
+    cpu.iv = math.floor(tonumber(interval_ms) or settings.interval); if cpu.iv < 1 then cpu.iv = 1 end
+    cpu.depth = math.floor(tonumber(depth) or settings.depth); if cpu.depth < 1 then cpu.depth = 1 end
     cpu.t0 = get_time_ms()
-    cpu.limit = get_mcm_number("duration", 0)
+    cpu.limit = settings.duration
     cpu.active = true
     profile.start("i" .. tostring(cpu.iv), collect_cpu_sample)
     log("JitProfiler/cpu: sampling ON (every %d ms, depth %d). JIT stays on; play, then JitProfiler.stop_cpu().", cpu.iv, cpu.depth)
@@ -453,14 +454,14 @@ end
 function start_alloc(depth)
     if alloc.capturing then log("JitProfiler/alloc: already running -- JitProfiler.stop_alloc() first."); return end
     if cpu.active then log("JitProfiler/alloc: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
-    alloc.depth = math.floor(tonumber(depth) or get_mcm_number("depth", DEFAULT_STACK_DEPTH)); if alloc.depth < 2 then alloc.depth = 2 end
+    alloc.depth = math.floor(tonumber(depth) or settings.depth); if alloc.depth < 2 then alloc.depth = 2 end
     alloc.t0 = get_time_ms()
-    alloc.limit = get_mcm_number("duration", 0)
+    alloc.limit = settings.duration
     alloc.snap_t0 = alloc.t0
     alloc.snap_n = 0
     alloc.jit_was_on = is_jit_on()
     if jit then jit.flush(); jit.off() end
-    alloc.snap_pct = get_mcm_number("auto_snap", AUTO_SNAP_PCT)
+    alloc.snap_pct = settings.auto_snap
     allocprof.start(alloc.depth)
     alloc.capturing = true
     log("JitProfiler/alloc: ON (JIT off, exact bytes, depth %d). Play, then JitProfiler.stop_alloc(). Auto-dumps at %d%% full.", alloc.depth, alloc.snap_pct)
@@ -517,6 +518,16 @@ end
 --- @return table|nil the retained aggregate for kind "cpu" or "mem", or nil when nothing was captured yet.
 function get_last_capture(kind)
     return last_capture[kind]
+end
+
+--- @return number|boolean the current session value for a capture setting.
+function get_setting(key)
+    return settings[key]
+end
+
+--- Store a session capture setting edited from the panel; never persisted.
+function set_setting(key, value)
+    settings[key] = value
 end
 
 --- @return string the owner (mod / modded exes / anomaly / engine / unknown) for a view key, resolved through the script it names.
