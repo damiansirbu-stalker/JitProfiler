@@ -5,6 +5,7 @@ local ImGuiTableFlags, ImGuiSelectableFlags = ImGuiTableFlags, ImGuiSelectableFl
 local vector2, fcolor, bit = vector2, fcolor, bit
 local rawget, rawset = rawget, rawset
 local pairs, math, table = pairs, math, table
+local floor = math.floor
 local format, RegisterScriptCallback = string.format, RegisterScriptCallback
 
 local WINDOW_W = 640
@@ -15,12 +16,14 @@ local BAR_W    = 80
 local TOP_NEIGHBORS = 8
 local BYTES_PER_MB  = 1048576
 local BYTES_PER_KB  = 1024
+local GC_HIGH_PCT   = 15
 local OWNER_ANOMALY = "anomaly"
 local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
 local VIEW_BY_MOD = "by_mod"
 local VIEW_BY_SCRIPT = "by_script_total"
-local VIEW_FRAMEWORK = "framework"
+local SORT_VALUE = "value"
+local SORT_NAME = "name"
 
 local COLOR_BG    = fcolor():set(0.102, 0.102, 0.102, 0.96)
 local COLOR_CREAM = fcolor():set(0.831, 0.788, 0.659, 1.0)
@@ -36,22 +39,22 @@ local TABLE_SIZE  = vector2(0, TABLE_H)
 local BTN_SIZE    = vector2(96, 0)
 local BANNER_POS  = vector2(24, 120)
 
--- The CPU VM-state strip, one colored bar per state code in cap.meta.vmstate.
-local VMSTATE = {
-    { code = "N", label = "native",      color = fcolor():set(0.46, 0.80, 0.46, 1) },
-    { code = "I", label = "interpreter", color = fcolor():set(0.85, 0.80, 0.40, 1) },
-    { code = "C", label = "C / engine",  color = fcolor():set(0.45, 0.65, 0.90, 1) },
-    { code = "G", label = "GC",          color = fcolor():set(0.90, 0.45, 0.45, 1) },
-    { code = "J", label = "JIT compile", color = fcolor():set(0.75, 0.55, 0.85, 1) },
+-- CPU VM-state folded to the three shares that drive a decision; JIT-compile is shown on hover.
+local VMGROUPS = {
+    { label = "Lua",    codes = { "N", "I" }, color = fcolor():set(0.55, 0.80, 0.50, 1),
+      tip = "Lua running, compiled plus interpreted. Low here means the cost is engine C or GC, not your scripts." },
+    { label = "engine", codes = { "C" },      color = fcolor():set(0.45, 0.65, 0.90, 1),
+      tip = "Time in engine C. A script on the stack triggered it; a bar with no script owner is the engine itself." },
+    { label = "GC",     codes = { "G" },      color = fcolor():set(0.90, 0.45, 0.45, 1),
+      tip = "Garbage collection. High here means allocation pressure, so switch to MEM to find the allocator." },
 }
 
--- The selectable views over a retained capture; BY MOD shows Own + Total columns, BY SCRIPT ranks by Total, frame-keyed views drill down.
+-- The selectable views over a retained capture; BY MOD shows Own + Total columns, BY SCRIPT ranks by Total, frame views drill down.
 local VIEWS = {
     { key = VIEW_BY_MOD,    label = "BY MOD",    frame_keyed = false },
     { key = VIEW_BY_SCRIPT, label = "BY SCRIPT", frame_keyed = false },
     { key = "leaf",         label = "BY LEAF",   frame_keyed = true },
     { key = "root",         label = "BY ROOT",   frame_keyed = true },
-    { key = VIEW_FRAMEWORK, label = "FRAMEWORK", frame_keyed = false },
 }
 
 local WF = ImGuiWindowFlags
@@ -64,28 +67,60 @@ local panel_open = false
 local active_tab = KIND_CPU
 local view_index = 1
 local fold_anomaly = false
+local filter_text = ""
+local sort_by = SORT_VALUE
+local sort_asc = false
 local selected_frame = nil
 local selected_neighbors = nil
 local rows_sig, rows_cache
+local mod_colors = {}
 
-local function sort_entries(map)
-    local entries = {}
-    for key, weight in pairs(map) do entries[#entries + 1] = { key, weight } end
-    table.sort(entries, function(left, right) return left[2] > right[2] end)
-    return entries
+-- Stable per-mod colour from a name hash, bright enough to read on the dark background.
+local function get_mod_color(name)
+    local color = mod_colors[name]
+    if color then return color end
+    local hash = 0
+    for i = 1, #name do hash = (hash * 131 + name:byte(i)) % 1000000007 end
+    local red   = 0.55 + (hash % 100) / 100 * 0.45
+    local green = 0.55 + (floor(hash / 100) % 100) / 100 * 0.45
+    local blue  = 0.55 + (floor(hash / 10000) % 100) / 100 * 0.45
+    color = fcolor():set(red, green, blue, 1.0)
+    mod_colors[name] = color
+    return color
 end
 
--- The retained capture is static, so sort and resolve each row's owner once per tab/view/capture, not per frame.
+local function check_filter(key, owner)
+    if filter_text == "" then return true end
+    local needle = filter_text:lower()
+    return (key and key:lower():find(needle, 1, true)) or (owner and owner:lower():find(needle, 1, true)) or false
+end
+
+local function sort_rows(entries)
+    if sort_by == SORT_NAME then
+        table.sort(entries, function(left, right)
+            if sort_asc then return left[1] < right[1] end
+            return left[1] > right[1]
+        end)
+    else
+        table.sort(entries, function(left, right)
+            if sort_asc then return left[2] < right[2] end
+            return left[2] > right[2]
+        end)
+    end
+end
+
+-- The retained capture is static, so sort and resolve each row's owner once per tab/view/sort/capture, not per frame.
 local function get_rows(cap)
     local view = VIEWS[view_index]
-    local sig = active_tab .. ":" .. view_index .. ":" .. (cap.meta.stamp or "?")
+    local sig = active_tab .. ":" .. view_index .. ":" .. sort_by .. ":" .. (sort_asc and "a" or "d") .. ":" .. (cap.meta.stamp or "?")
     if sig == rows_sig then return rows_cache end
-    local entries = sort_entries((view.key == VIEW_BY_MOD) and cap.views.by_mod_total or cap.views[view.key])
+    local entries = {}
+    local map = (view.key == VIEW_BY_MOD) and cap.views.by_mod_total or cap.views[view.key]
+    for key, weight in pairs(map) do entries[#entries + 1] = { key, weight } end
     if view.key ~= VIEW_BY_MOD then
-        for i = 1, #entries do
-            entries[i][3] = (view.key == VIEW_FRAMEWORK) and "-" or JitProfiler.get_owner(entries[i][1])
-        end
+        for i = 1, #entries do entries[i][3] = JitProfiler.get_owner(entries[i][1]) end
     end
+    sort_rows(entries)
     rows_cache, rows_sig = entries, sig
     selected_frame, selected_neighbors = nil, nil
     return entries
@@ -99,8 +134,8 @@ local function format_weight(kind, value)
 end
 
 local function format_clock(sec)
-    local whole = math.floor(sec)
-    return format("%d:%02d", math.floor(whole / 60), whole % 60)
+    local whole = floor(sec)
+    return format("%d:%02d", floor(whole / 60), whole % 60)
 end
 
 -- Fixed-width bar with the percent as text beside it, so the number sits on the dark background at a consistent spot.
@@ -108,6 +143,19 @@ local function render_bar(pct)
     ImGui.ProgressBar(pct / 100, BAR_SIZE, "")
     ImGui.SameLine()
     ImGui.Text(format("%.1f%%", pct))
+end
+
+-- A clickable column header; the name column sorts by name, the rest by value, and a second click flips direction.
+local function render_sort_header(label, dim)
+    ImGui.TableNextColumn()
+    if ImGui.Button(label .. "##h") then
+        if sort_by == dim then sort_asc = not sort_asc else sort_by, sort_asc = dim, false end
+    end
+end
+
+local function render_tooltip(cap, key, owner, weight)
+    if not ImGui.IsItemHovered() then return end
+    ImGui.SetTooltip(format("%s\n%s\n%s", key, owner, format_weight(cap.kind, weight)))
 end
 
 local function select_frame(cap, key)
@@ -161,12 +209,16 @@ end
 local function render_bymod_row(cap, entry, own_map)
     local owner, total_weight = entry[1], entry[2]
     if fold_anomaly and owner == OWNER_ANOMALY then return end
+    if not check_filter(owner, owner) then return end
     local total = cap.total
     local own_pct = total > 0 and 100 * (own_map[owner] or 0) / total or 0
     local total_pct = total > 0 and 100 * total_weight / total or 0
     ImGui.TableNextRow()
     ImGui.TableNextColumn()
+    ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
     ImGui.Text(owner)
+    ImGui.PopStyleColor(1)
+    render_tooltip(cap, owner, owner, total_weight)
     ImGui.TableNextColumn()
     ImGui.Text(format("%.1f%%", own_pct))
     ImGui.TableNextColumn()
@@ -183,7 +235,11 @@ local function render_bymod_table(cap)
     ImGui.TableSetupColumn("Own %", 0, 80, 0)
     ImGui.TableSetupColumn("Total %", 0, 150, 0)
     ImGui.TableSetupColumn("Value", 0, 90, 0)
-    ImGui.TableHeadersRow()
+    ImGui.TableNextRow()
+    render_sort_header("Mod", SORT_NAME)
+    render_sort_header("Own %", SORT_VALUE)
+    render_sort_header("Total %", SORT_VALUE)
+    render_sort_header("Value", SORT_VALUE)
     for i = 1, #entries do render_bymod_row(cap, entries[i], own_map) end
     ImGui.EndTable()
 end
@@ -191,6 +247,7 @@ end
 local function render_view_row(cap, view, entry)
     local key, weight, owner = entry[1], entry[2], entry[3]
     if fold_anomaly and owner == OWNER_ANOMALY then return end
+    if not check_filter(key, owner) then return end
     local pct = cap.total > 0 and 100 * weight / cap.total or 0
     ImGui.TableNextRow()
     ImGui.TableNextColumn()
@@ -202,8 +259,11 @@ local function render_view_row(cap, view, entry)
     else
         ImGui.Text(key)
     end
+    render_tooltip(cap, key, owner, weight)
     ImGui.TableNextColumn()
+    ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
     ImGui.Text(JitProfiler.get_owner_label(key))
+    ImGui.PopStyleColor(1)
     ImGui.TableNextColumn()
     render_bar(pct)
     ImGui.TableNextColumn()
@@ -217,7 +277,11 @@ local function render_view_table(cap, view)
     ImGui.TableSetupColumn("Mod", 0, 150, 0)
     ImGui.TableSetupColumn("%", 0, 140, 0)
     ImGui.TableSetupColumn("Value", 0, 90, 0)
-    ImGui.TableHeadersRow()
+    ImGui.TableNextRow()
+    render_sort_header("Frame", SORT_NAME)
+    render_sort_header("Mod", SORT_NAME)
+    render_sort_header("%", SORT_VALUE)
+    render_sort_header("Value", SORT_VALUE)
     for i = 1, #entries do render_view_row(cap, view, entries[i]) end
     ImGui.EndTable()
 end
@@ -248,16 +312,22 @@ local function render_neighbors(cap)
     render_ranked("CALLEES (toward leaf)", selected_neighbors.callees, cap.total)
 end
 
-local function render_vmstate_bar(state, weight, total)
-    if weight <= 0 then return end
+local function get_group_share(vm, group)
+    local sum = 0
+    for i = 1, #group.codes do sum = sum + (vm[group.codes[i]] or 0) end
+    return sum
+end
+
+local function render_vmstate_bar(group, weight, total)
     local frac = weight / total
-    ImGui.PushStyleColor(ImGuiCol.Text, state.color)
-    ImGui.Text(format("%-12s", state.label))
+    ImGui.PushStyleColor(ImGuiCol.Text, group.color)
+    ImGui.Text(format("%-8s", group.label))
     ImGui.PopStyleColor(1)
-    ImGui.SameLine(120)
-    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, state.color)
+    ImGui.SameLine(90)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, group.color)
     ImGui.ProgressBar(frac, VMBAR_SIZE, "")
     ImGui.PopStyleColor(1)
+    if ImGui.IsItemHovered() then ImGui.SetTooltip(group.tip) end
     ImGui.SameLine()
     ImGui.Text(format("%.1f%%", frac * 100))
 end
@@ -266,9 +336,17 @@ local function render_vmstate(cap)
     local vm = cap.meta.vmstate
     local total = cap.total
     if not vm or total <= 0 then return end
-    for i = 1, #VMSTATE do
-        render_vmstate_bar(VMSTATE[i], vm[VMSTATE[i].code] or 0, total)
+    local pct = {}
+    for i = 1, #VMGROUPS do
+        render_vmstate_bar(VMGROUPS[i], get_group_share(vm, VMGROUPS[i]), total)
+        pct[i] = 100 * get_group_share(vm, VMGROUPS[i]) / total
     end
+    local jit_pct = 100 * (vm["J"] or 0) / total
+    local verdict = format("%.0f%% Lua   %.0f%% engine   %.0f%% GC   (JIT compile %.0f%%)", pct[1], pct[2], pct[3], jit_pct)
+    if pct[3] >= GC_HIGH_PCT then verdict = verdict .. "   <- high GC, run MEM" end
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+    ImGui.Text(verdict)
+    ImGui.PopStyleColor(1)
 end
 
 local function render_controls()
@@ -284,6 +362,11 @@ local function render_controls()
     local _, new_fold = ImGui.Checkbox("Fold anomaly", fold_anomaly)
     if new_fold ~= fold_anomaly then JitProfiler.set_setting("fold", new_fold) end
     fold_anomaly = new_fold
+    ImGui.SameLine(0, 20)
+    ImGui.Text("Filter")
+    ImGui.SameLine()
+    local new_filter = ImGui.InputText("##filter", filter_text, 64)
+    if new_filter then filter_text = new_filter end
     ImGui.Spacing()
     for i = 1, #VIEWS do
         render_view_selector(i)
@@ -294,7 +377,7 @@ end
 -- One integer capture setting as a whole-number slider, written back to the session state on change.
 local function render_int_setting(key, label, min, max)
     local changed, value = ImGui.SliderFloat(label, JitProfiler.get_setting(key), min, max, "%.0f")
-    if changed then JitProfiler.set_setting(key, math.floor(value + 0.5)) end
+    if changed then JitProfiler.set_setting(key, floor(value + 0.5)) end
 end
 
 local function render_settings()
@@ -313,7 +396,8 @@ local function render_tab(cap)
         ImGui.Text(format("%s allocated   ~%.0fs   %s", format_weight(KIND_MEM, cap.total), cap.meta.duration or 0, cap.meta.stamp or "?"))
     end
     local at_cap = (cap.total > 0) and 100 * (cap.meta.clipped or 0) / cap.total or 0
-    ImGui.Text(format("stack depth %d / cap %d   %.1f%% at cap", cap.meta.max_depth or 0, cap.meta.depth or 0, at_cap))
+    ImGui.Text(format("stack depth %d / cap %d   %.1f%% at cap",
+        cap.meta.max_depth or 0, cap.meta.depth or 0, at_cap))
     if cap.kind == KIND_CPU then
         ImGui.Separator()
         render_vmstate(cap)
