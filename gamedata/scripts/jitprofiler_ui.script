@@ -263,6 +263,10 @@ local function render_controls()
     render_capture_button(KIND_CPU)
     ImGui.SameLine()
     render_capture_button(KIND_MEM)
+    if JitProfiler.is_mem_active() then
+        ImGui.SameLine()
+        if ImGui.Button("Snapshot##snap", BTN_SIZE) then JitProfiler.write_snapshot() end
+    end
     ImGui.SameLine(0, 20)
     local _, new_fold = ImGui.Checkbox("Fold anomaly", fold_anomaly)
     fold_anomaly = new_fold
