@@ -18,9 +18,19 @@ JitProfiler: https://github.com/damiansirbu-stalker/JitProfiler
 TestZone: https://github.com/damiansirbu-stalker/TestZone
 xlibs: https://www.moddb.com/mods/stalker-anomaly/addons/xlibs-1001
 
-JitProfiler samples the running Lua stack on the engine's own timer.
-The JIT stays on, overhead is near-zero, and one capture covers the whole modpack with no wrapping and no module selection.
-It reads the primitives backported into the demonized engine, jit.profile for CPU and jit.allocprof for allocation, and attributes cost to the mod that owns each hot script.
+JitProfiler finds which of your mods eats performance, and it finds it for you.
+It samples the running Lua stack on the engine's own timer, so the overhead is near-zero, the JIT stays on, and one capture covers the whole modpack at once.
+There is nothing to select and nothing to suspect in advance.
+Point it at the slow scene and read the ranking.
+
+It profiles CPU and memory.
+CPU sampling shows where the Lua time goes.
+Memory profiling shows which code generates the garbage the collector must clear, the real source of Anomaly's stutter and something script-side profilers cannot measure.
+
+The sampler and the allocation counter are native code in the modded exe, beneath the script layer.
+That native core is my own work in xray-monolith. I backported the timer sampler and wrote the allocation profiler, so JitProfiler runs from the C up, one author for the whole stack.
+That is why the cost stays near-zero, and why it reaches the allocator and the VM state a script tool cannot.
+Every capture names the mod that owns each hot script, so you get a mod name to act on.
 
 Requirements:
 Anomaly 1.5.3
@@ -63,7 +73,7 @@ jitprofiler_mem_<timestamp>.txt     ranked text report
 jitprofiler_mem_<timestamp>.folded  flamegraph
 ```
 
-The report opens with a VM-state split: how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.
+The report opens with a VM-state split, showing how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.
 The GC share flags allocation pressure without a separate run.
 Then the ranked views: BY MOD self (where the code ran) and total (every mod on the stack), BY LEAF (hot function), BY SCRIPT, BY ROOT (outermost frame driving the cost), and framework vs handlers.
 The allocation report carries the same views by bytes.
@@ -71,7 +81,9 @@ The allocation report carries the same views by bytes.
 On a stock exe without the primitives, the commands print which build is needed and do nothing else.
 
 Credits:
-LuaJIT and jit.profile by Mike Pall. Profiler primitives backported into the demonized modded exes (themrdemonized/xray-monolith).
+The engine core is my own contribution to xray-monolith, the jit.profile sampler backported from LuaJIT into the modded exe plus the jit.allocprof allocation profiler on top of it.
+LuaJIT and jit.profile are by Mike Pall.
+Built for the themrdemonized modded exes (themrdemonized/xray-monolith).
 
 Usage and License:
 - Modpacks: allowed and encouraged. Keep the readme and license files.

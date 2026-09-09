@@ -261,6 +261,13 @@ local alloc
 
 local cpu = { stacks = {}, state = {}, total = 0, nstacks = 0, dropped = 0, iv = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, t0 = 0, active = false }
 
+-- The most recent CPU and allocation capture, retained for the in-game panel to render.
+local last_capture = rawget(_G, "__jitprofiler_capture")
+if not last_capture then
+    last_capture = { cpu = nil, mem = nil }
+    rawset(_G, "__jitprofiler_capture", last_capture)
+end
+
 local function collect_cpu_sample(thread, count, vmstate)
     local stack = profile.dumpstack(thread, "", cpu.depth)
     if stack and stack ~= "" then
@@ -336,6 +343,12 @@ function stop_cpu()
     local stamp = get_timestamp()
     local report_path = write_lines(build_log_path("jitprofiler_cpu_" .. stamp .. ".txt"), lines)
     local folded_path = write_folded("cpu_" .. stamp, cpu.stacks)
+    last_capture.cpu = {
+        kind = "cpu", by_stack = cpu.stacks,
+        views = { leaf = leaf, by_script = by_script, root = root, framework = framework, by_mod = by_mod, by_mod_total = by_mod_total },
+        total = total,
+        meta = { samples = total, interval = cpu.iv, duration = duration_sec, stamp = stamp, vmstate = cpu.state, dropped = cpu.dropped },
+    }
     log("JitProfiler/cpu: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     show_tip("JitProfiler CPU report written")
 end
@@ -384,6 +397,14 @@ local function write_alloc_report(stacks, duration_sec, suffix, title)
     local stamp = get_timestamp()
     local report_path = write_lines(build_log_path("jitprofiler_mem" .. suffix .. "_" .. stamp .. ".txt"), lines)
     local folded_path = write_folded("mem" .. suffix .. "_" .. stamp, by_stack)
+    if suffix == "" then
+        last_capture.mem = {
+            kind = "mem", by_stack = by_stack,
+            views = { leaf = leaf, by_script = by_script, root = root, framework = framework, by_mod = by_mod, by_mod_total = by_mod_total },
+            total = total,
+            meta = { bytes = total, duration = duration_sec, stamp = stamp, stacks = get_key_count(by_stack), dropped = dropped },
+        }
+    end
     log("JitProfiler/alloc: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     return total
 end
@@ -447,6 +468,11 @@ end
 function set_fold_anomaly(on)
     fold_anomaly = on and true or false
     log("JitProfiler: fold anomaly = %s (applies to the next report)", tostring(fold_anomaly))
+end
+
+--- @return table|nil the retained aggregate for kind "cpu" or "mem", or nil when nothing was captured yet.
+function get_last_capture(kind)
+    return last_capture[kind]
 end
 
 function on_game_start()

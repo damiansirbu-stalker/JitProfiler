@@ -1,0 +1,69 @@
+--- jitprofiler_ui: in-game ImGui panel over the last JitProfiler capture; opens from the ImGui menu bar.
+local ImGui, JitProfiler = ImGui, JitProfiler
+local vector2, ImGuiCond, ImGuiWindowFlags = vector2, ImGuiCond, ImGuiWindowFlags
+local pairs, format, table = pairs, string.format, table
+local RegisterScriptCallback = RegisterScriptCallback
+
+local WINDOW_W = 560
+local WINDOW_H = 420
+
+local panel_open = false
+local registered = false
+
+-- Sort a weight map into a descending list of {key, weight}.
+local function sort_entries(map)
+    local entries = {}
+    for key, weight in pairs(map) do entries[#entries + 1] = { key, weight } end
+    table.sort(entries, function(left, right) return left[2] > right[2] end)
+    return entries
+end
+
+local function render_capture(cap)
+    ImGui.Text(format("CPU   %d samples   ~%.0f s   %s", cap.meta.samples, cap.meta.duration, cap.meta.stamp))
+    ImGui.Separator()
+    local total = cap.total
+    local entries = sort_entries(cap.views.by_mod)
+    for i = 1, #entries do
+        local percent = total > 0 and (100.0 * entries[i][2] / total) or 0
+        ImGui.Text(format("%7.2f%%   %s", percent, entries[i][1]))
+    end
+end
+
+local function render_panel()
+    if not panel_open then return end
+    ImGui.SetNextWindowSize(vector2(WINDOW_W, WINDOW_H), ImGuiCond.FirstUseEver)
+    local expanded, open = ImGui.Begin("JitProfiler", panel_open, ImGuiWindowFlags.None)
+    panel_open = open
+    if expanded then
+        local cap = JitProfiler.get_last_capture and JitProfiler.get_last_capture("cpu")
+        if cap then
+            render_capture(cap)
+        else
+            ImGui.Text("No capture yet.  Run start_cpu() then stop_cpu().")
+        end
+    end
+    ImGui.End()
+end
+
+local function render_menu()
+    if ImGui.BeginMenu("JitProfiler") then
+        local _
+        _, panel_open = ImGui.MenuItem("Panel", nil, panel_open, true)
+        ImGui.EndMenu()
+    end
+end
+
+-- Register the panel with the ImGui menu bar once its Groups API is present.
+local function try_init()
+    if registered then return true end
+    if not (ImGui and ImGui.Groups and ImGui.Groups.Widget) then return false end
+    local widget = ImGui.Groups.Widget
+    widget("MenuBar", render_menu)
+    widget("Main", render_panel)
+    registered = true
+    return true
+end
+
+function on_game_start()
+    RegisterScriptCallback("actor_on_update", try_init)
+end
