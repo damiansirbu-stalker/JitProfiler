@@ -34,6 +34,11 @@ The resolve runs at report time.
 Each result caches per script.
 An absent FFI degrades every owner to unknown.
 
+The owner is always the mod that wins the load order.
+When several mods override one script, only the MO2 priority winner sits on disk behind the virtual path, and that is the copy the game loaded and ran.
+The resolver opens the virtual path and MO2 hands back the winner's real file, so the name matches what executed. Priority stays MO2's to decide.
+Verified on real 3-way conflicts: visual_memory_manager resolved to the active winner over a lower-priority override and a disabled one, and the same held for xr_combat_ignore and zz_item_artefact.
+
 ## Metrics and views
 Per unit, JitProfiler reports the pprof flat and cum metrics.
 SELF is the flat metric, exclusive, the leaf frame when the sample fired.

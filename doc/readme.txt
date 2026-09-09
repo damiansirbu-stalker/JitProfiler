@@ -31,6 +31,8 @@ The sampler and the allocation counter are native code in the modded exe, beneat
 That native core is my own work in xray-monolith. I backported the timer sampler and wrote the allocation profiler, so JitProfiler runs from the C up, one author for the whole stack.
 That is why the cost stays near-zero, and why it reaches the allocator and the VM state a script tool cannot.
 Every capture names the mod that owns each hot script, so you get a mod name to act on.
+When several mods override the same script, JitProfiler names the one that wins your load order, the copy the game actually loaded and ran.
+It reads this from the MO2 virtual filesystem, so the name always matches what executed.
 
 Requirements:
 Anomaly 1.5.3
