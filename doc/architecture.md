@@ -27,23 +27,31 @@ Attribution is instruction-granular.
 
 ## Per-mod attribution
 GAMMA merges every mod into one `gamedata/scripts`, so the script path never names the mod.
-The resolver reads each hot script's real backing path through MO2/USVFS, over `GetFinalPathNameByHandle` on a LuaJIT FFI handle.
-It takes the `mods\<X>` folder as the owner.
-A loose base file or a packed `db0` reads as anomaly.
-The resolve runs at report time.
-Each result caches per script.
-An absent FFI degrades every owner to unknown.
+For a mod's own file the resolver reads its real backing path through MO2/USVFS, over `GetFinalPathNameByHandle` on a LuaJIT FFI handle, and takes the `mods\<X>` folder as the owner.
+A file no mod owns is classified by name against two baked sets, regenerated from the unpacked Anomaly tree and the demonized overlay.
+
+| name matches | owner |
+|---|---|
+| stock Anomaly set | anomaly |
+| demonized overlay set | modded exes |
+| neither set | unknown |
+
+Because the sets ship with the mod, the classification is install-independent and never assumes an unresolved script is vanilla.
+A `[C]` frame reads as engine.
+The resolve runs at report time and caches per script. An absent FFI drops a mod's own file to unknown, and the name sets still classify the rest.
 
 The owner is always the mod that wins the load order.
 When several mods override one script, only the MO2 priority winner sits on disk behind the virtual path, and that is the copy the game loaded and ran.
-The resolver opens the virtual path and MO2 hands back the winner's real file, so the name matches what executed. Priority stays MO2's to decide.
+A mod serving a stock-named script is tagged as an override of that file, so a near-identical copy is not misread as the mod's own cost.
 Verified on real 3-way conflicts: visual_memory_manager resolved to the active winner over a lower-priority override and a disabled one, and the same held for xr_combat_ignore and zz_item_artefact.
 
 ## Metrics and views
-Per unit, JitProfiler reports the pprof flat and cum metrics.
-SELF is the flat metric, exclusive, the leaf frame when the sample fired.
-TOTAL is the cum metric, inclusive, any frame on the stack counted once per sample, so it does not sum to 100%.
-The views are BY MOD self and total, BY LEAF, BY SCRIPT, BY ROOT, FRAMEWORK vs handlers, and the VM-state split for CPU.
+Per unit, JitProfiler reports two numbers, Own and Total.
+Total is inclusive. A mod or script gets credit whenever it appears anywhere in a sample, counted once per sample. It does not sum to 100%.
+Own is exclusive, the innermost frame when the sample fired.
+Total is the primary ranking, per mod and per script, and Own is the second column.
+The views are BY MOD, BY SCRIPT, BY LEAF, BY ROOT, FRAMEWORK vs handlers, and the VM-state split for CPU.
+Each capture also reports the deepest stack it saw and how often a stack reached the depth cap, so an under-counted Total is visible.
 The fold toggle drops the anomaly baseline from the owned views.
 
 ## Output

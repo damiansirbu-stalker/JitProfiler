@@ -19,6 +19,7 @@ local OWNER_ANOMALY = "anomaly"
 local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
 local VIEW_BY_MOD = "by_mod"
+local VIEW_BY_SCRIPT = "by_script_total"
 local VIEW_FRAMEWORK = "framework"
 
 local COLOR_BG    = fcolor():set(0.102, 0.102, 0.102, 0.96)
@@ -44,11 +45,11 @@ local VMSTATE = {
     { code = "J", label = "JIT compile", color = fcolor():set(0.75, 0.55, 0.85, 1) },
 }
 
--- The selectable views over a retained capture; BY MOD joins the self and total maps, frame-keyed views drill down.
+-- The selectable views over a retained capture; BY MOD shows Own + Total columns, BY SCRIPT ranks by Total, frame-keyed views drill down.
 local VIEWS = {
     { key = VIEW_BY_MOD,    label = "BY MOD",    frame_keyed = false },
+    { key = VIEW_BY_SCRIPT, label = "BY SCRIPT", frame_keyed = false },
     { key = "leaf",         label = "BY LEAF",   frame_keyed = true },
-    { key = "by_script",    label = "BY SCRIPT", frame_keyed = false },
     { key = "root",         label = "BY ROOT",   frame_keyed = true },
     { key = VIEW_FRAMEWORK, label = "FRAMEWORK", frame_keyed = false },
 }
@@ -79,7 +80,7 @@ local function get_rows(cap)
     local view = VIEWS[view_index]
     local sig = active_tab .. ":" .. view_index .. ":" .. (cap.meta.stamp or "?")
     if sig == rows_sig then return rows_cache end
-    local entries = sort_entries((view.key == VIEW_BY_MOD) and cap.views.by_mod or cap.views[view.key])
+    local entries = sort_entries((view.key == VIEW_BY_MOD) and cap.views.by_mod_total or cap.views[view.key])
     if view.key ~= VIEW_BY_MOD then
         for i = 1, #entries do
             entries[i][3] = (view.key == VIEW_FRAMEWORK) and "-" or JitProfiler.get_owner(entries[i][1])
@@ -157,33 +158,33 @@ local function render_view_selector(i)
     if sel then ImGui.PopStyleColor(1) end
 end
 
-local function render_bymod_row(cap, entry, total_map)
-    local owner, weight = entry[1], entry[2]
+local function render_bymod_row(cap, entry, own_map)
+    local owner, total_weight = entry[1], entry[2]
     if fold_anomaly and owner == OWNER_ANOMALY then return end
     local total = cap.total
-    local self_pct = total > 0 and 100 * weight / total or 0
-    local total_pct = total > 0 and 100 * (total_map[owner] or 0) / total or 0
+    local own_pct = total > 0 and 100 * (own_map[owner] or 0) / total or 0
+    local total_pct = total > 0 and 100 * total_weight / total or 0
     ImGui.TableNextRow()
     ImGui.TableNextColumn()
     ImGui.Text(owner)
     ImGui.TableNextColumn()
-    render_bar(self_pct)
+    ImGui.Text(format("%.1f%%", own_pct))
     ImGui.TableNextColumn()
-    ImGui.Text(format("%.1f%%", total_pct))
+    render_bar(total_pct)
     ImGui.TableNextColumn()
-    ImGui.Text(format_weight(cap.kind, weight))
+    ImGui.Text(format_weight(cap.kind, total_weight))
 end
 
 local function render_bymod_table(cap)
-    local total_map = cap.views.by_mod_total
+    local own_map = cap.views.by_mod
     local entries = get_rows(cap)
     if not ImGui.BeginTable("jf_bymod", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Mod", 0, 180, 0)
-    ImGui.TableSetupColumn("Self %", 0, 150, 0)
-    ImGui.TableSetupColumn("Total %", 0, 80, 0)
+    ImGui.TableSetupColumn("Own %", 0, 80, 0)
+    ImGui.TableSetupColumn("Total %", 0, 150, 0)
     ImGui.TableSetupColumn("Value", 0, 90, 0)
     ImGui.TableHeadersRow()
-    for i = 1, #entries do render_bymod_row(cap, entries[i], total_map) end
+    for i = 1, #entries do render_bymod_row(cap, entries[i], own_map) end
     ImGui.EndTable()
 end
 
@@ -202,7 +203,7 @@ local function render_view_row(cap, view, entry)
         ImGui.Text(key)
     end
     ImGui.TableNextColumn()
-    ImGui.Text(owner)
+    ImGui.Text(JitProfiler.get_owner_label(key))
     ImGui.TableNextColumn()
     render_bar(pct)
     ImGui.TableNextColumn()
@@ -291,10 +292,14 @@ end
 local function render_tab(cap)
     if cap.kind == KIND_CPU then
         ImGui.Text(format("%d samples   ~%.0fs   %s", cap.meta.samples or 0, cap.meta.duration or 0, cap.meta.stamp or "?"))
-        ImGui.Separator()
-        render_vmstate(cap)
     else
         ImGui.Text(format("%s allocated   ~%.0fs   %s", format_weight(KIND_MEM, cap.total), cap.meta.duration or 0, cap.meta.stamp or "?"))
+    end
+    local at_cap = (cap.total > 0) and 100 * (cap.meta.clipped or 0) / cap.total or 0
+    ImGui.Text(format("stack depth %d / cap %d   %.1f%% at cap", cap.meta.max_depth or 0, cap.meta.depth or 0, at_cap))
+    if cap.kind == KIND_CPU then
+        ImGui.Separator()
+        render_vmstate(cap)
     end
     ImGui.Separator()
     render_table(cap)

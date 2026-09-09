@@ -1,7 +1,7 @@
 --- JitProfiler: engine-native LuaJIT sampling profiler over jit.profile/jit.allocprof; usage in doc/readme.txt.
 
 local CPU_INTERVAL_MS     = 5
-local DEFAULT_STACK_DEPTH = 12
+local DEFAULT_STACK_DEPTH = 64
 local CPU_MAX_STACKS      = 50000
 local TOP_N               = 40
 local AUTO_SNAP_PCT       = 90
@@ -10,6 +10,8 @@ local BYTES_PER_MB        = 1048576
 local BYTES_PER_KB        = 1024
 local OWNER_ANOMALY       = "anomaly"
 local OWNER_UNKNOWN       = "unknown"
+local OWNER_ENGINE        = "engine"
+local OWNER_MODDED        = "modded exes"
 local OWNER_MOD           = "mod: "
 
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
@@ -61,6 +63,7 @@ if not (profile and allocprof) then
     get_capture_progress = function() return nil end
     get_last_capture = function() return nil end
     get_owner = function() return OWNER_UNKNOWN end
+    get_owner_label = function() return OWNER_UNKNOWN end
     compute_neighbors = function() return nil end
     return
 end
@@ -173,17 +176,21 @@ local function resolve_real_path(vpath)
     return (written > 0) and ffi.string(buffer) or nil
 end
 
---- @safety SAFE - pcall contains any FFI error to a nil path, so an unresolved script is just unknown.
+-- Owner from the winning mod (real backing path), then the baked name sets: demonized overlay, stock Anomaly, else unknown.
+--- @safety SAFE - pcall contains any FFI error to a nil path, so an unresolved script falls through to the name sets.
 local function get_script_owner(script_file)
     if not script_file or script_file == "" then return OWNER_UNKNOWN end
     if origin_cache[script_file] then return origin_cache[script_file] end
-    local owner = OWNER_UNKNOWN
+    local owner
     if resolve_ready then
         local ok, real = pcall(resolve_real_path, getFS():update_path("$game_scripts$", script_file))
-        if ok then
-            local mod = real and real:match("[\\/][Mm][Oo][Dd][Ss][\\/]([^\\/]+)")
-            owner = mod and (OWNER_MOD .. mod) or OWNER_ANOMALY
-        end
+        local mod = ok and real and real:match("[\\/][Mm][Oo][Dd][Ss][\\/]([^\\/]+)")
+        if mod then owner = OWNER_MOD .. mod end
+    end
+    if not owner then
+        if jitprofiler_names.is_modded_exes(script_file) then owner = OWNER_MODDED
+        elseif jitprofiler_names.is_vanilla(script_file) then owner = OWNER_ANOMALY
+        else owner = OWNER_UNKNOWN end
     end
     origin_cache[script_file] = owner
     return owner
@@ -219,7 +226,7 @@ local function build_view(lines, title, map, total, fmt, opts)
             skipped = skipped + 1
         else
             local percent = compute_pct(weight, total)
-            local label = owner and format("%-18s %s", owner, key) or key
+            local label = owner and format("%-18s %s", get_owner_label(key), key) or key
             lines[#lines + 1] = format("  %6.2f%% %s %12s  %s", percent, build_bar(percent), fmt(weight), label)
             shown = shown + 1
         end
@@ -229,33 +236,44 @@ local function build_view(lines, title, map, total, fmt, opts)
     if skipped > 0 then lines[#lines + 1] = format("  (%d anomaly rows folded)", skipped) end
 end
 
--- Build the leaf, by-script, root, framework, and per-mod self/total maps from a stack map.
-local function compute_views(by_stack)
-    local leaf, by_script, root, framework, by_mod, by_mod_total = {}, {}, {}, {}, {}, {}
-    for stack, weight in pairs(by_stack) do
-        local first, last = nil, nil
-        local seen = {}
-        for frame in string.gmatch(stack, "[^;]+") do
-            if not first then first = frame end
-            last = frame
-            seen[get_owner(frame)] = true
-        end
-        first, last = first or "?", last or "?"
-        local leaf_key = get_short_frame(first)
-        local script_file = get_frame_script(first)
-        local owner = get_script_owner(script_file)
-        leaf[leaf_key]              = (leaf[leaf_key] or 0) + weight
-        by_script[script_file]      = (by_script[script_file] or 0) + weight
-        root[get_short_frame(last)] = (root[get_short_frame(last)] or 0) + weight
-        by_mod[owner]               = (by_mod[owner] or 0) + weight
-        for owner_key in pairs(seen) do
-            by_mod_total[owner_key] = (by_mod_total[owner_key] or 0) + weight
-        end
-        local bucket = DISPATCH[get_leaf_name(first)] and "[framework] callback dispatch"
-                       or "[handlers] mod + engine work"
-        framework[bucket]           = (framework[bucket] or 0) + weight
+-- Split the leaf frame into callback-dispatch overhead versus real handler work.
+local function get_stack_bucket(leaf_frame)
+    return DISPATCH[get_leaf_name(leaf_frame)] and "[framework] callback dispatch" or "[handlers] mod + engine work"
+end
+
+-- Credit one captured stack into every ranked map and update the depth stats.
+local function collect_stack(v, stack, weight, cap)
+    local first, last, nframes = nil, nil, 0
+    local seen_owner, seen_script = {}, {}
+    for frame in string.gmatch(stack, "[^;]+") do
+        if not first then first = frame end
+        last = frame
+        nframes = nframes + 1
+        seen_owner[get_owner(frame)] = true
+        seen_script[get_frame_script(frame)] = true
     end
-    return leaf, by_script, root, framework, by_mod, by_mod_total
+    first, last = first or "?", last or "?"
+    local leaf_key = get_short_frame(first)
+    local script_file = get_frame_script(first)
+    local owner = get_script_owner(script_file)
+    v.leaf[leaf_key]              = (v.leaf[leaf_key] or 0) + weight
+    v.by_script[script_file]      = (v.by_script[script_file] or 0) + weight
+    v.root[get_short_frame(last)] = (v.root[get_short_frame(last)] or 0) + weight
+    v.by_mod[owner]               = (v.by_mod[owner] or 0) + weight
+    for owner_key in pairs(seen_owner) do v.by_mod_total[owner_key] = (v.by_mod_total[owner_key] or 0) + weight end
+    for script_key in pairs(seen_script) do v.by_script_total[script_key] = (v.by_script_total[script_key] or 0) + weight end
+    if nframes > v.max_depth then v.max_depth = nframes end
+    if cap and nframes >= cap then v.clipped = v.clipped + weight end
+    local bucket = get_stack_bucket(first)
+    v.framework[bucket]           = (v.framework[bucket] or 0) + weight
+end
+
+-- Own (innermost, exclusive) and Total (any frame, inclusive) maps per mod and per script, plus root, framework, and depth stats.
+local function compute_views(by_stack, cap)
+    local v = { leaf = {}, by_script = {}, root = {}, framework = {},
+                by_mod = {}, by_mod_total = {}, by_script_total = {}, max_depth = 0, clipped = 0 }
+    for stack, weight in pairs(by_stack) do collect_stack(v, stack, weight, cap) end
+    return v
 end
 
 local function get_key_count(map)
@@ -317,10 +335,10 @@ function stop_cpu()
     cpu.active = false
     profile.stop()
     local total = cpu.total
-    local leaf, by_script, root, framework, by_mod, by_mod_total = compute_views(cpu.stacks)
+    local v = compute_views(cpu.stacks, cpu.depth)
     local duration_sec = (get_time_ms() - cpu.t0) / 1000.0
-    local top_root = sort_entries(root)[1]
-    local top_leaf = sort_entries(leaf)[1]
+    local top_root = sort_entries(v.root)[1]
+    local top_leaf = sort_entries(v.leaf)[1]
     local RULE = "================================================================================"
     local stacks_note = cpu.dropped > 0
         and format("%d stacks (capped; +%s beyond the ceiling not attributed)", cpu.nstacks, format_count(cpu.dropped))
@@ -344,25 +362,27 @@ function stop_cpu()
         end
     end
     lines[#lines + 1] = "    (N is a floor: phase-1 sampling under-counts JIT-compiled traces)"
+    lines[#lines + 1] = format("  STACK DEPTH   deepest %d, cap %d, %.1f%% of samples reached the cap",
+        v.max_depth, cpu.depth, compute_pct(v.clipped, total))
     lines[#lines + 1] = ""
     if top_root then lines[#lines + 1] = format("  TOP DRIVER  %5.1f%%   %s", compute_pct(top_root[2], total), top_root[1]) end
     if top_leaf then lines[#lines + 1] = format("  TOP LEAF    %5.1f%%   %s", compute_pct(top_leaf[2], total), top_leaf[1]) end
 
-    build_view(lines, "BY MOD (self)   where the CPU ran (exclusive)", by_mod, total, format_count)
-    build_view(lines, "BY MOD (total)   mod anywhere on the stack (inclusive; does not sum to 100%)", by_mod_total, total, format_count)
-    build_view(lines, "BY LEAF   the hot function", leaf, total, format_count, { owned = true })
-    build_view(lines, "BY SCRIPT   summed per script file", by_script, total, format_count, { owned = true })
-    build_view(lines, "BY ROOT   the outermost frame -- what drives the cost", root, total, format_count, { owned = true })
-    build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", framework, total, format_count)
+    build_view(lines, "BY MOD   Total (on the stack anywhere; does not sum to 100%)", v.by_mod_total, total, format_count)
+    build_view(lines, "BY MOD   Own (innermost frame only)", v.by_mod, total, format_count)
+    build_view(lines, "BY SCRIPT   Total (on the stack anywhere)", v.by_script_total, total, format_count, { owned = true })
+    build_view(lines, "BY SCRIPT   Own (innermost frame only)", v.by_script, total, format_count, { owned = true })
+    build_view(lines, "BY LEAF   the hot function (Own)", v.leaf, total, format_count, { owned = true })
+    build_view(lines, "BY ROOT   the outermost frame", v.root, total, format_count, { owned = true })
+    build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", v.framework, total, format_count)
 
     local stamp = get_timestamp()
     local report_path = write_lines(build_log_path("jitprofiler_cpu_" .. stamp .. ".txt"), lines)
     local folded_path = write_folded("cpu_" .. stamp, cpu.stacks)
     last_capture.cpu = {
-        kind = "cpu", by_stack = cpu.stacks,
-        views = { leaf = leaf, by_script = by_script, root = root, framework = framework, by_mod = by_mod, by_mod_total = by_mod_total },
-        total = total,
-        meta = { samples = total, interval = cpu.iv, duration = duration_sec, stamp = stamp, vmstate = cpu.state, dropped = cpu.dropped },
+        kind = "cpu", by_stack = cpu.stacks, views = v, total = total,
+        meta = { samples = total, interval = cpu.iv, duration = duration_sec, stamp = stamp,
+                 vmstate = cpu.state, dropped = cpu.dropped, depth = cpu.depth, max_depth = v.max_depth, clipped = v.clipped },
     }
     log("JitProfiler/cpu: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     show_tip("JitProfiler CPU report written")
@@ -377,14 +397,14 @@ local function write_alloc_report(stacks, duration_sec, suffix, title)
     local total, dropped = 0, tonumber(stacks.dropped) or 0
     local by_stack = {}
     for i = 1, #stacks do by_stack[stacks[i].key] = stacks[i].bytes; total = total + stacks[i].bytes end
-    local leaf, by_script, root, framework, by_mod, by_mod_total = compute_views(by_stack)
+    local v = compute_views(by_stack, alloc.depth)
     local drains, pending = tonumber(stacks.drains) or 0, tonumber(stacks.pending) or 0
     if drains == 0 or #stacks == 0 then
         log("!JitProfiler/alloc: capture problem -- drains=%.0f  seen=%s  pending=%s  entries=%d",
             drains, format_bytes(tonumber(stacks.seen) or 0), format_bytes(pending), #stacks)
     end
-    local top_root = sort_entries(root)[1]
-    local top_leaf = sort_entries(leaf)[1]
+    local top_root = sort_entries(v.root)[1]
+    local top_leaf = sort_entries(v.leaf)[1]
     local RULE = "================================================================================"
     local lines = {
         RULE,
@@ -401,23 +421,25 @@ local function write_alloc_report(stacks, duration_sec, suffix, title)
     end
     if top_leaf then lines[#lines + 1] = format("  TOP ALLOCATOR  %5.1f%%   %s", compute_pct(top_leaf[2], total), top_leaf[1]) end
     if top_root then lines[#lines + 1] = format("  TOP DRIVER     %5.1f%%   %s", compute_pct(top_root[2], total), top_root[1]) end
+    lines[#lines + 1] = format("  STACK DEPTH    deepest %d, cap %d, %.1f%% of bytes reached the cap",
+        v.max_depth, alloc.depth, compute_pct(v.clipped, total))
 
-    build_view(lines, "BY MOD (self)   where the bytes were allocated (exclusive)", by_mod, total, format_bytes)
-    build_view(lines, "BY MOD (total)   mod anywhere on the stack (inclusive; does not sum to 100%)", by_mod_total, total, format_bytes)
-    build_view(lines, "BY LEAF   who allocates", leaf, total, format_bytes, { owned = true })
-    build_view(lines, "BY SCRIPT   summed per script file", by_script, total, format_bytes, { owned = true })
-    build_view(lines, "BY ROOT   the outermost frame -- what drives it", root, total, format_bytes, { owned = true })
-    build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", framework, total, format_bytes)
+    build_view(lines, "BY MOD   Total (on the stack anywhere; does not sum to 100%)", v.by_mod_total, total, format_bytes)
+    build_view(lines, "BY MOD   Own (innermost frame only)", v.by_mod, total, format_bytes)
+    build_view(lines, "BY SCRIPT   Total (on the stack anywhere)", v.by_script_total, total, format_bytes, { owned = true })
+    build_view(lines, "BY SCRIPT   Own (innermost frame only)", v.by_script, total, format_bytes, { owned = true })
+    build_view(lines, "BY LEAF   who allocates (Own)", v.leaf, total, format_bytes, { owned = true })
+    build_view(lines, "BY ROOT   the outermost frame", v.root, total, format_bytes, { owned = true })
+    build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", v.framework, total, format_bytes)
 
     local stamp = get_timestamp()
     local report_path = write_lines(build_log_path("jitprofiler_mem" .. suffix .. "_" .. stamp .. ".txt"), lines)
     local folded_path = write_folded("mem" .. suffix .. "_" .. stamp, by_stack)
     if suffix == "" then
         last_capture.mem = {
-            kind = "mem", by_stack = by_stack,
-            views = { leaf = leaf, by_script = by_script, root = root, framework = framework, by_mod = by_mod, by_mod_total = by_mod_total },
-            total = total,
-            meta = { bytes = total, duration = duration_sec, stamp = stamp, stacks = get_key_count(by_stack), dropped = dropped },
+            kind = "mem", by_stack = by_stack, views = v, total = total,
+            meta = { bytes = total, duration = duration_sec, stamp = stamp, stacks = get_key_count(by_stack),
+                     dropped = dropped, depth = alloc.depth, max_depth = v.max_depth, clipped = v.clipped },
         }
     end
     log("JitProfiler/alloc: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
@@ -497,10 +519,22 @@ function get_last_capture(kind)
     return last_capture[kind]
 end
 
---- @return string the owning mod (or anomaly/unknown) for a view key, resolved through the script it names.
+--- @return string the owner (mod / modded exes / anomaly / engine / unknown) for a view key, resolved through the script it names.
 function get_owner(key)
+    if key:find("%[C%]") then return OWNER_ENGINE end
     local script_file = key:match("([%w_%.%-]+%.script)") or key:match("([%w_%.%-]+%.lua)")
     return script_file and get_script_owner(script_file) or OWNER_UNKNOWN
+end
+
+--- @return string the owner with an "(override: <file>)" note when a mod serves a vanilla-named script, for row display only.
+function get_owner_label(key)
+    local owner = get_owner(key)
+    if owner:sub(1, #OWNER_MOD) ~= OWNER_MOD then return owner end
+    local script_file = key:match("([%w_%.%-]+%.script)") or key:match("([%w_%.%-]+%.lua)")
+    if script_file and jitprofiler_names.is_vanilla(script_file) then
+        return owner .. " (override: " .. script_file .. ")"
+    end
+    return owner
 end
 
 function is_cpu_active()

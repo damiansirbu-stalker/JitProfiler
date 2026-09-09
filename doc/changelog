@@ -17,7 +17,12 @@ next
     with a message naming what to install, and the boot log records the detected build.
   - ASCII text reports to appdata/logs/ with an at-a-glance summary header.
   - Timestamped filenames: each capture writes a uniquely named report and flamegraph, so successive runs no longer overwrite.
-  - Per-mod attribution: every view names the mod that owns each hot script, resolved live from its real path, with a self column for where the code ran and a total column for every mod on the stack.
+  - Per-mod attribution now ranks by Total, the mod or script anywhere on the stack, with an
+    Own column for the innermost frame. A mod serving a stock-named file is flagged as an
+    override, so a near-identical copy is not misread as its own cost. Frames from the demonized
+    engine overlay and from engine C are labelled apart from a mod's own scripts.
+  - Each capture reports the deepest stack it recorded and how often a stack reached the depth
+    cap, so an under-counted Total shows at a glance.
   - Configurable capture: start_cpu(interval_ms, depth) and start_alloc(depth) tune the sample rate and stack depth, with sane defaults otherwise.
   - Fold toggle: drops the vanilla baseline so only mod cost shows.
   - Capability guard: on an exe without the profiler primitives the commands no-op with a message naming the build needed.
