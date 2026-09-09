@@ -58,6 +58,7 @@ if not (profile and allocprof) then
     start_cpu, stop_cpu, start_alloc, stop_alloc, write_snapshot, set_fold_anomaly = log_absent, log_absent, log_absent, log_absent, log_absent, log_absent
     is_cpu_active = function() return false end
     is_mem_active = function() return false end
+    get_capture_progress = function() return nil end
     get_last_capture = function() return nil end
     get_owner = function() return OWNER_UNKNOWN end
     compute_neighbors = function() return nil end
@@ -507,6 +508,13 @@ end
 
 function is_mem_active()
     return alloc.capturing
+end
+
+--- @return table|nil { elapsed, limit } in seconds for the running capture, or nil when idle.
+function get_capture_progress()
+    if cpu.active then return { elapsed = (get_time_ms() - cpu.t0) / 1000, limit = cpu.limit } end
+    if alloc.capturing then return { elapsed = (get_time_ms() - alloc.t0) / 1000, limit = alloc.limit } end
+    return nil
 end
 
 -- One stack's contribution to a frame's neighbors: callers stand toward root (i+1), callees toward leaf (i-1).
