@@ -57,7 +57,7 @@ local profile   = find_module("jit.profile")
 local allocprof = find_module("jit.allocprof")
 if not (profile and allocprof) then
     local function log_absent() log("!JitProfiler: this exe lacks jit.profile/jit.allocprof; it needs a demonized profiler build.") end
-    start_cpu, stop_cpu, start_alloc, stop_alloc, write_snapshot, set_fold_anomaly = log_absent, log_absent, log_absent, log_absent, log_absent, log_absent
+    start_cpu, stop_cpu, start_alloc, stop_alloc, write_snapshot, set_fold_baseline = log_absent, log_absent, log_absent, log_absent, log_absent, log_absent
     is_cpu_active = function() return false end
     is_mem_active = function() return false end
     get_capture_progress = function() return nil end
@@ -223,7 +223,7 @@ local function build_view(lines, title, map, total, fmt, opts)
         if shown >= top_n then break end
         local key, weight = entries[i][1], entries[i][2]
         local owner = owned and get_owner(key) or nil
-        if owned and fold and owner == OWNER_ANOMALY then
+        if owned and fold and owner and owner:sub(1, #OWNER_MOD) ~= OWNER_MOD then
             skipped = skipped + 1
         else
             local percent = compute_pct(weight, total)
@@ -234,7 +234,7 @@ local function build_view(lines, title, map, total, fmt, opts)
     end
     local rest = #entries - shown - skipped
     if rest > 0 then lines[#lines + 1] = format("  ... %d more rows", rest) end
-    if skipped > 0 then lines[#lines + 1] = format("  (%d anomaly rows folded)", skipped) end
+    if skipped > 0 then lines[#lines + 1] = format("  (%d baseline rows folded)", skipped) end
 end
 
 -- Split the leaf frame into callback-dispatch overhead versus real handler work.
@@ -509,10 +509,10 @@ local function update_capture()
     if alloc.limit > 0 and (get_time_ms() - alloc.t0) / 1000 >= alloc.limit then stop_alloc(); return end
     if allocprof.usage() >= alloc.snap_pct then write_snapshot(true) end
 end
--- Fold the anomaly baseline rows out of the owned views, read at the next report.
-function set_fold_anomaly(on)
+-- Fold the baseline rows (anomaly, modded exes, engine, unknown) out of the owned views, read at the next report.
+function set_fold_baseline(on)
     fold_override = on and true or false
-    log("JitProfiler: fold anomaly = %s (applies to the next report)", tostring(fold_override))
+    log("JitProfiler: fold baseline = %s (applies to the next report)", tostring(fold_override))
 end
 
 --- @return table|nil the retained aggregate for kind "cpu" or "mem", or nil when nothing was captured yet.
@@ -593,5 +593,5 @@ function on_game_start()
     rawset(_G, "__jitprofiler_started", true)
     RegisterScriptCallback("actor_on_update", update_capture)
     log("JitProfiler ready.  CPU: start_cpu([ms],[depth]) / stop_cpu().  ALLOC: start_alloc([depth]) / write_snapshot() / stop_alloc().")
-    log("JitProfiler: set_fold_anomaly(true) folds the vanilla baseline.  Reports go to appdata/logs/jitprofiler_*.")
+    log("JitProfiler: set_fold_baseline(true) folds the vanilla baseline.  Reports go to appdata/logs/jitprofiler_*.")
 end

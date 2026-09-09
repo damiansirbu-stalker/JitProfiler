@@ -16,7 +16,7 @@ local BAR_W    = 80
 local TOP_NEIGHBORS = 8
 local BYTES_PER_MB  = 1048576
 local BYTES_PER_KB  = 1024
-local OWNER_ANOMALY = "anomaly"
+local OWNER_MOD = "mod: "
 local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
 local VIEW_BY_MOD = "by_mod"
@@ -69,7 +69,7 @@ local SPAN_ALL = ImGuiSelectableFlags.SpanAllColumns
 local panel_open = false
 local active_tab = KIND_CPU
 local view_index = 1
-local fold_anomaly = false
+local fold_baseline = false
 local filter_text = ""
 local sort_by = SORT_VALUE
 local sort_asc = false
@@ -209,9 +209,14 @@ local function render_view_selector(i)
     if not sel then ImGui.PopStyleColor(1) end
 end
 
+-- A baseline owner is anything not resolved to a specific mod: anomaly, modded exes, engine, unknown.
+local function is_baseline(owner)
+    return owner:sub(1, #OWNER_MOD) ~= OWNER_MOD
+end
+
 local function render_bymod_row(cap, entry, own_map)
     local owner, total_weight = entry[1], entry[2]
-    if fold_anomaly and owner == OWNER_ANOMALY then return end
+    if fold_baseline and is_baseline(owner) then return end
     if not check_filter(owner, owner) then return end
     local total = cap.total
     local own_pct = total > 0 and 100 * (own_map[owner] or 0) / total or 0
@@ -249,7 +254,7 @@ end
 
 local function render_view_row(cap, view, entry)
     local key, weight, owner = entry[1], entry[2], entry[3]
-    if fold_anomaly and owner == OWNER_ANOMALY then return end
+    if fold_baseline and is_baseline(owner) then return end
     if not check_filter(key, owner) then return end
     local pct = cap.total > 0 and 100 * weight / cap.total or 0
     ImGui.TableNextRow()
@@ -340,7 +345,7 @@ local function render_vmstate(cap)
 end
 
 local function render_controls()
-    fold_anomaly = JitProfiler.get_setting("fold")
+    fold_baseline = JitProfiler.get_setting("fold")
     render_capture_button(KIND_CPU)
     ImGui.SameLine()
     render_capture_button(KIND_MEM)
@@ -349,9 +354,9 @@ local function render_controls()
         if ImGui.Button("Snapshot##snap", BTN_SIZE) then JitProfiler.write_snapshot() end
     end
     ImGui.SameLine(0, 20)
-    local _, new_fold = ImGui.Checkbox("Fold anomaly", fold_anomaly)
-    if new_fold ~= fold_anomaly then JitProfiler.set_setting("fold", new_fold) end
-    fold_anomaly = new_fold
+    local _, new_fold = ImGui.Checkbox("Fold baseline", fold_baseline)
+    if new_fold ~= fold_baseline then JitProfiler.set_setting("fold", new_fold) end
+    fold_baseline = new_fold
     ImGui.SameLine(0, 20)
     ImGui.Text("Filter")
     ImGui.SameLine()

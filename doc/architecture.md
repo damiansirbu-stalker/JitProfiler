@@ -56,7 +56,7 @@ Own is exclusive, the innermost frame when the sample fired.
 Total is the primary ranking, per mod and per script, and Own is the second column.
 The views are BY MOD, BY SCRIPT, BY LEAF, BY ROOT, FRAMEWORK vs handlers, and the VM-state split for CPU.
 Each capture also reports the deepest stack it saw and how often a stack reached the depth cap, so an under-counted Total is visible.
-The fold toggle drops the anomaly baseline from the owned views.
+The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) from the owned views, leaving only mods.
 
 ## Output
 `appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
@@ -74,7 +74,7 @@ Each column header sorts, and a filter box narrows the rows by name or mod.
 Each row's owner is tinted by a stable per-mod colour, and hovering a row shows the full frame with its exact value.
 A selected frame ranks its callers and callees from the retained leaf-first stacks through `compute_neighbors`.
 The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile), each explained on hover.
-A fold-anomaly toggle drops the vanilla baseline from the view.
+A fold-baseline toggle drops the non-mod rows, leaving only mods.
 A corner banner in the Unique group renders every frame and shows only while a capture runs.
 The chunk executes twice, so registration and the retained capture anchor to `_G` singletons.
 

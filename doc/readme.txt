@@ -62,9 +62,9 @@ run_string JitProfiler.stop_alloc()
 ```
 Allocation counts exact bytes, so only depth is tunable, as start_alloc(20). A long session auto-writes numbered snapshots. Call JitProfiler.write_snapshot() to force one.
 
-Fold the vanilla baseline to focus on your mods:
+Fold the baseline (anomaly, modded exes, engine) to focus on your mods:
 ```
-run_string JitProfiler.set_fold_anomaly(true)
+run_string JitProfiler.set_fold_baseline(true)
 ```
 Then stop as usual.
 
