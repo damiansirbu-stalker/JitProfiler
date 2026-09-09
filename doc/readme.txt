@@ -1,5 +1,5 @@
 JitProfiler: engine-native LuaJIT sampling profiler for STALKER Anomaly, by Damian
-Version: next (xlibs 1.8.3)
+Version: next (xlibs 1.8.3, demonized 20250908)
 GitHub: https://github.com/damiansirbu-stalker/JitProfiler
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
 Report bugs and suggestions at https://github.com/damiansirbu-stalker/JitProfiler/issues
@@ -65,6 +65,12 @@ run_string JitProfiler.set_fold_anomaly(true)
 ```
 Then stop as usual.
 
+In-game panel:
+An ImGui panel does the same without the console. Open the ImGui overlay (default F11), then pick JitProfiler in the menu bar.
+Start or stop the CPU or memory capture from the panel.
+Switch the ranked view (by mod, leaf, script, root, framework), and select a row to read the callers and callees of that frame.
+A small corner banner shows while a capture runs.
+
 The reports go to appdata/logs/:
 ```
 jitprofiler_cpu_<timestamp>.txt     ranked text report
@@ -77,6 +83,10 @@ The report opens with a VM-state split, showing how much Lua time is JIT-compile
 The GC share flags allocation pressure without a separate run.
 Then the ranked views: BY MOD self (where the code ran) and total (every mod on the stack), BY LEAF (hot function), BY SCRIPT, BY ROOT (outermost frame driving the cost), and framework vs handlers.
 The allocation report carries the same views by bytes.
+
+The .folded files open at speedscope.app, a flamegraph viewer that runs in your browser.
+Drag a .folded file onto the page to explore the stacks.
+Nothing is uploaded, and the file never leaves your machine.
 
 On a stock exe without the primitives, the commands print which build is needed and do nothing else.
 

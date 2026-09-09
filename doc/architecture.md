@@ -47,6 +47,17 @@ The fold toggle drops the anomaly baseline from the owned views.
 The timestamp is the capture's wall-clock time, so successive runs never overwrite.
 Both are ASCII only.
 
+## In-game panel
+`jitprofiler_ui.script` registers a panel and a menu entry through the base ImGui Groups API.
+The panel draws in the Main group, so it appears while the F11 ImGui overlay is open.
+It reads the retained last CPU and last allocation capture through `get_last_capture`.
+The panel drives each capture from its own button, and the two never run at once.
+A view selector switches the table between by mod, leaf, script, root, and framework.
+A selected frame ranks its callers and callees from the retained leaf-first stacks through `compute_neighbors`.
+The CPU tab adds the VM-state strip. A fold-anomaly toggle drops the vanilla baseline from the view.
+A corner banner in the Unique group renders every frame and shows only while a capture runs.
+The chunk executes twice, so registration and the retained capture anchor to `_G` singletons.
+
 ## Limitations
 - Inclusive counts and the flamegraph are bounded by the captured stack depth. A frame beyond the depth is not counted, so raise depth to trace deeper.
 - The CPU JIT-compiled share is a floor, because phase-1 sampling is interpreter-anchored and under-counts JIT traces.

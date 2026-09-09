@@ -1,8 +1,14 @@
 next
-  Summary: first release, CPU and allocation sampling profiler
+  Summary: first release, CPU and allocation sampling profiler, in-game panel
 
   - CPU profile via jit.profile: VM-state split (JIT / interpreter / C / GC / compiler) and ranked views by leaf, script, root, and framework-vs-handlers, plus a SpeedScope flamegraph.
   - Allocation profile via jit.allocprof: per-function bytes with the same views.
+  - Added an in-game panel, opened from the ImGui menu bar under JitProfiler. It carries
+    Start and Stop buttons for the CPU and allocation captures, a ranked table for each view
+    (by mod, leaf, script, root, framework) with a bar per row, a caller and callee breakdown
+    for any selected frame, and the CPU VM-state strip. A corner banner marks a live capture.
+  - Added a compatibility gate: without xlibs or a modded-exes build the mod stops at load
+    with a message naming what to install, and the boot log records the detected build.
   - ASCII text reports to appdata/logs/ with an at-a-glance summary header.
   - Timestamped filenames: each capture writes a uniquely named report and flamegraph, so successive runs no longer overwrite.
   - Per-mod attribution: every view names the mod that owns each hot script, resolved live from its real path, with a self column for where the code ran and a total column for every mod on the stack.
