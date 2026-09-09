@@ -61,6 +61,8 @@ The chunk executes twice, so registration and the retained capture anchor to `_G
 ## MCM
 `jf_mcm.script` adds a flat MCM page through `xmcm.create_config` for the capture defaults.
 `JitProfiler.script` reads `jf_mcm.cfg` at capture time through `get_mcm_number`.
+An auto-stop duration above 0 ends a running capture from the `update_capture` heartbeat and writes its report.
+A forgotten allocation capture then never holds the JIT off past the limit.
 A console argument to `start_cpu` or `start_alloc` still overrides the matching value for that call.
 The console `set_fold_anomaly` overrides the report fold for the session, and otherwise the MCM fold applies.
 The page also carries the shared version and compatibility footer from `_jitprofiler_deps.platform_functor`.

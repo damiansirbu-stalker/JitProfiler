@@ -35,6 +35,12 @@
     <string id="ui_mcm_jf_auto_snap_desc">
         <text>During an allocation capture the profiler writes a numbered snapshot and keeps going once its table reaches this fraction of capacity, so a long session never overflows the table.</text>
     </string>
+    <string id="ui_mcm_jf_duration">
+        <text>Auto-stop after (seconds, 0 = off)</text>
+    </string>
+    <string id="ui_mcm_jf_duration_desc">
+        <text>Stops a running capture on its own after this many seconds and writes the report. Zero leaves the capture running until you stop it. A safety limit worth setting for the allocation profile, which holds the JIT off for the whole capture.</text>
+    </string>
     <string id="ui_mcm_jf_fold">
         <text>Fold the vanilla baseline in reports</text>
     </string>

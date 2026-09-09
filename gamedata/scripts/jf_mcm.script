@@ -5,6 +5,7 @@ defaults = {
     depth = 12,
     top_n = 40,
     auto_snap = 90,
+    duration = 0,
     fold = false,
 }
 
@@ -51,6 +52,7 @@ function on_mcm_load()
             { id = "depth", type = "track", val = 2, min = 4, max = 32, step = 1, def = 12 },
             { id = "top_n", type = "track", val = 2, min = 10, max = 100, step = 5, def = 40 },
             { id = "auto_snap", type = "track", val = 2, min = 50, max = 99, step = 1, def = 90 },
+            { id = "duration", type = "track", val = 2, min = 0, max = 600, step = 10, def = 0 },
             { id = "fold", type = "check", val = 1, def = false },
             { id = "div_footer", type = "line" },
             { id = "platform", type = "desc", text = "ui_mcm_xmcm_footer",

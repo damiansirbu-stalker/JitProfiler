@@ -74,6 +74,7 @@ A small corner banner shows while a capture runs.
 Configuration (MCM):
 The JitProfiler MCM page holds the capture defaults for the sample interval, stack depth, report rows, auto-snapshot threshold, and the report fold.
 The panel and the console commands use these defaults, and a console argument to start_cpu or start_alloc overrides the matching value for that capture.
+The MCM also has an auto-stop duration. Set it above 0 and a running capture stops itself after that many seconds, a safety limit for the allocation profile.
 
 The reports go to appdata/logs/:
 ```

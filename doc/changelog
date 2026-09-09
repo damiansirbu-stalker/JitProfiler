@@ -10,6 +10,9 @@ next
   - Added an MCM page: capture defaults for the CPU sample interval, stack depth, report rows,
     auto-snapshot threshold, and the report fold, plus a version and compatibility footer. The
     panel and console commands read these defaults, and a console argument overrides one capture.
+  - Added an optional capture auto-stop. A duration set in the MCM ends a running capture on
+    its own after that many seconds and writes its report. It is a safety limit for the
+    allocation profile, which holds the JIT off until the capture ends.
   - Added a compatibility gate: without xlibs or a modded-exes build the mod stops at load
     with a message naming what to install, and the boot log records the detected build.
   - ASCII text reports to appdata/logs/ with an at-a-glance summary header.

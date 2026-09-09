@@ -196,7 +196,7 @@ end
 
 local function compute_pct(value, total) return total > 0 and (100.0 * value / total) or 0 end
 
--- Append a ranked top-N view; opts.owned resolves each row's mod and honours fold_anomaly.
+-- Append a ranked top-N view; opts.owned resolves each row's mod and honours the report fold.
 local function build_view(lines, title, map, total, fmt, opts)
     local owned = opts and opts.owned
     local top_n = get_mcm_number("top_n", TOP_N)
@@ -271,7 +271,7 @@ end
 -- Forward-declared so the CPU and allocation profilers can see each other and stay mutually exclusive.
 local alloc
 
-local cpu = { stacks = {}, state = {}, total = 0, nstacks = 0, dropped = 0, iv = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, t0 = 0, active = false }
+local cpu = { stacks = {}, state = {}, total = 0, nstacks = 0, dropped = 0, iv = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, t0 = 0, limit = 0, active = false }
 
 -- The most recent CPU and allocation capture, retained for the in-game panel to render.
 local last_capture = rawget(_G, "__jitprofiler_capture")
@@ -303,6 +303,7 @@ function start_cpu(interval_ms, depth)
     cpu.iv = math.floor(tonumber(interval_ms) or get_mcm_number("interval", CPU_INTERVAL_MS)); if cpu.iv < 1 then cpu.iv = 1 end
     cpu.depth = math.floor(tonumber(depth) or get_mcm_number("depth", DEFAULT_STACK_DEPTH)); if cpu.depth < 1 then cpu.depth = 1 end
     cpu.t0 = get_time_ms()
+    cpu.limit = get_mcm_number("duration", 0)
     cpu.active = true
     profile.start("i" .. tostring(cpu.iv), collect_cpu_sample)
     log("JitProfiler/cpu: sampling ON (every %d ms, depth %d). JIT stays on; play, then JitProfiler.stop_cpu().", cpu.iv, cpu.depth)
@@ -366,7 +367,7 @@ function stop_cpu()
 end
 
 -- Allocation profiler: exact per-allocation bytes, drained at instruction boundaries with the JIT off.
-alloc = { depth = DEFAULT_STACK_DEPTH, t0 = 0, snap_t0 = 0, snap_n = 0, snap_pct = AUTO_SNAP_PCT,
+alloc = { depth = DEFAULT_STACK_DEPTH, t0 = 0, snap_t0 = 0, snap_n = 0, snap_pct = AUTO_SNAP_PCT, limit = 0,
           capturing = false, jit_was_on = false }
 
 -- Turn a dump result into the text report and folded flamegraph, then write both.
@@ -430,6 +431,7 @@ function start_alloc(depth)
     if cpu.active then log("JitProfiler/alloc: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
     alloc.depth = math.floor(tonumber(depth) or get_mcm_number("depth", DEFAULT_STACK_DEPTH)); if alloc.depth < 2 then alloc.depth = 2 end
     alloc.t0 = get_time_ms()
+    alloc.limit = get_mcm_number("duration", 0)
     alloc.snap_t0 = alloc.t0
     alloc.snap_n = 0
     alloc.jit_was_on = is_jit_on()
@@ -472,9 +474,14 @@ function stop_alloc()
     show_tip("JitProfiler ALLOC report written")
 end
 
--- Per-frame heartbeat that auto-snapshots before a table fills, near-free when idle.
-local function update_alloc()
+-- Per-frame heartbeat: auto-stop a capture at its duration limit, auto-snapshot before the alloc table fills. Near-free when idle.
+local function update_capture()
+    if cpu.active then
+        if cpu.limit > 0 and (get_time_ms() - cpu.t0) / 1000 >= cpu.limit then stop_cpu() end
+        return
+    end
     if not alloc.capturing then return end
+    if alloc.limit > 0 and (get_time_ms() - alloc.t0) / 1000 >= alloc.limit then stop_alloc(); return end
     if allocprof.usage() >= alloc.snap_pct then write_snapshot(true) end
 end
 -- Fold the anomaly baseline rows out of the owned views, read at the next report.
@@ -530,7 +537,7 @@ end
 function on_game_start()
     if rawget(_G, "__jitprofiler_started") then return end
     rawset(_G, "__jitprofiler_started", true)
-    RegisterScriptCallback("actor_on_update", update_alloc)
+    RegisterScriptCallback("actor_on_update", update_capture)
     log("JitProfiler ready.  CPU: start_cpu([ms],[depth]) / stop_cpu().  ALLOC: start_alloc([depth]) / write_snapshot() / stop_alloc().")
     log("JitProfiler: set_fold_anomaly(true) folds the vanilla baseline.  Reports go to appdata/logs/jitprofiler_*.")
 end
