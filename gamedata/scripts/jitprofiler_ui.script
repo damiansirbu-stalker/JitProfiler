@@ -16,7 +16,6 @@ local BAR_W    = 80
 local TOP_NEIGHBORS = 8
 local BYTES_PER_MB  = 1048576
 local BYTES_PER_KB  = 1024
-local GC_HIGH_PCT   = 15
 local OWNER_ANOMALY = "anomaly"
 local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
@@ -39,14 +38,18 @@ local TABLE_SIZE  = vector2(0, TABLE_H)
 local BTN_SIZE    = vector2(96, 0)
 local BANNER_POS  = vector2(24, 120)
 
--- CPU VM-state folded to the three shares that drive a decision; JIT-compile is shown on hover.
-local VMGROUPS = {
-    { label = "Lua",    codes = { "N", "I" }, color = fcolor():set(0.55, 0.80, 0.50, 1),
-      tip = "Lua running, compiled plus interpreted. Low here means the cost is engine C or GC, not your scripts." },
-    { label = "engine", codes = { "C" },      color = fcolor():set(0.45, 0.65, 0.90, 1),
-      tip = "Time in engine C. A script on the stack triggered it; a bar with no script owner is the engine itself." },
-    { label = "GC",     codes = { "G" },      color = fcolor():set(0.90, 0.45, 0.45, 1),
-      tip = "Garbage collection. High here means allocation pressure, so switch to MEM to find the allocator." },
+-- The CPU VM-state strip, one colored bar per state code in cap.meta.vmstate, explained on hover.
+local VMSTATE = {
+    { code = "N", label = "native",      color = fcolor():set(0.46, 0.80, 0.46, 1),
+      tip = "JIT-compiled Lua running as native code." },
+    { code = "I", label = "interpreter", color = fcolor():set(0.85, 0.80, 0.40, 1),
+      tip = "Interpreted Lua running; a high share means the JIT skipped the hot code." },
+    { code = "C", label = "C / engine",  color = fcolor():set(0.45, 0.65, 0.90, 1),
+      tip = "Time in engine C, triggered by whatever script sits on the stack, or the engine itself when no script owns it." },
+    { code = "G", label = "GC",          color = fcolor():set(0.90, 0.45, 0.45, 1),
+      tip = "Garbage collection; a high share means allocation pressure, so switch to MEM to find the allocator." },
+    { code = "J", label = "JIT compile", color = fcolor():set(0.75, 0.55, 0.85, 1),
+      tip = "The JIT compiler working; a spike means trace churn." },
 }
 
 -- The selectable views over a retained capture; BY MOD shows Own + Total columns, BY SCRIPT ranks by Total, frame views drill down.
@@ -186,24 +189,24 @@ end
 
 local function render_tab_button(kind, label)
     local sel = (active_tab == kind)
-    if sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
+    if not sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
     if ImGui.Button(label .. "##tab", BTN_SIZE) and active_tab ~= kind then
         active_tab = kind
         selected_frame = nil
         selected_neighbors = nil
     end
-    if sel then ImGui.PopStyleColor(1) end
+    if not sel then ImGui.PopStyleColor(1) end
 end
 
 local function render_view_selector(i)
     local sel = (view_index == i)
-    if sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
+    if not sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
     if ImGui.Button(VIEWS[i].label .. "##view", VZERO) then
         view_index = i
         selected_frame = nil
         selected_neighbors = nil
     end
-    if sel then ImGui.PopStyleColor(1) end
+    if not sel then ImGui.PopStyleColor(1) end
 end
 
 local function render_bymod_row(cap, entry, own_map)
@@ -312,22 +315,17 @@ local function render_neighbors(cap)
     render_ranked("CALLEES (toward leaf)", selected_neighbors.callees, cap.total)
 end
 
-local function get_group_share(vm, group)
-    local sum = 0
-    for i = 1, #group.codes do sum = sum + (vm[group.codes[i]] or 0) end
-    return sum
-end
-
-local function render_vmstate_bar(group, weight, total)
+local function render_vmstate_bar(state, weight, total)
+    if weight <= 0 then return end
     local frac = weight / total
-    ImGui.PushStyleColor(ImGuiCol.Text, group.color)
-    ImGui.Text(format("%-8s", group.label))
+    ImGui.PushStyleColor(ImGuiCol.Text, state.color)
+    ImGui.Text(format("%-12s", state.label))
     ImGui.PopStyleColor(1)
-    ImGui.SameLine(90)
-    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, group.color)
+    ImGui.SameLine(120)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, state.color)
     ImGui.ProgressBar(frac, VMBAR_SIZE, "")
     ImGui.PopStyleColor(1)
-    if ImGui.IsItemHovered() then ImGui.SetTooltip(group.tip) end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip(state.tip) end
     ImGui.SameLine()
     ImGui.Text(format("%.1f%%", frac * 100))
 end
@@ -336,17 +334,9 @@ local function render_vmstate(cap)
     local vm = cap.meta.vmstate
     local total = cap.total
     if not vm or total <= 0 then return end
-    local pct = {}
-    for i = 1, #VMGROUPS do
-        render_vmstate_bar(VMGROUPS[i], get_group_share(vm, VMGROUPS[i]), total)
-        pct[i] = 100 * get_group_share(vm, VMGROUPS[i]) / total
+    for i = 1, #VMSTATE do
+        render_vmstate_bar(VMSTATE[i], vm[VMSTATE[i].code] or 0, total)
     end
-    local jit_pct = 100 * (vm["J"] or 0) / total
-    local verdict = format("%.0f%% Lua   %.0f%% engine   %.0f%% GC   (JIT compile %.0f%%)", pct[1], pct[2], pct[3], jit_pct)
-    if pct[3] >= GC_HIGH_PCT then verdict = verdict .. "   <- high GC, run MEM" end
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
-    ImGui.Text(verdict)
-    ImGui.PopStyleColor(1)
 end
 
 local function render_controls()

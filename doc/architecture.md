@@ -73,7 +73,7 @@ A view selector switches the table between by mod, by script, by leaf, and by ro
 Each column header sorts, and a filter box narrows the rows by name or mod.
 Each row's owner is tinted by a stable per-mod colour, and hovering a row shows the full frame with its exact value.
 A selected frame ranks its callers and callees from the retained leaf-first stacks through `compute_neighbors`.
-The CPU tab carries a folded VM-state strip (Lua, engine C, and GC) with the JIT-compile share and a one-line summary, each bar explained on hover.
+The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile), each explained on hover.
 A fold-anomaly toggle drops the vanilla baseline from the view.
 A corner banner in the Unique group renders every frame and shows only while a capture runs.
 The chunk executes twice, so registration and the retained capture anchor to `_G` singletons.
