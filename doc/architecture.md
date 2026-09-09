@@ -19,6 +19,10 @@ Overhead stays near-zero.
 One capture covers the whole modpack with no per-call wrapper and no module selection.
 Interval and stack depth are per-capture arguments to `start_cpu`.
 
+The interval is jittered. Each gap is a random draw from an exponential around the mean, so the sample times are never periodic.
+A mod running on a fixed schedule then cannot phase-lock to the sampler, so a capture sees its true share.
+The allocation profiler already draws its sample distance the same way, so both samplers are free of fixed-interval aliasing.
+
 ## Allocation: exact bytes, JIT off
 `jit.allocprof` counts every allocation at the allocator seam.
 It drains the pending bytes to the current stack on each bytecode instruction, with the JIT off for the session.

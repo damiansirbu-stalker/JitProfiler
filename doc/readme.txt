@@ -22,6 +22,7 @@ JitProfiler finds which of your mods eats performance, and it finds it for you.
 It samples the running Lua stack on the engine's own timer, so the overhead is near-zero, the JIT stays on, and one capture covers the whole modpack at once.
 There is nothing to select and nothing to suspect in advance.
 Point it at the slow scene and read the ranking.
+The sampling is jittered, so a mod that runs on a schedule cannot dodge the sampler.
 
 It profiles CPU and memory.
 CPU sampling shows where the Lua time goes.
