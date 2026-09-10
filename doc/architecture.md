@@ -37,18 +37,18 @@ It drains the pending bytes to the current stack on each bytecode instruction, w
 Byte totals are exact.
 Attribution is instruction-granular.
 
-## Scan: targeted instrumentation of one script
+## Instrumentation: self and total over a script set
 The sampler names where the frame sits but cannot enter the engine C beneath a Lua call, so a mod that spends its cost inside an engine routine reads as engine time.
-The scanner closes that gap on one script at a time.
-`start_scan` takes a script name and reads its module table. It replaces every function with a wrapper that times the call through xlibs `xprofiler` over the engine `profile_timer` and counts it.
+Instrumentation closes that gap by wrapping every function of a chosen SET of scripts.
+`add_target` puts a script in the set, `add_mod_targets` adds every script a mod owns, and the set holds many scripts at once.
+`start_scan` wraps every function of every set script with a timer over xlibs `xprofiler` on the engine `profile_timer`, and `stop_scan` restores every original and writes the report.
 The timer spans the whole call, so the engine C the function triggers is inside its number, the axis the JIT-on sampler cannot reach.
-`stop_scan` restores every original and writes the report.
-Each function shows its call count, inclusive ms, and us per call, ranked, with total ms per frame as the budget the raw number reads against.
-The wrapper times only the outermost call through a per-record depth guard.
-A recursive or cyclic self-call deepens the count and banks the whole span once.
-A Lua error propagates uncaught.
-It is opt-in, one script at a time, and mutually exclusive with the CPU and allocation captures, because the wrapper tax and the JIT blinding are the per-call cost the sampler exists to avoid.
-The natural loop runs the sampler first, then scans whichever script the `[C]` rows name.
+Each call pushes a pooled stack frame; on return the frame banks total, its whole span, and self, total minus the time charged by nested wrapped children.
+Self is exclusive and correct across nesting and cross-mod calls; total is inclusive.
+Each function shows its call count, self ms, total ms, and us per call, ranked by self, with self ms per frame as the budget.
+The wrapper runs the original under pcall, so a Lua error still closes the frame and re-raises unchanged, and a recursive function books self correctly while total stays inclusive by definition.
+It is opt-in and mutually exclusive with the CPU and allocation captures, because the wrapper tax and the JIT blinding are the per-call cost the sampler exists to avoid.
+The natural loop runs the sampler first, then instruments whichever scripts the `[C]` rows name.
 
 ## Per-mod attribution
 GAMMA merges every mod into one `gamedata/scripts`, so the script path never names the mod.

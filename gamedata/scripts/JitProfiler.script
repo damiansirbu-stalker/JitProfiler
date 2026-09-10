@@ -20,6 +20,7 @@ local format = string.format
 local getFS, time_global, jit = getFS, time_global, jit
 local RegisterScriptCallback = RegisterScriptCallback
 local rawget, rawset = rawget, rawset
+local error, unpack = error, unpack
 
 -- Per-sample VM state from jit.profile: what the VM was doing when the timer fired.
 local VMSTATE = {
@@ -515,113 +516,177 @@ function stop_alloc()
     show_tip("JitProfiler ALLOC report written")
 end
 
--- The scanner: wrap every function of one script, time each call inclusive of the engine C it triggers, count calls.
-scan = { target = nil, records = {}, saved = {}, t0 = 0, limit = 0, frames = 0, active = false }
+-- Instrumentation: wrap every function of a target-script SET and time each call for self and total, counting calls.
+scan = { set = {}, count = 0, records = {}, saved = {}, wrapped = 0,
+         stack = {}, sp = 0, t0 = 0, limit = 0, frames = 0, active = false }
 
--- Close the outermost call: stop and bank the inclusive time, count every call, forward the return values untouched.
--- Depth reaches 0 only on the outermost exit, so a recursive or cyclic self-call banks the whole span once.
-local function add_timing(rec, ...)
-    rec.depth = rec.depth - 1
-    if rec.depth == 0 then
-        rec.timer:stop()
-        rec.total_us = rec.total_us + rec.timer:get_us()
-    end
-    rec.calls = rec.calls + 1
-    return ...
-end
-
--- One timing wrapper bound to its record and original.
--- The timer runs for the outermost call only, so recursion deepens the count and times the whole span once.
+-- One wrapper: time the call on a pooled stack frame, bank self and total, charge the span to the parent.
+--- @safety SAFE - pcall keeps a wrapped error from skipping the frame close; the error re-raises unchanged (level 0).
 local function build_wrapper(rec, original)
     return function(...)
-        if rec.depth == 0 then rec.timer:reset(); rec.timer:start() end
-        rec.depth = rec.depth + 1
-        return add_timing(rec, original(...))
+        local sp = scan.sp + 1
+        scan.sp = sp
+        local frame = scan.stack[sp]
+        if not frame then frame = { timer = xprofiler.new() }; scan.stack[sp] = frame end
+        frame.rec, frame.child_us = rec, 0
+        frame.timer:reset(); frame.timer:start()
+        local ret = { pcall(original, ...) }
+        frame.timer:stop()
+        local elapsed = frame.timer:get_us()
+        rec.total_us = rec.total_us + elapsed
+        rec.self_us  = rec.self_us + (elapsed - frame.child_us)
+        rec.calls    = rec.calls + 1
+        scan.sp = sp - 1
+        if sp > 1 then
+            local parent = scan.stack[sp - 1]
+            parent.child_us = parent.child_us + elapsed
+        end
+        if ret[1] then return unpack(ret, 2) end
+        error(ret[2], 0)
     end
 end
 
--- Rank the wrapped functions by inclusive time and write the report. Per-frame ms is the budget the raw number reads against.
-local function write_scan_report(records, target, frames, duration_sec)
-    local rows, total_us = {}, 0
-    for key, rec in pairs(records) do
-        if rec.calls > 0 then
-            rows[#rows + 1] = { key = key, calls = rec.calls, us = rec.total_us }
-            total_us = total_us + rec.total_us
+-- Build wrappers over every function of one loaded script, saving originals for restore. Returns the count, 0 if absent or empty.
+local function build_wraps(name)
+    local mod = rawget(_G, name)
+    if type(mod) ~= "table" then return 0 end
+    local saved, count = {}, 0
+    for func_name, value in pairs(mod) do
+        if type(value) == "function" then
+            saved[func_name] = value
+            local info = debug.getinfo(value, "S")
+            local src = (info and info.short_src) or "?"
+            local base = src:match("([%w_%.%-]+%.script)") or src:match("([%w_%.%-]+%.lua)") or (name .. ".script")
+            local key = func_name .. "@" .. base
+            local rec = scan.records[key] or { calls = 0, self_us = 0, total_us = 0 }
+            scan.records[key] = rec
+            mod[func_name] = build_wrapper(rec, value)
+            count = count + 1
         end
     end
-    table.sort(rows, function(left, right) return left.us > right.us end)
-    local ms_total = total_us / 1000.0
-    local per_frame_ms = frames > 0 and (ms_total / frames) or 0
+    if count > 0 then scan.saved[name] = saved; scan.wrapped = scan.wrapped + count end
+    return count
+end
+
+-- Restore one script's original functions.
+local function remove_wraps(name)
+    local saved = scan.saved[name]
+    if not saved then return end
+    local mod = rawget(_G, name)
+    if type(mod) == "table" then
+        for func_name, original in pairs(saved) do mod[func_name] = original end
+    end
+    scan.saved[name] = nil
+end
+
+--- Add a script to the instrumentation set; wraps it live when a capture is running.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function add_target(name)
+    name = tostring(name or ""):gsub("%.script$", "")
+    if name == "" or scan.set[name] then return end
+    scan.set[name] = true
+    scan.count = scan.count + 1
+    if scan.active then build_wraps(name) end
+end
+
+--- Remove a script from the instrumentation set; unwraps it live when a capture is running.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function remove_target(name)
+    name = tostring(name or ""):gsub("%.script$", "")
+    if not scan.set[name] then return end
+    scan.set[name] = nil
+    scan.count = scan.count - 1
+    if scan.active then remove_wraps(name) end
+end
+
+--- Add every loaded script a mod owns to the instrumentation set.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function add_mod_targets(owner)
+    for name in pairs(_G) do
+        local mod = type(name) == "string" and rawget(_G, name)
+        if type(mod) == "table" and get_owner(name .. ".script") == owner then add_target(name) end
+    end
+end
+
+--- @return boolean whether a script is in the instrumentation set.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function is_target(name)
+    return scan.set[tostring(name or ""):gsub("%.script$", "")] == true
+end
+
+--- @return number, number the count of targeted scripts and of wrapped functions.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function get_target_stats()
+    return scan.count, scan.wrapped
+end
+
+-- Rank the wrapped functions by self time and write the report: self, total, calls, and us per call.
+local function write_scan_report(records, frames, duration_sec)
+    local rows, total_self = {}, 0
+    for key, rec in pairs(records) do
+        if rec.calls > 0 then
+            rows[#rows + 1] = { key = key, calls = rec.calls, self_us = rec.self_us, total_us = rec.total_us }
+            total_self = total_self + rec.self_us
+        end
+    end
+    table.sort(rows, function(left, right) return left.self_us > right.self_us end)
+    local ms_self = total_self / 1000.0
+    local per_frame_ms = frames > 0 and (ms_self / frames) or 0
     local total_line = frames > 0
-        and format("  TOTAL   %.1f ms over %d frames   =   %.3f ms per frame", ms_total, frames, per_frame_ms)
-        or  format("  TOTAL   %.1f ms over ~%.0f s   (menu capture, no actor frames)", ms_total, duration_sec)
+        and format("  SELF TOTAL   %.1f ms over %d frames   =   %.3f ms per frame", ms_self, frames, per_frame_ms)
+        or  format("  SELF TOTAL   %.1f ms over ~%.0f s   (menu capture, no actor frames)", ms_self, duration_sec)
     local RULE = "================================================================================"
     local lines = {
         RULE,
-        "  JitProfiler  -  SCAN   targeted instrumentation (wall-clock, engine C included)",
-        format("  modded_exes %s   |   target %s   |   %s   |   ~%.0f s   |   %d frames",
-            tostring(_G.MODDED_EXES_VERSION or "?"), target, get_owner_label(target .. ".script"), duration_sec, frames),
+        "  JitProfiler  -  INSTRUMENTATION   self + total wall-clock (engine C included)",
+        format("  modded_exes %s   |   %d scripts, %d functions   |   ~%.0f s   |   %d frames",
+            tostring(_G.MODDED_EXES_VERSION or "?"), scan.count, scan.wrapped, duration_sec, frames),
         RULE,
         "",
         total_line,
         "",
-        format("  %-46s %8s   %10s   %8s", "FUNCTION", "CALLS", "TOTAL ms", "us/call"),
+        format("  %-46s %8s   %10s   %10s   %8s", "FUNCTION", "CALLS", "SELF ms", "TOTAL ms", "us/call"),
     }
     for i = 1, #rows do
         local row = rows[i]
-        lines[#lines + 1] = format("  %-46s %8d   %10.2f   %8.1f", row.key, row.calls, row.us / 1000.0, row.us / row.calls)
+        lines[#lines + 1] = format("  %-46s %8d   %10.2f   %10.2f   %8.1f",
+            row.key, row.calls, row.self_us / 1000.0, row.total_us / 1000.0, row.self_us / row.calls)
     end
     local stamp = get_timestamp()
-    local report_path = write_lines(build_log_path("jitprofiler_scan_" .. stamp .. ".txt"), lines)
+    local report_path = write_lines(build_log_path("jitprofiler_inst_" .. stamp .. ".txt"), lines)
     last_capture.scan = {
-        kind = "scan", target = target, rows = rows, frames = frames, total_us = total_us,
-        meta = { target = target, frames = frames, duration = duration_sec, stamp = stamp, per_frame_ms = per_frame_ms },
+        kind = "scan", rows = rows, frames = frames, total_us = total_self,
+        meta = { targets = scan.count, wrapped = scan.wrapped, frames = frames,
+                 duration = duration_sec, stamp = stamp, per_frame_ms = per_frame_ms },
     }
-    log("JitProfiler/scan: report -> %s", tostring(report_path))
-    show_tip("JitProfiler SCAN report written")
+    log("JitProfiler/inst: report -> %s", tostring(report_path))
+    show_tip("JitProfiler INSTRUMENTATION report written")
 end
 
---- Arm the scanner on one script: replace every function in its module with a timing wrapper. Play, then stop_scan().
+--- Arm instrumentation: wrap every function of every script in the set. Play, then stop_scan().
 --- @novalidate(code.unused_export, reason:"console command")
 function start_scan(script_name)
-    if scan.active then log("JitProfiler/scan: already running -- JitProfiler.stop_scan() first."); return end
-    if cpu.active then log("JitProfiler/scan: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
-    if alloc.capturing then log("JitProfiler/scan: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
-    local name = tostring(script_name or ""):gsub("%.script$", "")
-    if name == "" then log("JitProfiler/scan: name a script, e.g. JitProfiler.start_scan(\"xr_motivator\")."); return end
-    local mod = _G[name]
-    if type(mod) ~= "table" then log("JitProfiler/scan: '%s' is not a loaded script module.", name); return end
-    local names = {}
-    for func_name, value in pairs(mod) do if type(value) == "function" then names[#names + 1] = func_name end end
-    if #names == 0 then log("JitProfiler/scan: '%s' has no functions to wrap.", name); return end
-    scan.target, scan.records, scan.saved, scan.frames = name, {}, {}, 0
+    if scan.active then log("JitProfiler/inst: already running -- JitProfiler.stop_scan() first."); return end
+    if cpu.active then log("JitProfiler/inst: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
+    if alloc.capturing then log("JitProfiler/inst: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
+    if script_name and tostring(script_name) ~= "" then add_target(script_name) end
+    if scan.count == 0 then log("JitProfiler/inst: the set is empty -- add a script first."); return end
+    scan.records, scan.saved, scan.wrapped, scan.frames, scan.sp = {}, {}, 0, 0, 0
     scan.t0, scan.limit, scan.active = get_time_ms(), settings.duration, true
-    for i = 1, #names do
-        local func_name = names[i]
-        local original = mod[func_name]
-        scan.saved[func_name] = original
-        local info = debug.getinfo(original, "S")
-        local src = (info and info.short_src) or "?"
-        local base = src:match("([%w_%.%-]+%.script)") or src:match("([%w_%.%-]+%.lua)") or src
-        local rec = { calls = 0, total_us = 0, depth = 0, timer = xprofiler.new() }
-        scan.records[func_name .. "@" .. base] = rec
-        mod[func_name] = build_wrapper(rec, original)
-    end
-    log("JitProfiler/scan: wrapping %s (%d functions). Play, then JitProfiler.stop_scan().", name, #names)
-    show_tip("JitProfiler SCAN " .. name)
+    for name in pairs(scan.set) do build_wraps(name) end
+    log("JitProfiler/inst: wrapping %d scripts (%d functions). Play, then JitProfiler.stop_scan().", scan.count, scan.wrapped)
+    show_tip(format("JitProfiler INSTRUMENT %d scripts", scan.count))
 end
 
 --- Restore every wrapped function and write the report.
 --- @novalidate(code.unused_export, reason:"console command")
 function stop_scan()
-    if not scan.active then log("JitProfiler/scan: not running."); return end
+    if not scan.active then log("JitProfiler/inst: not running."); return end
     scan.active = false
-    local mod = rawget(_G, scan.target)
-    if type(mod) == "table" then
-        for func_name, original in pairs(scan.saved) do mod[func_name] = original end
-    end
+    for name in pairs(scan.saved) do remove_wraps(name) end
+    scan.sp = 0
     local duration_sec = (get_time_ms() - scan.t0) / 1000.0
-    write_scan_report(scan.records, scan.target, scan.frames, duration_sec)
+    write_scan_report(scan.records, scan.frames, duration_sec)
 end
 
 --- @novalidate(code.unused_export, reason:"panel control surface, wired in the UI increment")

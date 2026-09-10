@@ -4,7 +4,7 @@ local ImGuiCond, ImGuiWindowFlags, ImGuiCol = ImGuiCond, ImGuiWindowFlags, ImGui
 local ImGuiTableFlags, ImGuiSelectableFlags = ImGuiTableFlags, ImGuiSelectableFlags
 local vector2, fcolor, bit = vector2, fcolor, bit
 local rawget, rawset = rawget, rawset
-local pairs, math, table, tostring = pairs, math, table, tostring
+local pairs, math, table = pairs, math, table
 local floor = math.floor
 local format, RegisterScriptCallback = string.format, RegisterScriptCallback
 
@@ -445,20 +445,23 @@ local function render_scan_row(row)
     ImGui.PopStyleColor(1)
     if ImGui.IsItemHovered() then ImGui.SetTooltip(owner) end
     ImGui.TableNextColumn(); ImGui.Text(format("%d", row.calls))
-    ImGui.TableNextColumn(); ImGui.Text(format("%.2f", row.us / 1000))
-    ImGui.TableNextColumn(); ImGui.Text(format("%.1f", row.calls > 0 and row.us / row.calls or 0))
+    ImGui.TableNextColumn(); ImGui.Text(format("%.2f", row.self_us / 1000))
+    ImGui.TableNextColumn(); ImGui.Text(format("%.2f", row.total_us / 1000))
+    ImGui.TableNextColumn(); ImGui.Text(format("%.1f", row.calls > 0 and row.self_us / row.calls or 0))
 end
 
 -- The scan results: each wrapped function ranked by inclusive ms, owner-colored, with the filter applied.
 local function render_scan_table(cap)
-    if not ImGui.BeginTable("jf_scan", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
-    ImGui.TableSetupColumn("Function", 0, 280, 0)
-    ImGui.TableSetupColumn("Calls", 0, 80, 0)
-    ImGui.TableSetupColumn("Total ms", 0, 90, 0)
-    ImGui.TableSetupColumn("us/call", 0, 80, 0)
+    if not ImGui.BeginTable("jf_scan", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
+    ImGui.TableSetupColumn("Function", 0, 260, 0)
+    ImGui.TableSetupColumn("Calls", 0, 70, 0)
+    ImGui.TableSetupColumn("Self ms", 0, 80, 0)
+    ImGui.TableSetupColumn("Total ms", 0, 80, 0)
+    ImGui.TableSetupColumn("us/call", 0, 70, 0)
     ImGui.TableNextRow()
     ImGui.TableNextColumn(); ImGui.Text("Function")
     ImGui.TableNextColumn(); ImGui.Text("Calls")
+    ImGui.TableNextColumn(); ImGui.Text("Self ms")
     ImGui.TableNextColumn(); ImGui.Text("Total ms")
     ImGui.TableNextColumn(); ImGui.Text("us/call")
     local rows = cap.rows or {}
@@ -467,11 +470,12 @@ local function render_scan_table(cap)
 end
 
 local function render_scan_tab(cap)
-    ImGui.Text(format("target %s   %d frames   %s", tostring(cap.meta.target), cap.meta.frames or 0, cap.meta.stamp or "?"))
+    ImGui.Text(format("%d scripts, %d functions   %d frames   %s",
+        cap.meta.targets or 0, cap.meta.wrapped or 0, cap.meta.frames or 0, cap.meta.stamp or "?"))
     if (cap.meta.frames or 0) > 0 then
-        ImGui.Text(format("%.3f ms per frame   (%.1f ms total)", cap.meta.per_frame_ms or 0, (cap.total_us or 0) / 1000))
+        ImGui.Text(format("%.3f ms self per frame   (%.1f ms self total)", cap.meta.per_frame_ms or 0, (cap.total_us or 0) / 1000))
     else
-        ImGui.Text(format("%.1f ms total over ~%.0fs   (menu capture, no actor frames)", (cap.total_us or 0) / 1000, cap.meta.duration or 0))
+        ImGui.Text(format("%.1f ms self total over ~%.0fs   (menu capture, no actor frames)", (cap.total_us or 0) / 1000, cap.meta.duration or 0))
     end
     ImGui.Separator()
     render_scan_table(cap)
