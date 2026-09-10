@@ -96,7 +96,7 @@ Under INSTRUMENTATION a start and stop control arms the whole set, an overhead l
 The results table ranks each function by self, with total, calls, and us per call.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
 The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile), each explained on hover.
-Number columns render in white JetBrains Mono so digits line up as a column, and each cost bar carries a single-hue amber heat shade by share.
+The panel renders in white JetBrains Mono when the font is present, so digits line up as a column, over a blue accent scheme; each cost bar carries a single-hue blue heat shade by share.
 A fold-baseline toggle drops the non-mod rows, leaving only mods.
 A corner banner in the Unique group renders every frame and shows only while a capture runs.
 The chunk executes twice, so registration and the retained capture anchor to `_G` singletons.

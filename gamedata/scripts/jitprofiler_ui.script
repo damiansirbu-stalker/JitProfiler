@@ -26,13 +26,12 @@ local VIEW_BY_SCRIPT = "by_script_total"
 local SORT_VALUE = "value"
 local SORT_NAME = "name"
 
-local COLOR_BG    = fcolor():set(0.102, 0.102, 0.102, 0.96)
-local COLOR_CREAM = fcolor():set(0.831, 0.788, 0.659, 1.0)
-local COLOR_DIM   = fcolor():set(0.30, 0.28, 0.22, 1.0)
-local COLOR_BAR   = fcolor():set(0.62, 0.56, 0.40, 1.0)
-local COLOR_TEXT  = fcolor():set(0.88, 0.88, 0.85, 1.0)
--- Reused fcolor for the single-hue amber heat ramp, lerped by share in get_heat_color; not red, red is the GC state.
-local HEAT_COLOR  = fcolor():set(0.62, 0.56, 0.40, 1.0)
+local COLOR_BG     = fcolor():set(0.09, 0.10, 0.12, 0.97)
+local COLOR_TEXT   = fcolor():set(0.86, 0.89, 0.94, 1.0)
+local COLOR_DIM    = fcolor():set(0.22, 0.24, 0.28, 1.0)
+local COLOR_ACCENT = fcolor():set(0.26, 0.52, 0.85, 1.0)
+-- Reused fcolor for the single-hue blue heat ramp, lerped dim-to-bright by share in get_heat_color.
+local HEAT_COLOR   = fcolor():set(0.26, 0.52, 0.85, 1.0)
 
 -- Cached sizes so the render path allocates no vectors per frame.
 local VZERO       = vector2(0, 0)
@@ -92,24 +91,24 @@ local mono_ok = false
 local mono_checked = false
 
 -- The panel ships JetBrains Mono for the number columns; probe once inside the frame so an install without it falls back cleanly.
---- @safety SAFE - pcall guards the font probe, so a missing atlas font cannot assert; on failure mono stays off.
+--- @safety SAFE - pcall guards the push; the size probe tells a real jf_mono from the default fallback, so mono stays off when the atlas lacks the font.
 local function init_mono()
     if mono_checked then return end
     mono_checked = true
-    local ok = pcall(ImGui.PushFont, "jf_mono")
-    if ok then ImGui.PopFont(); mono_ok = true end
+    local pushed = pcall(ImGui.PushFont, "jf_mono")
+    if not pushed then return end
+    mono_ok = (ImGui.GetFontSize() or 0) > 17
+    ImGui.PopFont()
 end
 local function push_mono() if mono_ok then ImGui.PushFont("jf_mono") end end
 local function pop_mono() if mono_ok then ImGui.PopFont() end end
 
--- A number cell: white, mono when present, the text pre-justified by the caller so mono digits align as a column.
+-- A number cell in white; the panel-wide mono font (when present) aligns the caller's pre-justified digits as a column.
 local function render_num(text)
     ImGui.TableNextColumn()
-    push_mono()
     ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)
     ImGui.Text(text)
     ImGui.PopStyleColor(1)
-    pop_mono()
 end
 
 -- Stable per-mod colour from a name hash, bright enough to read on the dark background.
@@ -180,7 +179,7 @@ end
 local function get_heat_color(pct)
     local frac = pct / 100
     if frac > 1 then frac = 1 elseif frac < 0 then frac = 0 end
-    HEAT_COLOR:set(0.45 + 0.50 * frac, 0.40 + 0.32 * frac, 0.28 + 0.04 * frac, 1.0)
+    HEAT_COLOR:set(0.20 + 0.20 * frac, 0.34 + 0.34 * frac, 0.50 + 0.45 * frac, 1.0)
     return HEAT_COLOR
 end
 
@@ -309,12 +308,12 @@ local function render_view_row(cap, view, entry)
             select_frame(cap, is_sel and nil or key)
         end
     elseif view.key == VIEW_BY_SCRIPT then
-        ImGui.Text(key)
-        ImGui.SameLine()
         local on = JitProfiler.is_target(key)
-        if ImGui.Button((on and "-inst##" or "+inst##") .. key, VZERO) then
+        if ImGui.Button((on and "-##" or "+##") .. key, VZERO) then
             if on then JitProfiler.remove_target(key) else JitProfiler.add_target(key) end
         end
+        ImGui.SameLine()
+        ImGui.Text(key)
     else
         ImGui.Text(key)
     end
@@ -589,7 +588,23 @@ local function render_sampling_body()
     end
 end
 
--- The INSTRUMENTATION body: start/stop the target set with an overhead guard, the last results, then the browser tree.
+-- The current instrumentation set: each target with a remove button, so the picked scripts are visible without hunting the tree.
+local function render_selected()
+    local targets = JitProfiler.get_targets()
+    ImGui.Text(format("SELECTED  %d", #targets))
+    if #targets == 0 then
+        ImGui.Text("  none.  check scripts below, or use + on a SAMPLING by-script row")
+        return
+    end
+    for i = 1, #targets do
+        local name = targets[i]
+        if ImGui.Button("x##sel" .. name, VZERO) then JitProfiler.remove_target(name) end
+        ImGui.SameLine()
+        ImGui.Text(name)
+    end
+end
+
+-- The INSTRUMENTATION body: start/stop the target set with an overhead guard, the selected set, the last results, then the browser tree.
 local function render_instrument()
     local targets, wrapped = JitProfiler.get_target_stats()
     local active = JitProfiler.is_scan_active()
@@ -603,7 +618,7 @@ local function render_instrument()
         if ImGui.Button("Start##inst", BTN_SIZE) then JitProfiler.start_scan() end
     end
     ImGui.SameLine()
-    ImGui.Text(format("set: %d scripts, %d functions", targets, wrapped))
+    ImGui.Text(format("%d scripts, %d functions", targets, wrapped))
     if wrapped > OVERHEAD_WARN then
         ImGui.SameLine()
         ImGui.PushStyleColor(ImGuiCol.Text, VMSTATE[4].color)
@@ -611,8 +626,11 @@ local function render_instrument()
         ImGui.PopStyleColor(1)
     end
     ImGui.Separator()
+    render_selected()
+    ImGui.Separator()
     local cap = JitProfiler.get_last_capture(KIND_SCAN)
     if cap and not active then render_scan_tab(cap); ImGui.Separator() end
+    ImGui.Text("ADD SCRIPTS")
     render_tree()
 end
 
@@ -620,12 +638,13 @@ local function render_panel()
     if not (panel_open and is_overlay_enabled()) then return end
     ImGui.SetNextWindowSize(WINDOW_SIZE, ImGuiCond.FirstUseEver)
     ImGui.PushStyleColor(ImGuiCol.WindowBg, COLOR_BG)
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_CREAM)
-    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, COLOR_BAR)
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, COLOR_ACCENT)
     local expanded, open = ImGui.Begin("JitProfiler", panel_open, 0)
     panel_open = open
     if expanded then
         init_mono()
+        push_mono()
         render_mode_tab(MODE_SAMPLING, "SAMPLING")
         ImGui.SameLine()
         render_mode_tab(MODE_INSTRUMENT, "INSTRUMENTATION")
@@ -639,6 +658,7 @@ local function render_panel()
         end
         ImGui.Separator()
         render_settings()
+        pop_mono()
     end
     ImGui.End()
     ImGui.PopStyleColor(3)
@@ -666,7 +686,7 @@ local function render_banner()
     end
     ImGui.SetNextWindowPos(BANNER_POS, ImGuiCond.Always)
     ImGui.PushStyleColor(ImGuiCol.WindowBg, COLOR_BG)
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_CREAM)
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)
     local expanded = ImGui.Begin("##jf_banner", true, BANNER_FLAGS)
     if expanded then ImGui.Text(label) end
     ImGui.End()

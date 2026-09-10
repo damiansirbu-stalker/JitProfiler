@@ -620,6 +620,15 @@ function get_target_stats()
     return scan.count, scan.wrapped
 end
 
+--- @return table the sorted list of script names in the instrumentation set.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function get_targets()
+    local list = {}
+    for name in pairs(scan.set) do list[#list + 1] = name end
+    table.sort(list)
+    return list
+end
+
 -- Rank the wrapped functions by self time and write the report: self, total, calls, and us per call.
 local function write_scan_report(records, frames, duration_sec)
     local rows, total_self = {}, 0
