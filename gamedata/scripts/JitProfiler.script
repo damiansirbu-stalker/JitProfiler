@@ -15,7 +15,7 @@ local OWNER_MODDED        = "modded exes"
 local OWNER_MOD           = "mod: "
 
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
-local pcall, tostring, tonumber, require, io, os = pcall, tostring, tonumber, require, io, os
+local pcall, tostring, tonumber, require, io, os, type = pcall, tostring, tonumber, require, io, os, type
 local format = string.format
 local getFS, time_global, jit = getFS, time_global, jit
 local RegisterScriptCallback = RegisterScriptCallback
@@ -301,15 +301,15 @@ local function write_folded(kind, by_stack)
     return write_lines(build_log_path("jitprofiler_" .. kind .. ".folded"), folded)
 end
 
--- Forward-declared so the CPU and allocation profilers can see each other and stay mutually exclusive.
-local alloc
+-- Forward-declared so the CPU, allocation, and scan engines can see each other and stay mutually exclusive.
+local alloc, scan
 
 local cpu = { stacks = {}, state = {}, total = 0, nstacks = 0, dropped = 0, iv = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, t0 = 0, limit = 0, active = false }
 
--- The most recent CPU and allocation capture, retained for the in-game panel to render.
+-- The most recent CPU, allocation, and scan capture, retained for the in-game panel to render.
 local last_capture = rawget(_G, "__jitprofiler_capture")
 if not last_capture then
-    last_capture = { cpu = nil, mem = nil }
+    last_capture = { cpu = nil, mem = nil, scan = nil }
     rawset(_G, "__jitprofiler_capture", last_capture)
 end
 
@@ -334,6 +334,7 @@ end
 function start_cpu(interval_ms, depth)
     if cpu.active then log("JitProfiler/cpu: already running -- JitProfiler.stop_cpu() first."); return end
     if alloc.capturing then log("JitProfiler/cpu: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
+    if scan.active then log("JitProfiler/cpu: scanner is running -- JitProfiler.stop_scan() first."); return end
     cpu.stacks, cpu.state, cpu.total, cpu.nstacks, cpu.dropped = {}, {}, 0, 0, 0
     cpu.iv = math.floor(tonumber(interval_ms) or settings.interval); if cpu.iv < 1 then cpu.iv = 1 end
     cpu.depth = math.floor(tonumber(depth) or settings.depth); if cpu.depth < 1 then cpu.depth = 1 end
@@ -468,6 +469,7 @@ end
 function start_alloc(depth)
     if alloc.capturing then log("JitProfiler/alloc: already running -- JitProfiler.stop_alloc() first."); return end
     if cpu.active then log("JitProfiler/alloc: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
+    if scan.active then log("JitProfiler/alloc: scanner is running -- JitProfiler.stop_scan() first."); return end
     alloc.depth = math.floor(tonumber(depth) or settings.depth); if alloc.depth < 2 then alloc.depth = 2 end
     alloc.t0 = get_time_ms()
     alloc.limit = settings.duration
@@ -513,8 +515,122 @@ function stop_alloc()
     show_tip("JitProfiler ALLOC report written")
 end
 
--- Per-frame heartbeat: auto-stop a capture at its duration limit, auto-snapshot before the alloc table fills. Near-free when idle.
+-- The scanner: wrap every function of one script, time each call inclusive of the engine C it triggers, count calls.
+scan = { target = nil, records = {}, saved = {}, t0 = 0, limit = 0, frames = 0, active = false }
+
+-- Stop the call timer, add the inclusive microseconds to the record, forward the wrapped return values untouched.
+local function add_timing(rec, timer, ...)
+    timer:stop()
+    rec.total_us = rec.total_us + timer:get_us()
+    rec.calls = rec.calls + 1
+    return ...
+end
+
+-- One timing wrapper bound to its record and original. The timer resets each call, so a wrapped error loses only that call.
+local function build_wrapper(rec, original)
+    return function(...)
+        local timer = rec.timer
+        timer:reset(); timer:start()
+        return add_timing(rec, timer, original(...))
+    end
+end
+
+-- Rank the wrapped functions by inclusive time and write the report. Per-frame ms is the budget the raw number reads against.
+local function write_scan_report(records, target, frames, duration_sec)
+    local rows, total_us = {}, 0
+    for key, rec in pairs(records) do
+        if rec.calls > 0 then
+            rows[#rows + 1] = { key = key, calls = rec.calls, us = rec.total_us }
+            total_us = total_us + rec.total_us
+        end
+    end
+    table.sort(rows, function(left, right) return left.us > right.us end)
+    local ms_total = total_us / 1000.0
+    local per_frame_ms = frames > 0 and (ms_total / frames) or 0
+    local total_line = frames > 0
+        and format("  TOTAL   %.1f ms over %d frames   =   %.3f ms per frame", ms_total, frames, per_frame_ms)
+        or  format("  TOTAL   %.1f ms over ~%.0f s   (menu capture, no actor frames)", ms_total, duration_sec)
+    local RULE = "================================================================================"
+    local lines = {
+        RULE,
+        "  JitProfiler  -  SCAN   targeted instrumentation (wall-clock, engine C included)",
+        format("  modded_exes %s   |   target %s   |   %s   |   ~%.0f s   |   %d frames",
+            tostring(_G.MODDED_EXES_VERSION or "?"), target, get_owner_label(target .. ".script"), duration_sec, frames),
+        RULE,
+        "",
+        total_line,
+        "",
+        format("  %-46s %8s   %10s   %8s", "FUNCTION", "CALLS", "TOTAL ms", "us/call"),
+    }
+    for i = 1, #rows do
+        local row = rows[i]
+        lines[#lines + 1] = format("  %-46s %8d   %10.2f   %8.1f", row.key, row.calls, row.us / 1000.0, row.us / row.calls)
+    end
+    local stamp = get_timestamp()
+    local report_path = write_lines(build_log_path("jitprofiler_scan_" .. stamp .. ".txt"), lines)
+    last_capture.scan = {
+        kind = "scan", target = target, rows = rows, frames = frames, total_us = total_us,
+        meta = { target = target, frames = frames, duration = duration_sec, stamp = stamp, per_frame_ms = per_frame_ms },
+    }
+    log("JitProfiler/scan: report -> %s", tostring(report_path))
+    show_tip("JitProfiler SCAN report written")
+end
+
+--- Arm the scanner on one script: replace every function in its module with a timing wrapper. Play, then stop_scan().
+--- @novalidate(code.unused_export, reason:"console command")
+function start_scan(script_name)
+    if scan.active then log("JitProfiler/scan: already running -- JitProfiler.stop_scan() first."); return end
+    if cpu.active then log("JitProfiler/scan: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
+    if alloc.capturing then log("JitProfiler/scan: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
+    local name = tostring(script_name or ""):gsub("%.script$", "")
+    if name == "" then log("JitProfiler/scan: name a script, e.g. JitProfiler.start_scan(\"xr_motivator\")."); return end
+    local mod = _G[name]
+    if type(mod) ~= "table" then log("JitProfiler/scan: '%s' is not a loaded script module.", name); return end
+    local names = {}
+    for func_name, value in pairs(mod) do if type(value) == "function" then names[#names + 1] = func_name end end
+    if #names == 0 then log("JitProfiler/scan: '%s' has no functions to wrap.", name); return end
+    scan.target, scan.records, scan.saved, scan.frames = name, {}, {}, 0
+    scan.t0, scan.limit, scan.active = get_time_ms(), settings.duration, true
+    for i = 1, #names do
+        local func_name = names[i]
+        local original = mod[func_name]
+        scan.saved[func_name] = original
+        local info = debug.getinfo(original, "S")
+        local src = (info and info.short_src) or "?"
+        local base = src:match("([%w_%.%-]+%.script)") or src:match("([%w_%.%-]+%.lua)") or src
+        local rec = { calls = 0, total_us = 0, timer = xprofiler.new() }
+        scan.records[func_name .. "@" .. base] = rec
+        mod[func_name] = build_wrapper(rec, original)
+    end
+    log("JitProfiler/scan: wrapping %s (%d functions). Play, then JitProfiler.stop_scan().", name, #names)
+    show_tip("JitProfiler SCAN " .. name)
+end
+
+--- Restore every wrapped function and write the report.
+--- @novalidate(code.unused_export, reason:"console command")
+function stop_scan()
+    if not scan.active then log("JitProfiler/scan: not running."); return end
+    scan.active = false
+    local mod = rawget(_G, scan.target)
+    if type(mod) == "table" then
+        for func_name, original in pairs(scan.saved) do mod[func_name] = original end
+    end
+    local duration_sec = (get_time_ms() - scan.t0) / 1000.0
+    write_scan_report(scan.records, scan.target, scan.frames, duration_sec)
+end
+
+--- @novalidate(code.unused_export, reason:"panel control surface, wired in the UI increment")
+function is_scan_active()
+    return scan.active
+end
+
+-- Per-frame heartbeat: count scan frames, auto-stop a capture at its duration limit, auto-snapshot before the alloc table fills. Near-free when idle.
 local function update_capture()
+    if scan.active then
+        scan.frames = scan.frames + 1
+        if scan.limit > 0 and (get_time_ms() - scan.t0) / 1000 >= scan.limit then stop_scan() end
+        return
+    end
     if cpu.active then
         if cpu.limit > 0 and (get_time_ms() - cpu.t0) / 1000 >= cpu.limit then stop_cpu() end
         return
@@ -574,6 +690,7 @@ end
 function get_capture_progress()
     if cpu.active then return { elapsed = (get_time_ms() - cpu.t0) / 1000, limit = cpu.limit } end
     if alloc.capturing then return { elapsed = (get_time_ms() - alloc.t0) / 1000, limit = alloc.limit } end
+    if scan.active then return { elapsed = (get_time_ms() - scan.t0) / 1000, limit = scan.limit } end
     return nil
 end
 
@@ -607,5 +724,6 @@ function on_game_start()
     rawset(_G, "__jitprofiler_started", true)
     RegisterScriptCallback("actor_on_update", update_capture)
     log("JitProfiler ready.  CPU: start_cpu([ms],[depth]) / stop_cpu().  ALLOC: start_alloc([depth]) / write_snapshot() / stop_alloc().")
+    log("JitProfiler: SCAN start_scan(\"script\") / stop_scan() times every function of one script (engine C included).")
     log("JitProfiler: set_fold_baseline(true) folds the vanilla baseline.  Reports go to appdata/logs/jitprofiler_*.")
 end

@@ -4,7 +4,7 @@ local ImGuiCond, ImGuiWindowFlags, ImGuiCol = ImGuiCond, ImGuiWindowFlags, ImGui
 local ImGuiTableFlags, ImGuiSelectableFlags = ImGuiTableFlags, ImGuiSelectableFlags
 local vector2, fcolor, bit = vector2, fcolor, bit
 local rawget, rawset = rawget, rawset
-local pairs, math, table = pairs, math, table
+local pairs, math, table, tostring = pairs, math, table, tostring
 local floor = math.floor
 local format, RegisterScriptCallback = string.format, RegisterScriptCallback
 
@@ -19,6 +19,7 @@ local BYTES_PER_KB  = 1024
 local OWNER_MOD = "mod: "
 local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
+local KIND_SCAN = "scan"
 local VIEW_BY_MOD = "by_mod"
 local VIEW_BY_SCRIPT = "by_script_total"
 local SORT_VALUE = "value"
@@ -71,6 +72,7 @@ local active_tab = KIND_CPU
 local view_index = 1
 local fold_baseline = false
 local filter_text = ""
+local scan_target_text = ""
 local sort_by = SORT_VALUE
 local sort_asc = false
 local selected_frame = nil
@@ -169,7 +171,7 @@ end
 -- One capture-control button; grays out while the opposite axis runs, since the two are mutually exclusive.
 local function render_capture_button(kind)
     local this_on = (kind == KIND_CPU) and JitProfiler.is_cpu_active() or JitProfiler.is_mem_active()
-    local other_on = (kind == KIND_CPU) and JitProfiler.is_mem_active() or JitProfiler.is_cpu_active()
+    local other_on = ((kind == KIND_CPU) and JitProfiler.is_mem_active() or JitProfiler.is_cpu_active()) or JitProfiler.is_scan_active()
     local label = (this_on and "Stop " or "Start ") .. ((kind == KIND_CPU) and "CPU" or "MEM")
     if other_on and not this_on then
         ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
@@ -264,6 +266,14 @@ local function render_view_row(cap, view, entry)
         if ImGui.Selectable(key .. "##row", is_sel, SPAN_ALL, VZERO) then
             select_frame(cap, is_sel and nil or key)
         end
+    elseif view.key == VIEW_BY_SCRIPT then
+        ImGui.Text(key)
+        ImGui.SameLine()
+        if ImGui.Button("scan##" .. key, VZERO) then
+            scan_target_text = key
+            JitProfiler.start_scan(key)
+            active_tab = KIND_SCAN
+        end
     else
         ImGui.Text(key)
     end
@@ -345,7 +355,6 @@ local function render_vmstate(cap)
 end
 
 local function render_controls()
-    fold_baseline = JitProfiler.get_setting("fold")
     render_capture_button(KIND_CPU)
     ImGui.SameLine()
     render_capture_button(KIND_MEM)
@@ -354,14 +363,16 @@ local function render_controls()
         if ImGui.Button("Snapshot##snap", BTN_SIZE) then JitProfiler.write_snapshot() end
     end
     ImGui.SameLine(0, 20)
-    local _, new_fold = ImGui.Checkbox("Fold baseline", fold_baseline)
-    if new_fold ~= fold_baseline then JitProfiler.set_setting("fold", new_fold) end
-    fold_baseline = new_fold
-    ImGui.SameLine(0, 20)
     ImGui.Text("Filter")
     ImGui.SameLine()
     local new_filter = ImGui.InputText("##filter", filter_text, 64)
     if new_filter then filter_text = new_filter end
+    if active_tab == KIND_SCAN then return end
+    ImGui.SameLine(0, 20)
+    fold_baseline = JitProfiler.get_setting("fold")
+    local _, new_fold = ImGui.Checkbox("Fold baseline", fold_baseline)
+    if new_fold ~= fold_baseline then JitProfiler.set_setting("fold", new_fold) end
+    fold_baseline = new_fold
     ImGui.Spacing()
     for i = 1, #VIEWS do
         render_view_selector(i)
@@ -402,10 +413,91 @@ local function render_tab(cap)
     render_neighbors(cap)
 end
 
+-- The scanner arm control. The target is never typed: it is set by clicking a script row on the CPU tab. This surface only stops, re-runs, or points there.
+local function render_scan_controls()
+    if JitProfiler.is_scan_active() then
+        ImGui.Text("Recording " .. scan_target_text .. "  --  play the fight, then Stop.")
+        ImGui.SameLine()
+        if ImGui.Button("Stop SCAN##scanbtn", BTN_SIZE) then JitProfiler.stop_scan() end
+        return
+    end
+    if scan_target_text == "" then
+        ImGui.Text("Pick a target: CPU tab, BY SCRIPT view, click 'scan' on a mod-colored row.")
+        return
+    end
+    if JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() then
+        ImGui.Text("Stop the CPU or MEM capture first.")
+        return
+    end
+    if ImGui.Button("Scan " .. scan_target_text .. " again##scanbtn", VZERO) then
+        JitProfiler.start_scan(scan_target_text)
+    end
+end
+
+-- One scan row: the function, its owner color, call count, inclusive ms, and us per call. Skipped when the filter excludes it.
+local function render_scan_row(row)
+    local owner = JitProfiler.get_owner(row.key)
+    if not check_filter(row.key, owner) then return end
+    ImGui.TableNextRow()
+    ImGui.TableNextColumn()
+    ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
+    ImGui.Text(row.key)
+    ImGui.PopStyleColor(1)
+    if ImGui.IsItemHovered() then ImGui.SetTooltip(owner) end
+    ImGui.TableNextColumn(); ImGui.Text(format("%d", row.calls))
+    ImGui.TableNextColumn(); ImGui.Text(format("%.2f", row.us / 1000))
+    ImGui.TableNextColumn(); ImGui.Text(format("%.1f", row.calls > 0 and row.us / row.calls or 0))
+end
+
+-- The scan results: each wrapped function ranked by inclusive ms, owner-colored, with the filter applied.
+local function render_scan_table(cap)
+    if not ImGui.BeginTable("jf_scan", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
+    ImGui.TableSetupColumn("Function", 0, 280, 0)
+    ImGui.TableSetupColumn("Calls", 0, 80, 0)
+    ImGui.TableSetupColumn("Total ms", 0, 90, 0)
+    ImGui.TableSetupColumn("us/call", 0, 80, 0)
+    ImGui.TableNextRow()
+    ImGui.TableNextColumn(); ImGui.Text("Function")
+    ImGui.TableNextColumn(); ImGui.Text("Calls")
+    ImGui.TableNextColumn(); ImGui.Text("Total ms")
+    ImGui.TableNextColumn(); ImGui.Text("us/call")
+    local rows = cap.rows or {}
+    for i = 1, #rows do render_scan_row(rows[i]) end
+    ImGui.EndTable()
+end
+
+local function render_scan_tab(cap)
+    ImGui.Text(format("target %s   %d frames   %s", tostring(cap.meta.target), cap.meta.frames or 0, cap.meta.stamp or "?"))
+    if (cap.meta.frames or 0) > 0 then
+        ImGui.Text(format("%.3f ms per frame   (%.1f ms total)", cap.meta.per_frame_ms or 0, (cap.total_us or 0) / 1000))
+    else
+        ImGui.Text(format("%.1f ms total over ~%.0fs   (menu capture, no actor frames)", (cap.total_us or 0) / 1000, cap.meta.duration or 0))
+    end
+    ImGui.Separator()
+    render_scan_table(cap)
+end
+
 -- The MCM toggle for the ImGui overlay; defaults to shown until the config loads. Cached table read, no per-frame ini parse.
 local function is_overlay_enabled()
     local cfg = jf_mcm and jf_mcm.cfg
     return not cfg or cfg.show_imgui ~= false
+end
+
+-- The body under the tab row: the scan surface on the SCAN tab, else the retained CPU or MEM capture.
+local function render_active_tab()
+    if active_tab == KIND_SCAN then
+        render_scan_controls()
+        ImGui.Separator()
+        local cap = JitProfiler.get_last_capture(KIND_SCAN)
+        if cap then render_scan_tab(cap) else ImGui.Text("No scan yet.  Type a script, Start SCAN, play, then Stop SCAN.") end
+        return
+    end
+    local cap = JitProfiler.get_last_capture(active_tab)
+    if cap then
+        render_tab(cap)
+    else
+        ImGui.Text("No capture yet.  Start " .. ((active_tab == KIND_CPU) and "CPU" or "MEM") .. ", play, then Stop.")
+    end
 end
 
 local function render_panel()
@@ -422,13 +514,10 @@ local function render_panel()
         render_tab_button(KIND_CPU, "CPU")
         ImGui.SameLine()
         render_tab_button(KIND_MEM, "MEM")
+        ImGui.SameLine()
+        render_tab_button(KIND_SCAN, "SCAN")
         ImGui.Separator()
-        local cap = JitProfiler.get_last_capture(active_tab)
-        if cap then
-            render_tab(cap)
-        else
-            ImGui.Text("No capture yet.  Start " .. ((active_tab == KIND_CPU) and "CPU" or "MEM") .. ", play, then Stop.")
-        end
+        render_active_tab()
         ImGui.Separator()
         render_settings()
     end
@@ -448,8 +537,9 @@ end
 local function render_banner()
     if not is_overlay_enabled() then return end
     local cpu_on = JitProfiler.is_cpu_active()
-    if not (cpu_on or JitProfiler.is_mem_active()) then return end
-    local label = cpu_on and "CPU PROFILER" or "MEM PROFILER"
+    local scan_on = JitProfiler.is_scan_active()
+    if not (cpu_on or JitProfiler.is_mem_active() or scan_on) then return end
+    local label = cpu_on and "CPU PROFILER" or (scan_on and "SCANNER" or "MEM PROFILER")
     local prog = JitProfiler.get_capture_progress()
     if prog then
         label = label .. "   " .. format_clock(prog.elapsed)

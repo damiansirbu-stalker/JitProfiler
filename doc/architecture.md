@@ -37,6 +37,17 @@ It drains the pending bytes to the current stack on each bytecode instruction, w
 Byte totals are exact.
 Attribution is instruction-granular.
 
+## Scan: targeted instrumentation of one script
+The sampler names where the frame sits but cannot enter the engine C beneath a Lua call, so a mod that spends its cost inside an engine routine reads as engine time.
+The scanner closes that gap on one script at a time.
+`start_scan` takes a script name and reads its module table. It replaces every function with a wrapper that times the call through xlibs `xprofiler` over the engine `profile_timer` and counts it.
+The timer spans the whole call, so the engine C the function triggers is inside its number, the axis the JIT-on sampler cannot reach.
+`stop_scan` restores every original and writes the report.
+Each function shows its call count, inclusive ms, and us per call, ranked, with total ms per frame as the budget the raw number reads against.
+The wrapper resets its timer each call, so a Lua error thrown from a wrapped function loses only that call, never skews the running total, and never swallows the error.
+It is opt-in, one script at a time, and mutually exclusive with the CPU and allocation captures, because the wrapper tax and the JIT blinding are the per-call cost the sampler exists to avoid.
+The natural loop runs the sampler first, then scans whichever script the `[C]` rows name.
+
 ## Per-mod attribution
 GAMMA merges every mod into one `gamedata/scripts`, so the script path never names the mod.
 For a mod's own file the resolver reads its real backing path through MO2/USVFS, over `GetFinalPathNameByHandle` on a LuaJIT FFI handle, and takes the `mods\<X>` folder as the owner.
