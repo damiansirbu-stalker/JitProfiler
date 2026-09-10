@@ -29,6 +29,9 @@ local COLOR_BG    = fcolor():set(0.102, 0.102, 0.102, 0.96)
 local COLOR_CREAM = fcolor():set(0.831, 0.788, 0.659, 1.0)
 local COLOR_DIM   = fcolor():set(0.30, 0.28, 0.22, 1.0)
 local COLOR_BAR   = fcolor():set(0.62, 0.56, 0.40, 1.0)
+local COLOR_TEXT  = fcolor():set(0.88, 0.88, 0.85, 1.0)
+-- Reused fcolor for the single-hue amber heat ramp, lerped by share in get_heat_color; not red, red is the GC state.
+local HEAT_COLOR  = fcolor():set(0.62, 0.56, 0.40, 1.0)
 
 -- Cached sizes so the render path allocates no vectors per frame.
 local VZERO       = vector2(0, 0)
@@ -144,10 +147,22 @@ local function format_clock(sec)
 end
 
 -- Fixed-width bar with the percent as text beside it, so the number sits on the dark background at a consistent spot.
+-- Amber heat colour for a share: dim at low, bright amber at high, monotonic in luminance. Reuses HEAT_COLOR, no per-row allocation.
+local function get_heat_color(pct)
+    local frac = pct / 100
+    if frac > 1 then frac = 1 elseif frac < 0 then frac = 0 end
+    HEAT_COLOR:set(0.45 + 0.50 * frac, 0.40 + 0.32 * frac, 0.28 + 0.04 * frac, 1.0)
+    return HEAT_COLOR
+end
+
 local function render_bar(pct)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(pct))
     ImGui.ProgressBar(pct / 100, BAR_SIZE, "")
+    ImGui.PopStyleColor(1)
     ImGui.SameLine()
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)
     ImGui.Text(format("%.1f%%", pct))
+    ImGui.PopStyleColor(1)
 end
 
 -- A clickable column header; the name column sorts by name, the rest by value, and a second click flips direction.
