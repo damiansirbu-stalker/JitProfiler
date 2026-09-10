@@ -17,6 +17,7 @@ local VMBAR_W  = 130
 local BAR_W    = 80
 local TOP_NEIGHBORS = 8
 local OVERHEAD_WARN = 4000
+local FRAME_MS_60 = 1000 / 60
 local BYTES_PER_MB  = 1048576
 local BYTES_PER_KB  = 1024
 local OWNER_MOD = "mod: "
@@ -87,6 +88,9 @@ local mod_colors = {}
 local MODE_SAMPLING = "sampling"
 local MODE_INSTRUMENT = "instrument"
 local active_mode = MODE_SAMPLING
+local INST_SELECTED = "selected"
+local INST_BROWSE = "browse"
+local inst_view = INST_SELECTED
 local tree_search = ""
 local tree_cache
 local mono_ok = false
@@ -274,7 +278,8 @@ local function render_bymod_row(cap, entry, own_map)
     ImGui.Text(owner)
     ImGui.PopStyleColor(1)
     render_tooltip(cap, owner, owner, total_weight)
-    render_num(format("%6.1f%%", own_pct))
+    ImGui.TableNextColumn()
+    render_bar(own_pct)
     ImGui.TableNextColumn()
     render_bar(total_pct)
     render_num(format("%10s", format_weight(cap.kind, total_weight)))
@@ -509,12 +514,14 @@ local function build_tree()
     tree_cache = list
 end
 
--- One tree row: a checkbox that adds or removes the script from the target set.
+-- One tree row: a +/- button that adds or removes the script, the same affordance as the sampling by-script rows.
 local function render_tree_item(name)
     local on = JitProfiler.is_target(name)
-    local _, new_on = ImGui.Checkbox(name .. "##t", on)
-    if new_on == on then return end
-    if new_on then JitProfiler.add_target(name) else JitProfiler.remove_target(name) end
+    if ImGui.Button((on and "-##t" or "+##t") .. name, VZERO) then
+        if on then JitProfiler.remove_target(name) else JitProfiler.add_target(name) end
+    end
+    ImGui.SameLine()
+    ImGui.Text(name)
 end
 
 -- Substring match of a script name against the search needle; an empty needle matches all.
@@ -531,7 +538,7 @@ local function render_tree_group(group, needle)
     end
 end
 
--- The instrumentation browser: a checkbox tree grouped by mod with a search box; a checked script is a target.
+-- The BROWSE modlist: scripts grouped by mod with a search box; a + adds each to the set, the same affordance as the sampling rows.
 local function render_tree()
     if not tree_cache then build_tree() end
     local new_search = ImGui.InputText("Search##tree", tree_search, 64)
@@ -542,38 +549,40 @@ local function render_tree()
     for i = 1, #tree_cache do render_tree_group(tree_cache[i], needle) end
 end
 
--- One scan row: the function, its owner color, call count, inclusive ms, and us per call. Skipped when the filter excludes it.
-local function render_scan_row(row)
+-- One scan row: the function, its owner colour, an Own-share bar, and the own/total ms and call count. Skipped when the filter excludes it.
+local function render_scan_row(cap, row)
     local owner = JitProfiler.get_owner(row.key)
     if not check_filter(row.key, owner) then return end
+    local own_pct = (cap.total_us or 0) > 0 and 100 * row.self_us / cap.total_us or 0
     ImGui.TableNextRow()
     ImGui.TableNextColumn()
     ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
     ImGui.Text(row.key)
     ImGui.PopStyleColor(1)
     if ImGui.IsItemHovered() then ImGui.SetTooltip(owner) end
-    render_num(format("%8d", row.calls))
+    ImGui.TableNextColumn()
+    render_bar(own_pct)
     render_num(format("%8.2f", row.self_us / 1000))
     render_num(format("%8.2f", row.total_us / 1000))
-    render_num(format("%8.1f", row.calls > 0 and row.self_us / row.calls or 0))
+    render_num(format("%8d", row.calls))
 end
 
 -- The scan results: each wrapped function ranked by inclusive ms, owner-colored, with the filter applied.
 local function render_scan_table(cap)
     if not ImGui.BeginTable("jf_scan", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
-    ImGui.TableSetupColumn("Function", 0, 260, 0)
-    ImGui.TableSetupColumn("Calls", 0, 70, 0)
-    ImGui.TableSetupColumn("Own ms", 0, 80, 0)
-    ImGui.TableSetupColumn("Total ms", 0, 80, 0)
-    ImGui.TableSetupColumn("us/call", 0, 70, 0)
+    ImGui.TableSetupColumn("Function", 0, 240, 0)
+    ImGui.TableSetupColumn("Own %", 0, 130, 0)
+    ImGui.TableSetupColumn("Own ms", 0, 70, 0)
+    ImGui.TableSetupColumn("Total ms", 0, 70, 0)
+    ImGui.TableSetupColumn("Calls", 0, 60, 0)
     ImGui.TableNextRow()
     ImGui.TableNextColumn(); ImGui.Text("Function")
-    ImGui.TableNextColumn(); ImGui.Text("Calls")
+    ImGui.TableNextColumn(); ImGui.Text("Own %")
     ImGui.TableNextColumn(); ImGui.Text("Own ms")
     ImGui.TableNextColumn(); ImGui.Text("Total ms")
-    ImGui.TableNextColumn(); ImGui.Text("us/call")
+    ImGui.TableNextColumn(); ImGui.Text("Calls")
     local rows = cap.rows or {}
-    for i = 1, #rows do render_scan_row(rows[i]) end
+    for i = 1, #rows do render_scan_row(cap, rows[i]) end
     ImGui.EndTable()
 end
 
@@ -581,7 +590,12 @@ local function render_scan_tab(cap)
     ImGui.Text(format("%d scripts, %d functions   %d frames   %s",
         cap.meta.targets or 0, cap.meta.wrapped or 0, cap.meta.frames or 0, cap.meta.stamp or "?"))
     if (cap.meta.frames or 0) > 0 then
-        ImGui.Text(format("%.3f ms own per frame   (%.1f ms own total)", cap.meta.per_frame_ms or 0, (cap.total_us or 0) / 1000))
+        local pfm = cap.meta.per_frame_ms or 0
+        ImGui.Text(format("%-14s", "frame budget"))
+        ImGui.SameLine(160)
+        render_bar(math.min(100, pfm / FRAME_MS_60 * 100))
+        ImGui.SameLine()
+        ImGui.Text(format("%.3f ms own / frame  (16.7 ms at 60fps)", pfm))
     else
         ImGui.Text(format("%.1f ms own total over ~%.0fs   (menu capture, no actor frames)", (cap.total_us or 0) / 1000, cap.meta.duration or 0))
     end
@@ -629,7 +643,7 @@ local function render_selected()
     local targets = JitProfiler.get_targets()
     ImGui.Text(format("SELECTED  %d", #targets))
     if #targets == 0 then
-        ImGui.Text("  none.  check scripts below, or use + on a SAMPLING by-script row")
+        ImGui.Text("  none.  use the BROWSE tab, or + on a SAMPLING by-script row")
         return
     end
     for i = 1, #targets do
@@ -640,7 +654,15 @@ local function render_selected()
     end
 end
 
--- The INSTRUMENTATION body: start/stop the target set with an overhead guard, the selected set, the last results, then the browser tree.
+-- One instrumentation sub-view tab (SELECTED or BROWSE).
+local function render_inst_view_tab(view, label)
+    local sel = (inst_view == view)
+    if not sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
+    if ImGui.Button(label .. "##iv", VZERO) then inst_view = view end
+    if not sel then ImGui.PopStyleColor(1) end
+end
+
+-- The INSTRUMENTATION body: the run control and overhead guard, then either the SELECTED working list plus results, or the BROWSE modlist.
 local function render_instrument()
     local targets, wrapped = JitProfiler.get_target_stats()
     local active = JitProfiler.is_scan_active()
@@ -662,12 +684,17 @@ local function render_instrument()
         ImGui.PopStyleColor(1)
     end
     ImGui.Separator()
-    render_selected()
+    render_inst_view_tab(INST_SELECTED, "SELECTED")
+    ImGui.SameLine()
+    render_inst_view_tab(INST_BROWSE, "BROWSE")
     ImGui.Separator()
+    if inst_view == INST_BROWSE then
+        render_tree()
+        return
+    end
+    render_selected()
     local cap = JitProfiler.get_last_capture(KIND_SCAN)
-    if cap and not active then render_scan_tab(cap); ImGui.Separator() end
-    ImGui.Text("ADD SCRIPTS")
-    render_tree()
+    if cap and not active then ImGui.Separator(); render_scan_tab(cap) end
 end
 
 local function render_panel()
