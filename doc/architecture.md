@@ -44,7 +44,9 @@ The scanner closes that gap on one script at a time.
 The timer spans the whole call, so the engine C the function triggers is inside its number, the axis the JIT-on sampler cannot reach.
 `stop_scan` restores every original and writes the report.
 Each function shows its call count, inclusive ms, and us per call, ranked, with total ms per frame as the budget the raw number reads against.
-The wrapper resets its timer each call, so a Lua error thrown from a wrapped function loses only that call, never skews the running total, and never swallows the error.
+The wrapper times only the outermost call through a per-record depth guard.
+A recursive or cyclic self-call deepens the count and banks the whole span once.
+A Lua error propagates uncaught.
 It is opt-in, one script at a time, and mutually exclusive with the CPU and allocation captures, because the wrapper tax and the JIT blinding are the per-call cost the sampler exists to avoid.
 The natural loop runs the sampler first, then scans whichever script the `[C]` rows name.
 

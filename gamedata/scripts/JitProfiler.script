@@ -518,20 +518,25 @@ end
 -- The scanner: wrap every function of one script, time each call inclusive of the engine C it triggers, count calls.
 scan = { target = nil, records = {}, saved = {}, t0 = 0, limit = 0, frames = 0, active = false }
 
--- Stop the call timer, add the inclusive microseconds to the record, forward the wrapped return values untouched.
-local function add_timing(rec, timer, ...)
-    timer:stop()
-    rec.total_us = rec.total_us + timer:get_us()
+-- Close the outermost call: stop and bank the inclusive time, count every call, forward the return values untouched.
+-- Depth reaches 0 only on the outermost exit, so a recursive or cyclic self-call banks the whole span once.
+local function add_timing(rec, ...)
+    rec.depth = rec.depth - 1
+    if rec.depth == 0 then
+        rec.timer:stop()
+        rec.total_us = rec.total_us + rec.timer:get_us()
+    end
     rec.calls = rec.calls + 1
     return ...
 end
 
--- One timing wrapper bound to its record and original. The timer resets each call, so a wrapped error loses only that call.
+-- One timing wrapper bound to its record and original.
+-- The timer runs for the outermost call only, so recursion deepens the count and times the whole span once.
 local function build_wrapper(rec, original)
     return function(...)
-        local timer = rec.timer
-        timer:reset(); timer:start()
-        return add_timing(rec, timer, original(...))
+        if rec.depth == 0 then rec.timer:reset(); rec.timer:start() end
+        rec.depth = rec.depth + 1
+        return add_timing(rec, original(...))
     end
 end
 
@@ -598,7 +603,7 @@ function start_scan(script_name)
         local info = debug.getinfo(original, "S")
         local src = (info and info.short_src) or "?"
         local base = src:match("([%w_%.%-]+%.script)") or src:match("([%w_%.%-]+%.lua)") or src
-        local rec = { calls = 0, total_us = 0, timer = xprofiler.new() }
+        local rec = { calls = 0, total_us = 0, depth = 0, timer = xprofiler.new() }
         scan.records[func_name .. "@" .. base] = rec
         mod[func_name] = build_wrapper(rec, original)
     end
