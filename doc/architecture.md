@@ -37,16 +37,16 @@ It drains the pending bytes to the current stack on each bytecode instruction, w
 Byte totals are exact.
 Attribution is instruction-granular.
 
-## Instrumentation: self and total over a script set
+## Instrumentation: own and total over a script set
 The sampler names where the frame sits but cannot enter the engine C beneath a Lua call, so a mod that spends its cost inside an engine routine reads as engine time.
 Instrumentation closes that gap by wrapping every function of a chosen SET of scripts.
 `add_target` puts a script in the set, `add_mod_targets` adds every script a mod owns, and the set holds many scripts at once.
 `start_scan` wraps every function of every set script with a timer over xlibs `xprofiler` on the engine `profile_timer`, and `stop_scan` restores every original and writes the report.
 The timer spans the whole call, so the engine C the function triggers is inside its number, the axis the JIT-on sampler cannot reach.
-Each call pushes a pooled stack frame; on return the frame banks total, its whole span, and self, total minus the time charged by nested wrapped children.
-Self is exclusive and correct across nesting and cross-mod calls; total is inclusive.
-Each function shows its call count, self ms, total ms, and us per call, ranked by self, with self ms per frame as the budget.
-The wrapper runs the original under pcall, so a Lua error still closes the frame and re-raises unchanged, and a recursive function books self correctly while total stays inclusive by definition.
+Each call pushes a pooled stack frame; on return the frame banks total, its whole span, and own, total minus the time charged by nested wrapped children.
+Own is exclusive and correct across nesting and cross-mod calls; total is inclusive.
+Each function shows its call count, own ms, total ms, and us per call, ranked by own, with own ms per frame as the budget.
+The wrapper runs the original under pcall, so a Lua error still closes the frame and re-raises unchanged, and a recursive function books own correctly while total stays inclusive by definition.
 It is opt-in and mutually exclusive with the CPU and allocation captures, because the wrapper tax and the JIT blinding are the per-call cost the sampler exists to avoid.
 The natural loop runs the sampler first, then instruments whichever scripts the `[C]` rows name.
 
@@ -96,6 +96,8 @@ Under INSTRUMENTATION a start and stop control arms the whole set, an overhead l
 The results table ranks each function by self, with total, calls, and us per call.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
 The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile), each explained on hover.
+The MEM view carries a live GC-health strip from `jit.util.gcstat`, a bar for the heap toward the next collection plus the live estimate and debt, hidden when the exe lacks the getter.
+On the multi-thread exe a Parallel GC toggle flips the `lua_parallel_gc` cvar, so a CPU capture reads a clean G share instead of the parallel-GC inflation.
 The panel renders in white JetBrains Mono when the font is present, so digits line up as a column, over a blue accent scheme; each cost bar carries a single-hue blue heat shade by share.
 A fold-baseline toggle drops the non-mod rows, leaving only mods.
 A corner banner in the Unique group renders every frame and shows only while a capture runs.

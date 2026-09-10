@@ -642,19 +642,19 @@ local function write_scan_report(records, frames, duration_sec)
     local ms_self = total_self / 1000.0
     local per_frame_ms = frames > 0 and (ms_self / frames) or 0
     local total_line = frames > 0
-        and format("  SELF TOTAL   %.1f ms over %d frames   =   %.3f ms per frame", ms_self, frames, per_frame_ms)
-        or  format("  SELF TOTAL   %.1f ms over ~%.0f s   (menu capture, no actor frames)", ms_self, duration_sec)
+        and format("  OWN TOTAL   %.1f ms over %d frames   =   %.3f ms per frame", ms_self, frames, per_frame_ms)
+        or  format("  OWN TOTAL   %.1f ms over ~%.0f s   (menu capture, no actor frames)", ms_self, duration_sec)
     local RULE = "================================================================================"
     local lines = {
         RULE,
-        "  JitProfiler  -  INSTRUMENTATION   self + total wall-clock (engine C included)",
+        "  JitProfiler  -  INSTRUMENTATION   own + total wall-clock (engine C included)",
         format("  modded_exes %s   |   %d scripts, %d functions   |   ~%.0f s   |   %d frames",
             tostring(_G.MODDED_EXES_VERSION or "?"), scan.count, scan.wrapped, duration_sec, frames),
         RULE,
         "",
         total_line,
         "",
-        format("  %-46s %8s   %10s   %10s   %8s", "FUNCTION", "CALLS", "SELF ms", "TOTAL ms", "us/call"),
+        format("  %-46s %8s   %10s   %10s   %8s", "FUNCTION", "CALLS", "OWN ms", "TOTAL ms", "us/call"),
     }
     for i = 1, #rows do
         local row = rows[i]

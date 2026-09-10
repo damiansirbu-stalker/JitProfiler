@@ -7,6 +7,8 @@ local rawget, rawset = rawget, rawset
 local pairs, math, table, type, pcall = pairs, math, table, type, pcall
 local floor = math.floor
 local format, RegisterScriptCallback = string.format, RegisterScriptCallback
+-- jit.util.gcstat exists only on a profiler build; nil elsewhere, so the GC-health strip stays hidden.
+local gcstat_fn = jit and jit.util and jit.util.gcstat
 
 local WINDOW_W = 640
 local WINDOW_H = 460
@@ -393,6 +395,34 @@ local function render_vmstate(cap)
     end
 end
 
+-- Live LuaJIT GC health from jit.util.gcstat: a bar for the heap toward the next collection, then the live estimate and debt.
+local function render_gc_health()
+    if not gcstat_fn then return end
+    local stat = gcstat_fn()
+    local mb = 1 / BYTES_PER_MB
+    local frac = stat.threshold > 0 and stat.total / stat.threshold or 0
+    if frac > 1 then frac = 1 end
+    ImGui.Text(format("%-10s", "GC heap"))
+    ImGui.SameLine(120)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(frac * 100))
+    ImGui.ProgressBar(frac, VMBAR_SIZE, "")
+    ImGui.PopStyleColor(1)
+    ImGui.SameLine()
+    ImGui.Text(format("%.1f / %.1f MB to next GC", stat.total * mb, stat.threshold * mb))
+    ImGui.Text(format("live estimate %.1f MB   debt %.0f B", stat.estimate * mb, stat.debt))
+end
+
+-- On MT the CPU G% is inflated while parallel GC runs; this toggle flips lua_parallel_gc for a clean read. Hidden when the cvar is absent (single-thread exe).
+local has_pgc
+local function render_pgc_toggle()
+    if has_pgc == nil then has_pgc = get_console():get_string("lua_parallel_gc") ~= nil end
+    if not has_pgc then return end
+    local on = get_console():get_integer("lua_parallel_gc") ~= 0
+    local _, new_on = ImGui.Checkbox("Parallel GC", on)
+    if new_on ~= on then get_console():execute("lua_parallel_gc " .. (new_on and "1" or "0")) end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip("Off gives a clean CPU G%; the MT parallel GC inflates it.") end
+end
+
 local function render_controls()
     render_capture_button(KIND_CPU)
     ImGui.SameLine()
@@ -411,6 +441,8 @@ local function render_controls()
     local _, new_fold = ImGui.Checkbox("Fold baseline", fold_baseline)
     if new_fold ~= fold_baseline then JitProfiler.set_setting("fold", new_fold) end
     fold_baseline = new_fold
+    ImGui.SameLine(0, 20)
+    render_pgc_toggle()
     ImGui.Spacing()
     for i = 1, #VIEWS do
         render_view_selector(i)
@@ -531,13 +563,13 @@ local function render_scan_table(cap)
     if not ImGui.BeginTable("jf_scan", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Function", 0, 260, 0)
     ImGui.TableSetupColumn("Calls", 0, 70, 0)
-    ImGui.TableSetupColumn("Self ms", 0, 80, 0)
+    ImGui.TableSetupColumn("Own ms", 0, 80, 0)
     ImGui.TableSetupColumn("Total ms", 0, 80, 0)
     ImGui.TableSetupColumn("us/call", 0, 70, 0)
     ImGui.TableNextRow()
     ImGui.TableNextColumn(); ImGui.Text("Function")
     ImGui.TableNextColumn(); ImGui.Text("Calls")
-    ImGui.TableNextColumn(); ImGui.Text("Self ms")
+    ImGui.TableNextColumn(); ImGui.Text("Own ms")
     ImGui.TableNextColumn(); ImGui.Text("Total ms")
     ImGui.TableNextColumn(); ImGui.Text("us/call")
     local rows = cap.rows or {}
@@ -549,9 +581,9 @@ local function render_scan_tab(cap)
     ImGui.Text(format("%d scripts, %d functions   %d frames   %s",
         cap.meta.targets or 0, cap.meta.wrapped or 0, cap.meta.frames or 0, cap.meta.stamp or "?"))
     if (cap.meta.frames or 0) > 0 then
-        ImGui.Text(format("%.3f ms self per frame   (%.1f ms self total)", cap.meta.per_frame_ms or 0, (cap.total_us or 0) / 1000))
+        ImGui.Text(format("%.3f ms own per frame   (%.1f ms own total)", cap.meta.per_frame_ms or 0, (cap.total_us or 0) / 1000))
     else
-        ImGui.Text(format("%.1f ms self total over ~%.0fs   (menu capture, no actor frames)", (cap.total_us or 0) / 1000, cap.meta.duration or 0))
+        ImGui.Text(format("%.1f ms own total over ~%.0fs   (menu capture, no actor frames)", (cap.total_us or 0) / 1000, cap.meta.duration or 0))
     end
     ImGui.Separator()
     render_scan_table(cap)
@@ -580,6 +612,10 @@ local function render_sampling_body()
     ImGui.SameLine()
     render_tab_button(KIND_MEM, "MEM")
     ImGui.Separator()
+    if active_tab == KIND_MEM then
+        render_gc_health()
+        ImGui.Separator()
+    end
     local cap = JitProfiler.get_last_capture(active_tab)
     if cap then
         render_tab(cap)
