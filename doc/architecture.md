@@ -88,13 +88,15 @@ Both are ASCII only.
 ## In-game panel
 `jitprofiler_ui.script` registers a panel and a menu entry through the base ImGui Groups API.
 The panel draws in the Main group, so it appears while the F11 ImGui overlay is open.
-It reads the retained last CPU and last allocation capture through `get_last_capture`.
-The panel drives each capture from its own button, and the two never run at once.
-A view selector switches the table between by mod, by script, by leaf, and by root.
-Each column header sorts, and a filter box narrows the rows by name or mod.
-Each row's owner is tinted by a stable per-mod colour, and hovering a row shows the full frame with its exact value.
-A selected frame ranks its callers and callees from the retained leaf-first stacks through `compute_neighbors`.
+Two top tabs split the panel, SAMPLING and INSTRUMENTATION.
+Under SAMPLING a CPU/MEM toggle shows the retained last capture through `get_last_capture`, and the two never run at once.
+A view selector switches the table between by mod, by script, by leaf, and by root; each column header sorts and a filter box narrows the rows.
+The by-script rows carry a per-row button that adds or removes the script from the instrumentation set.
+Under INSTRUMENTATION a start and stop control arms the whole set, an overhead line shows the wrapped-function count, and a checkbox tree grouped by mod with a search box picks the targets.
+The results table ranks each function by self, with total, calls, and us per call.
+Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
 The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile), each explained on hover.
+Number columns render in white JetBrains Mono so digits line up as a column, and each cost bar carries a single-hue amber heat shade by share.
 A fold-baseline toggle drops the non-mod rows, leaving only mods.
 A corner banner in the Unique group renders every frame and shows only while a capture runs.
 The chunk executes twice, so registration and the retained capture anchor to `_G` singletons.

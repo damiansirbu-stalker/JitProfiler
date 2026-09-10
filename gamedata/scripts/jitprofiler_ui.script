@@ -4,7 +4,7 @@ local ImGuiCond, ImGuiWindowFlags, ImGuiCol = ImGuiCond, ImGuiWindowFlags, ImGui
 local ImGuiTableFlags, ImGuiSelectableFlags = ImGuiTableFlags, ImGuiSelectableFlags
 local vector2, fcolor, bit = vector2, fcolor, bit
 local rawget, rawset = rawget, rawset
-local pairs, math, table = pairs, math, table
+local pairs, math, table, type, pcall = pairs, math, table, type, pcall
 local floor = math.floor
 local format, RegisterScriptCallback = string.format, RegisterScriptCallback
 
@@ -14,6 +14,7 @@ local TABLE_H  = 240
 local VMBAR_W  = 130
 local BAR_W    = 80
 local TOP_NEIGHBORS = 8
+local OVERHEAD_WARN = 4000
 local BYTES_PER_MB  = 1048576
 local BYTES_PER_KB  = 1024
 local OWNER_MOD = "mod: "
@@ -75,13 +76,41 @@ local active_tab = KIND_CPU
 local view_index = 1
 local fold_baseline = false
 local filter_text = ""
-local scan_target_text = ""
 local sort_by = SORT_VALUE
 local sort_asc = false
 local selected_frame = nil
 local selected_neighbors = nil
 local rows_sig, rows_cache
 local mod_colors = {}
+
+local MODE_SAMPLING = "sampling"
+local MODE_INSTRUMENT = "instrument"
+local active_mode = MODE_SAMPLING
+local tree_search = ""
+local tree_cache
+local mono_ok = false
+local mono_checked = false
+
+-- The panel ships JetBrains Mono for the number columns; probe once inside the frame so an install without it falls back cleanly.
+--- @safety SAFE - pcall guards the font probe, so a missing atlas font cannot assert; on failure mono stays off.
+local function init_mono()
+    if mono_checked then return end
+    mono_checked = true
+    local ok = pcall(ImGui.PushFont, "jf_mono")
+    if ok then ImGui.PopFont(); mono_ok = true end
+end
+local function push_mono() if mono_ok then ImGui.PushFont("jf_mono") end end
+local function pop_mono() if mono_ok then ImGui.PopFont() end end
+
+-- A number cell: white, mono when present, the text pre-justified by the caller so mono digits align as a column.
+local function render_num(text)
+    ImGui.TableNextColumn()
+    push_mono()
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)
+    ImGui.Text(text)
+    ImGui.PopStyleColor(1)
+    pop_mono()
+end
 
 -- Stable per-mod colour from a name hash, bright enough to read on the dark background.
 local function get_mod_color(name)
@@ -244,12 +273,10 @@ local function render_bymod_row(cap, entry, own_map)
     ImGui.Text(owner)
     ImGui.PopStyleColor(1)
     render_tooltip(cap, owner, owner, total_weight)
-    ImGui.TableNextColumn()
-    ImGui.Text(format("%.1f%%", own_pct))
+    render_num(format("%6.1f%%", own_pct))
     ImGui.TableNextColumn()
     render_bar(total_pct)
-    ImGui.TableNextColumn()
-    ImGui.Text(format_weight(cap.kind, total_weight))
+    render_num(format("%10s", format_weight(cap.kind, total_weight)))
 end
 
 local function render_bymod_table(cap)
@@ -284,10 +311,9 @@ local function render_view_row(cap, view, entry)
     elseif view.key == VIEW_BY_SCRIPT then
         ImGui.Text(key)
         ImGui.SameLine()
-        if ImGui.Button("scan##" .. key, VZERO) then
-            scan_target_text = key
-            JitProfiler.start_scan(key)
-            active_tab = KIND_SCAN
+        local on = JitProfiler.is_target(key)
+        if ImGui.Button((on and "-inst##" or "+inst##") .. key, VZERO) then
+            if on then JitProfiler.remove_target(key) else JitProfiler.add_target(key) end
         end
     else
         ImGui.Text(key)
@@ -299,8 +325,7 @@ local function render_view_row(cap, view, entry)
     ImGui.PopStyleColor(1)
     ImGui.TableNextColumn()
     render_bar(pct)
-    ImGui.TableNextColumn()
-    ImGui.Text(format_weight(cap.kind, weight))
+    render_num(format("%10s", format_weight(cap.kind, weight)))
 end
 
 local function render_view_table(cap, view)
@@ -382,7 +407,6 @@ local function render_controls()
     ImGui.SameLine()
     local new_filter = ImGui.InputText("##filter", filter_text, 64)
     if new_filter then filter_text = new_filter end
-    if active_tab == KIND_SCAN then return end
     ImGui.SameLine(0, 20)
     fold_baseline = JitProfiler.get_setting("fold")
     local _, new_fold = ImGui.Checkbox("Fold baseline", fold_baseline)
@@ -428,25 +452,63 @@ local function render_tab(cap)
     render_neighbors(cap)
 end
 
--- The scanner arm control. The target is never typed: it is set by clicking a script row on the CPU tab. This surface only stops, re-runs, or points there.
-local function render_scan_controls()
-    if JitProfiler.is_scan_active() then
-        ImGui.Text("Recording " .. scan_target_text .. "  --  play the fight, then Stop.")
-        ImGui.SameLine()
-        if ImGui.Button("Stop SCAN##scanbtn", BTN_SIZE) then JitProfiler.stop_scan() end
-        return
+-- Add one _G entry to the browser groups when it is a script module (a table with any function member), under its owner.
+local function add_script(name, value, groups)
+    if type(name) ~= "string" or type(value) ~= "table" then return end
+    local is_script = false
+    for _, member in pairs(value) do if type(member) == "function" then is_script = true; break end end
+    if is_script then
+        local owner = JitProfiler.get_owner(name .. ".script")
+        local bucket = groups[owner] or {}
+        groups[owner] = bucket
+        bucket[#bucket + 1] = name
     end
-    if scan_target_text == "" then
-        ImGui.Text("Pick a target: CPU tab, BY SCRIPT view, click 'scan' on a mod-colored row.")
-        return
+end
+
+-- Build the browser tree once: every loaded script module grouped by owning mod, sorted. Rebuilt on demand.
+local function build_tree()
+    local groups = {}
+    for name, value in pairs(_G) do add_script(name, value, groups) end
+    local list = {}
+    for owner, scripts in pairs(groups) do
+        table.sort(scripts)
+        list[#list + 1] = { owner = owner, scripts = scripts }
     end
-    if JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() then
-        ImGui.Text("Stop the CPU or MEM capture first.")
-        return
+    table.sort(list, function(left, right) return left.owner < right.owner end)
+    tree_cache = list
+end
+
+-- One tree row: a checkbox that adds or removes the script from the target set.
+local function render_tree_item(name)
+    local on = JitProfiler.is_target(name)
+    local _, new_on = ImGui.Checkbox(name .. "##t", on)
+    if new_on == on then return end
+    if new_on then JitProfiler.add_target(name) else JitProfiler.remove_target(name) end
+end
+
+-- Substring match of a script name against the search needle; an empty needle matches all.
+local function check_match(name, needle)
+    return needle == "" or name:lower():find(needle, 1, true) ~= nil
+end
+
+-- One mod group: a collapsing header over its scripts, each filtered by the search needle.
+local function render_tree_group(group, needle)
+    if not ImGui.CollapsingHeader(group.owner .. "##g") then return end
+    for j = 1, #group.scripts do
+        local name = group.scripts[j]
+        if check_match(name, needle) then render_tree_item(name) end
     end
-    if ImGui.Button("Scan " .. scan_target_text .. " again##scanbtn", VZERO) then
-        JitProfiler.start_scan(scan_target_text)
-    end
+end
+
+-- The instrumentation browser: a checkbox tree grouped by mod with a search box; a checked script is a target.
+local function render_tree()
+    if not tree_cache then build_tree() end
+    local new_search = ImGui.InputText("Search##tree", tree_search, 64)
+    if new_search then tree_search = new_search end
+    ImGui.SameLine()
+    if ImGui.Button("Refresh##tree") then build_tree() end
+    local needle = tree_search:lower()
+    for i = 1, #tree_cache do render_tree_group(tree_cache[i], needle) end
 end
 
 -- One scan row: the function, its owner color, call count, inclusive ms, and us per call. Skipped when the filter excludes it.
@@ -459,10 +521,10 @@ local function render_scan_row(row)
     ImGui.Text(row.key)
     ImGui.PopStyleColor(1)
     if ImGui.IsItemHovered() then ImGui.SetTooltip(owner) end
-    ImGui.TableNextColumn(); ImGui.Text(format("%d", row.calls))
-    ImGui.TableNextColumn(); ImGui.Text(format("%.2f", row.self_us / 1000))
-    ImGui.TableNextColumn(); ImGui.Text(format("%.2f", row.total_us / 1000))
-    ImGui.TableNextColumn(); ImGui.Text(format("%.1f", row.calls > 0 and row.self_us / row.calls or 0))
+    render_num(format("%8d", row.calls))
+    render_num(format("%8.2f", row.self_us / 1000))
+    render_num(format("%8.2f", row.total_us / 1000))
+    render_num(format("%8.1f", row.calls > 0 and row.self_us / row.calls or 0))
 end
 
 -- The scan results: each wrapped function ranked by inclusive ms, owner-colored, with the filter applied.
@@ -502,21 +564,56 @@ local function is_overlay_enabled()
     return not cfg or cfg.show_imgui ~= false
 end
 
--- The body under the tab row: the scan surface on the SCAN tab, else the retained CPU or MEM capture.
-local function render_active_tab()
-    if active_tab == KIND_SCAN then
-        render_scan_controls()
-        ImGui.Separator()
-        local cap = JitProfiler.get_last_capture(KIND_SCAN)
-        if cap then render_scan_tab(cap) else ImGui.Text("No scan yet.  Type a script, Start SCAN, play, then Stop SCAN.") end
-        return
+-- One top-mode tab button (SAMPLING or INSTRUMENTATION).
+local function render_mode_tab(mode, label)
+    local sel = (active_mode == mode)
+    if not sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
+    if ImGui.Button(label .. "##mode", VZERO) and active_mode ~= mode then
+        active_mode = mode
+        selected_frame, selected_neighbors = nil, nil
     end
+    if not sel then ImGui.PopStyleColor(1) end
+end
+
+-- The SAMPLING body: the CPU or MEM view toggle, then the retained capture.
+local function render_sampling_body()
+    render_tab_button(KIND_CPU, "CPU")
+    ImGui.SameLine()
+    render_tab_button(KIND_MEM, "MEM")
+    ImGui.Separator()
     local cap = JitProfiler.get_last_capture(active_tab)
     if cap then
         render_tab(cap)
     else
         ImGui.Text("No capture yet.  Start " .. ((active_tab == KIND_CPU) and "CPU" or "MEM") .. ", play, then Stop.")
     end
+end
+
+-- The INSTRUMENTATION body: start/stop the target set with an overhead guard, the last results, then the browser tree.
+local function render_instrument()
+    local targets, wrapped = JitProfiler.get_target_stats()
+    local active = JitProfiler.is_scan_active()
+    if active then
+        if ImGui.Button("Stop##inst", BTN_SIZE) then JitProfiler.stop_scan() end
+    elseif JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() then
+        ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
+        ImGui.Button("Start##inst", BTN_SIZE)
+        ImGui.PopStyleColor(1)
+    else
+        if ImGui.Button("Start##inst", BTN_SIZE) then JitProfiler.start_scan() end
+    end
+    ImGui.SameLine()
+    ImGui.Text(format("set: %d scripts, %d functions", targets, wrapped))
+    if wrapped > OVERHEAD_WARN then
+        ImGui.SameLine()
+        ImGui.PushStyleColor(ImGuiCol.Text, VMSTATE[4].color)
+        ImGui.Text("large set, expect frame cost")
+        ImGui.PopStyleColor(1)
+    end
+    ImGui.Separator()
+    local cap = JitProfiler.get_last_capture(KIND_SCAN)
+    if cap and not active then render_scan_tab(cap); ImGui.Separator() end
+    render_tree()
 end
 
 local function render_panel()
@@ -528,15 +625,18 @@ local function render_panel()
     local expanded, open = ImGui.Begin("JitProfiler", panel_open, 0)
     panel_open = open
     if expanded then
-        render_controls()
-        ImGui.Separator()
-        render_tab_button(KIND_CPU, "CPU")
+        init_mono()
+        render_mode_tab(MODE_SAMPLING, "SAMPLING")
         ImGui.SameLine()
-        render_tab_button(KIND_MEM, "MEM")
-        ImGui.SameLine()
-        render_tab_button(KIND_SCAN, "SCAN")
+        render_mode_tab(MODE_INSTRUMENT, "INSTRUMENTATION")
         ImGui.Separator()
-        render_active_tab()
+        if active_mode == MODE_SAMPLING then
+            render_controls()
+            ImGui.Separator()
+            render_sampling_body()
+        else
+            render_instrument()
+        end
         ImGui.Separator()
         render_settings()
     end
@@ -558,7 +658,7 @@ local function render_banner()
     local cpu_on = JitProfiler.is_cpu_active()
     local scan_on = JitProfiler.is_scan_active()
     if not (cpu_on or JitProfiler.is_mem_active() or scan_on) then return end
-    local label = cpu_on and "CPU PROFILER" or (scan_on and "SCANNER" or "MEM PROFILER")
+    local label = cpu_on and "CPU PROFILER" or (scan_on and "INSTRUMENT" or "MEM PROFILER")
     local prog = JitProfiler.get_capture_progress()
     if prog then
         label = label .. "   " .. format_clock(prog.elapsed)
