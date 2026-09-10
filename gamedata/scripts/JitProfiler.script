@@ -31,6 +31,10 @@ local VMSTATE = {
 }
 local VMORDER = { "N", "I", "C", "G", "J" }
 
+-- Ticks in these states ran no Lua; a pseudo-leaf books their weight to the engine, never to the re-entry script.
+local VMSTATE_LEAF = { C = "[C]:-1", G = "[GC]:-1", J = "[JIT]:-1" }
+local PSEUDO_FRAME = { ["[C]:-1"] = true, ["[GC]:-1"] = true, ["[JIT]:-1"] = true }
+
 -- Callback-dispatch machinery, matched by leaf name to split framework cost from real handler work.
 local DISPATCH = {
     make_callback = true, SendScriptCallback = true, callback = true,
@@ -242,21 +246,29 @@ local function get_stack_bucket(leaf_frame)
     return DISPATCH[get_leaf_name(leaf_frame)] and "[framework] callback dispatch" or "[handlers] mod + engine work"
 end
 
+-- The frame a stack's weight books to: past a pseudo-leaf with 2+ real frames, the resuming frame that made the C/GC call.
+local function get_anchor_frame(first, second, nframes)
+    if PSEUDO_FRAME[first] and second and nframes >= 3 then return second end
+    return first
+end
+
 -- Credit one captured stack into every ranked map and update the depth stats.
 local function collect_stack(v, stack, weight, cap)
-    local first, last, nframes = nil, nil, 0
+    local first, second, last, nframes = nil, nil, nil, 0
     local seen_owner, seen_script = {}, {}
     for frame in string.gmatch(stack, "[^;]+") do
-        if not first then first = frame end
+        if not first then first = frame
+        elseif not second then second = frame end
         last = frame
         nframes = nframes + 1
         seen_owner[get_owner(frame)] = true
         seen_script[get_frame_script(frame)] = true
     end
     first, last = first or "?", last or "?"
-    local leaf_key = get_short_frame(first)
-    local script_file = get_frame_script(first)
-    local owner = get_script_owner(script_file)
+    local anchor = get_anchor_frame(first, second, nframes)
+    local leaf_key = get_short_frame(anchor)
+    local script_file = get_frame_script(anchor)
+    local owner = get_owner(anchor)
     v.leaf[leaf_key]              = (v.leaf[leaf_key] or 0) + weight
     v.by_script[script_file]      = (v.by_script[script_file] or 0) + weight
     v.root[get_short_frame(last)] = (v.root[get_short_frame(last)] or 0) + weight
@@ -265,7 +277,7 @@ local function collect_stack(v, stack, weight, cap)
     for script_key in pairs(seen_script) do v.by_script_total[script_key] = (v.by_script_total[script_key] or 0) + weight end
     if nframes > v.max_depth then v.max_depth = nframes end
     if cap and nframes >= cap then v.clipped = v.clipped + weight end
-    local bucket = get_stack_bucket(first)
+    local bucket = get_stack_bucket(anchor)
     v.framework[bucket]           = (v.framework[bucket] or 0) + weight
 end
 
@@ -304,6 +316,8 @@ end
 local function collect_cpu_sample(thread, count, vmstate)
     local stack = profile.dumpstack(thread, "", cpu.depth)
     if stack and stack ~= "" then
+        local pseudo = VMSTATE_LEAF[vmstate]
+        if pseudo then stack = pseudo .. ";" .. stack end
         local current = cpu.stacks[stack]
         if current then
             cpu.stacks[stack] = current + count
@@ -414,7 +428,7 @@ local function write_alloc_report(stacks, duration_sec, suffix, title)
             tostring(_G.MODDED_EXES_VERSION or "?"), format_bytes(total), duration_sec, get_key_count(by_stack)),
         RULE,
         "",
-        "  WHO GENERATES THE GARBAGE  (GC churn is the stutter source)",
+        "  WHO GENERATES THE GARBAGE  (GC pressure is the stutter source)",
     }
     if dropped > 0 then
         lines[#lines + 1] = format(
@@ -532,7 +546,7 @@ end
 
 --- @return string the owner (mod / modded exes / anomaly / engine / unknown) for a view key, resolved through the script it names.
 function get_owner(key)
-    if key:find("%[C%]") then return OWNER_ENGINE end
+    if key:find("%[C%]") or key:find("%[GC%]") or key:find("%[JIT%]") then return OWNER_ENGINE end
     local script_file = key:match("([%w_%.%-]+%.script)") or key:match("([%w_%.%-]+%.lua)")
     return script_file and get_script_owner(script_file) or OWNER_UNKNOWN
 end

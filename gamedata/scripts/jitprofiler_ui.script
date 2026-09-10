@@ -49,7 +49,7 @@ local VMSTATE = {
     { code = "G", label = "GC",          color = fcolor():set(0.90, 0.45, 0.45, 1),
       tip = "Garbage collection; a high share means allocation pressure, so switch to MEM to find the allocator." },
     { code = "J", label = "JIT compile", color = fcolor():set(0.75, 0.55, 0.85, 1),
-      tip = "The JIT compiler working; a spike means trace churn." },
+      tip = "The JIT compiler working; a spike means traces recompiling." },
 }
 
 -- The selectable views over a retained capture; BY MOD shows Own + Total columns, BY SCRIPT ranks by Total, frame views drill down.

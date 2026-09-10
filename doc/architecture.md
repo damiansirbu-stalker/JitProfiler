@@ -23,6 +23,14 @@ The interval is jittered. Each gap is a random draw from an exponential around t
 A mod running on a fixed schedule then cannot phase-lock to the sampler, so a capture sees its true share.
 The allocation profiler already draws its sample distance the same way, so both samplers are free of fixed-interval aliasing.
 
+A sample that lands outside Lua execution is only delivered at the next bytecode dispatch, so its weight would land on the next Lua frame, usually a binder freshly entered from the engine.
+`collect_cpu_sample` therefore reads the sample's VM state and prepends a `[C]`, `[GC]`, or `[JIT]` pseudo-leaf to the captured stack when the state was not Lua.
+The booking then splits on the dumped depth.
+A pseudo-leaf over a single frame is a fresh entry, so the preceding C time is unattributable trunk work and books to the engine owner.
+A pseudo-leaf over 2 or more frames means Lua was mid-execution around a C or GC call, so the weight books to the resuming frame, the one that made the call.
+The one approximation: a C call that itself enters Lua (a callback fired from inside an engine API) charges the entered handler, the nearest seam the dump can see.
+Either way a script is never credited for trunk time that ran before it was entered.
+
 ## Allocation: exact bytes, JIT off
 `jit.allocprof` counts every allocation at the allocator seam.
 It drains the pending bytes to the current stack on each bytecode instruction, with the JIT off for the session.
@@ -91,6 +99,9 @@ The panel, menu, and banner read `show_imgui` through a cached flag and draw not
 
 ## Limitations
 - Inclusive counts and the flamegraph are bounded by the captured stack depth. A frame beyond the depth is not counted, so raise depth to trace deeper.
+- Engine C time is measured as one bucket, because the sampler cannot see which C routine ran.
+  The `[C]` pseudo-leaf shows the Lua stack it re-entered from, and nothing more.
+  Cost a mod adds through data (populations, per-NPC config) surfaces as engine time, never under the mod's name.
 - The CPU JIT-compiled share is a floor, because phase-1 sampling is interpreter-anchored and under-counts JIT traces.
 - Allocation attribution is instruction-granular, so bytes from a C or GC path are credited to the next Lua frame.
 - Per-mod attribution needs an MO2/USVFS install. Elsewhere it degrades to script level.
