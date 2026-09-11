@@ -24,9 +24,10 @@ There is nothing to select and nothing to suspect in advance.
 Point it at the slow scene and read the ranking.
 The sampling is jittered, so a mod that runs on a schedule cannot dodge the sampler.
 
-It profiles CPU and memory.
+It offers CPU sampling, memory allocation profiling, and targeted instrumentation.
 CPU sampling shows where the Lua time goes.
 Memory profiling shows which code generates the garbage the collector must clear, the real source of Anomaly's stutter and something script-side profilers cannot measure.
+Instrumentation wraps a chosen set of scripts and times each function for its own and total wall-clock, including the engine C beneath a call, the one axis the sampler cannot reach.
 
 The sampler and the allocation counter are native code in the modded exe, beneath the script layer.
 That native core is my own work in xray-monolith. I backported the timer sampler and wrote the allocation profiler, so JitProfiler runs from the C up, one author for the whole stack.
@@ -52,7 +53,7 @@ run_string JitProfiler.start_cpu()
 -- play the scene 30-60 seconds
 run_string JitProfiler.stop_cpu()
 ```
-start_cpu(interval_ms, depth) overrides the 5 ms and depth 12 defaults. start_cpu(1) samples more often, start_cpu(5, 20) traces deeper.
+start_cpu(interval_ms, depth) overrides the 5 ms and depth 64 defaults. start_cpu(1) samples more often, start_cpu(5, 32) traces shallower and faster.
 
 The allocation profile shows which code generates GC garbage, with the JIT off and slower:
 ```
@@ -69,10 +70,10 @@ run_string JitProfiler.set_fold_baseline(true)
 Then stop as usual.
 
 In-game panel:
-An ImGui panel does the same without the console. Open the ImGui overlay (default F11), then pick JitProfiler in the menu bar.
-Start or stop the CPU or memory capture from the panel.
-Switch the ranked view (by mod, leaf, script, root, framework), and select a row to read the callers and callees of that frame.
-A small corner banner shows while a capture runs.
+An ImGui panel does everything without the console. Open the ImGui overlay (default F11), then pick JitProfiler in the menu bar.
+Two tabs split it. SAMPLING holds the CPU and memory captures with the ranked views (by mod, script, leaf, root), the VM-state split, and a live GC-health strip. Select a row to read the callers and callees of that frame.
+INSTRUMENTATION holds the targeted mode. Add scripts to a set from the BROWSE modlist or the + on a sampling row, run, and read each function's own and total time, sortable by any column, with avg, min, and max on hover and a frame-budget bar.
+On the multi-thread exe a Parallel GC toggle gives a clean CPU garbage-collector read. A small corner banner shows while a capture runs.
 
 Configuration (MCM):
 The JitProfiler MCM page holds the capture defaults for the sample interval, stack depth, report rows, auto-snapshot threshold, and the report fold.
@@ -85,11 +86,12 @@ jitprofiler_cpu_<timestamp>.txt     ranked text report
 jitprofiler_cpu_<timestamp>.folded  flamegraph for speedscope.app
 jitprofiler_mem_<timestamp>.txt     ranked text report
 jitprofiler_mem_<timestamp>.folded  flamegraph
+jitprofiler_inst_<timestamp>.txt    instrumentation report (own, total, avg, min, max)
 ```
 
 The report opens with a VM-state split, showing how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.
 The GC share flags allocation pressure without a separate run.
-Then the ranked views: BY MOD self (where the code ran) and total (every mod on the stack), BY LEAF (hot function), BY SCRIPT, BY ROOT (outermost frame driving the cost), and framework vs handlers.
+Then the ranked views: BY MOD own (where the code ran) and total (every mod on the stack), BY LEAF (hot function), BY SCRIPT, BY ROOT (outermost frame driving the cost), and framework vs handlers.
 The allocation report carries the same views by bytes.
 
 The .folded files open at speedscope.app, a flamegraph viewer that runs in your browser.

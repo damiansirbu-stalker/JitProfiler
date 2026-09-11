@@ -6,7 +6,8 @@ It has an engine layer and a mod layer.
 The engine layer is C, compiled into the demonized exe.
 `jit.profile` is LuaJIT 2.1's timer stack sampler, backported into 2.0.4 without GC64 so saves stay compatible.
 `jit.allocprof` accounts exact per-allocation bytes on the allocator seam.
-Both are raw capability delivered in the engine, not in this mod.
+`jit.util.gcstat` reads the live GC counters (total, threshold, estimate, debt) for the GC-health strip.
+These are raw capability delivered in the engine, not in this mod.
 
 The mod layer is Lua, `JitProfiler.script`, the front-end.
 It drives the primitives from the console and aggregates the samples.
@@ -126,5 +127,5 @@ The panel, menu, and banner read `show_imgui` through a cached flag and draw not
 - CPU and allocation are mutually exclusive. Each refuses to start while the other runs.
 
 ## Requires
-A demonized build exposing `jit.profile` and `jit.allocprof`, and xlibs for `xlog`.
+A demonized build exposing `jit.profile` and `jit.allocprof` (and `jit.util.gcstat` for the GC-health strip), and xlibs for `xlog`.
 On a stock exe the mod detects the missing primitives and stubs the commands.
