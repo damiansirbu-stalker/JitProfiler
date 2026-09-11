@@ -15,6 +15,8 @@ local WINDOW_H = 460
 local TABLE_H  = 240
 local VMBAR_W  = 130
 local BAR_W    = 80
+local FILTER_W = 180
+local VIEW_W   = 160
 local TOP_NEIGHBORS = 8
 local OVERHEAD_WARN = 4000
 local FRAME_MS_60 = 1000 / 60
@@ -98,15 +100,13 @@ local tree_cache
 local mono_ok = false
 local mono_checked = false
 
--- The panel ships JetBrains Mono for the number columns; probe once inside the frame so an install without it falls back cleanly.
---- @safety SAFE - pcall guards the push; the size probe tells a real jf_mono from the default fallback, so mono stays off when the atlas lacks the font.
+-- The panel ships JetBrains Mono at the engine's default 16px; an absent atlas resolves to the default face at the same size, so push unconditionally.
+--- @safety SAFE - PushFont resolves a missing name to the default font (script_imgui_inline.h:441 -> ImGui NULL-default), so the push never faults.
 local function init_mono()
     if mono_checked then return end
     mono_checked = true
-    local pushed = pcall(ImGui.PushFont, "jf_mono")
-    if not pushed then return end
-    mono_ok = (ImGui.GetFontSize() or 0) > 17
-    ImGui.PopFont()
+    mono_ok = pcall(ImGui.PushFont, "jf_mono")
+    if mono_ok then ImGui.PopFont() end
 end
 local function push_mono() if mono_ok then ImGui.PushFont("jf_mono") end end
 local function pop_mono() if mono_ok then ImGui.PopFont() end end
@@ -244,24 +244,29 @@ end
 
 local function render_tab_button(kind, label)
     local sel = (active_tab == kind)
-    if not sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
+    ImGui.PushStyleColor(ImGuiCol.Button, sel and COLOR_ACCENT or COLOR_DIM)
     if ImGui.Button(label .. "##tab", BTN_SIZE) and active_tab ~= kind then
         active_tab = kind
         selected_frame = nil
         selected_neighbors = nil
     end
-    if not sel then ImGui.PopStyleColor(1) end
+    ImGui.PopStyleColor(1)
 end
 
-local function render_view_selector(i)
-    local sel = (view_index == i)
-    if not sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
-    if ImGui.Button(VIEWS[i].label .. "##view", VZERO) then
-        view_index = i
-        selected_frame = nil
-        selected_neighbors = nil
+-- The view selector as a dropdown: one box shows the current view; the other three stay hidden until it opens.
+local function render_view_combo()
+    ImGui.Text("View")
+    ImGui.SameLine()
+    ImGui.SetNextItemWidth(VIEW_W)
+    if not ImGui.BeginCombo("##view", VIEWS[view_index].label, 0) then return end
+    for i = 1, #VIEWS do
+        if ImGui.Selectable(VIEWS[i].label, i == view_index, 0, VZERO) and i ~= view_index then
+            view_index = i
+            selected_frame = nil
+            selected_neighbors = nil
+        end
     end
-    if not sel then ImGui.PopStyleColor(1) end
+    ImGui.EndCombo()
 end
 
 -- A baseline owner is anything not resolved to a specific mod: anomaly, modded exes, engine, unknown.
@@ -443,6 +448,7 @@ local function render_controls()
     ImGui.SameLine(0, 20)
     ImGui.Text("Filter")
     ImGui.SameLine()
+    ImGui.SetNextItemWidth(FILTER_W)
     local new_filter = ImGui.InputText("##filter", filter_text, 64)
     if new_filter then filter_text = new_filter end
     ImGui.SameLine(0, 20)
@@ -452,11 +458,6 @@ local function render_controls()
     fold_baseline = new_fold
     ImGui.SameLine(0, 20)
     render_pgc_toggle()
-    ImGui.Spacing()
-    for i = 1, #VIEWS do
-        render_view_selector(i)
-        if i < #VIEWS then ImGui.SameLine() end
-    end
 end
 
 -- One integer capture setting as a whole-number slider, written back to the session state on change.
@@ -637,20 +638,16 @@ end
 -- One top-mode tab button (SAMPLING or INSTRUMENTATION).
 local function render_mode_tab(mode, label)
     local sel = (active_mode == mode)
-    if not sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
+    ImGui.PushStyleColor(ImGuiCol.Button, sel and COLOR_ACCENT or COLOR_DIM)
     if ImGui.Button(label .. "##mode", VZERO) and active_mode ~= mode then
         active_mode = mode
         selected_frame, selected_neighbors = nil, nil
     end
-    if not sel then ImGui.PopStyleColor(1) end
+    ImGui.PopStyleColor(1)
 end
 
--- The SAMPLING body: the CPU or MEM view toggle, then the retained capture.
+-- The SAMPLING body: the retained CPU or MEM capture, under the axis tabs and controls drawn above it.
 local function render_sampling_body()
-    render_tab_button(KIND_CPU, "CPU")
-    ImGui.SameLine()
-    render_tab_button(KIND_MEM, "MEM")
-    ImGui.Separator()
     if active_tab == KIND_MEM then
         render_gc_health()
         ImGui.Separator()
@@ -682,9 +679,9 @@ end
 -- One instrumentation sub-view tab (SELECTED or BROWSE).
 local function render_inst_view_tab(view, label)
     local sel = (inst_view == view)
-    if not sel then ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM) end
+    ImGui.PushStyleColor(ImGuiCol.Button, sel and COLOR_ACCENT or COLOR_DIM)
     if ImGui.Button(label .. "##iv", VZERO) then inst_view = view end
-    if not sel then ImGui.PopStyleColor(1) end
+    ImGui.PopStyleColor(1)
 end
 
 -- The INSTRUMENTATION body: the run control and overhead guard, then either the SELECTED working list plus results, or the BROWSE modlist.
@@ -722,6 +719,26 @@ local function render_instrument()
     if cap and not active then ImGui.Separator(); render_scan_tab(cap) end
 end
 
+-- The CPU/MEM axis selector for SAMPLING, drawn above the controls so the axis precedes the view.
+local function render_axis_tabs()
+    render_tab_button(KIND_CPU, "CPU")
+    ImGui.SameLine()
+    render_tab_button(KIND_MEM, "MEM")
+end
+
+-- The location line under the mode row: which mode, axis, and view (or instrumentation sub-view) is active.
+local function render_crumb()
+    local path
+    if active_mode == MODE_SAMPLING then
+        path = "SAMPLING > " .. ((active_tab == KIND_CPU) and "CPU" or "MEM") .. " > " .. VIEWS[view_index].label
+    else
+        path = "INSTRUMENTATION > " .. ((inst_view == INST_SELECTED) and "SELECTED" or "BROWSE")
+    end
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_ACCENT)
+    ImGui.Text(path)
+    ImGui.PopStyleColor(1)
+end
+
 local function render_panel()
     if not (panel_open and is_overlay_enabled()) then return end
     ImGui.SetNextWindowSize(WINDOW_SIZE, ImGuiCond.FirstUseEver)
@@ -736,9 +753,13 @@ local function render_panel()
         render_mode_tab(MODE_SAMPLING, "SAMPLING")
         ImGui.SameLine()
         render_mode_tab(MODE_INSTRUMENT, "INSTRUMENTATION")
+        render_crumb()
         ImGui.Separator()
         if active_mode == MODE_SAMPLING then
+            render_axis_tabs()
+            ImGui.Separator()
             render_controls()
+            render_view_combo()
             ImGui.Separator()
             render_sampling_body()
         else
