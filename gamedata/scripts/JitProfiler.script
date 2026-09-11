@@ -3,6 +3,7 @@
 local CPU_INTERVAL_MS     = 5
 local DEFAULT_STACK_DEPTH = 64
 local CPU_MAX_STACKS      = 50000
+local SCAN_MAX_DEPTH      = 200
 local TOP_N               = 40
 local AUTO_SNAP_PCT       = 90
 local BAR_WIDTH           = 20
@@ -520,11 +521,18 @@ end
 scan = { set = {}, count = 0, records = {}, saved = {}, wrapped = 0,
          stack = {}, sp = 0, t0 = 0, limit = 0, frames = 0, active = false }
 
+-- Never wrap the profiler's own machinery: the wrapper builds each frame's timer with xprofiler, so wrapping xprofiler recurses without end.
+local SCAN_BLACKLIST = {
+    xprofiler = true, JitProfiler = true, jitprofiler_ui = true,
+    jitprofiler_names = true, jf_mcm = true, _jitprofiler_deps = true,
+}
+
 -- One wrapper: time the call on a pooled stack frame, bank self and total, charge the span to the parent.
 --- @safety SAFE - pcall keeps a wrapped error from skipping the frame close; the error re-raises unchanged (level 0).
 local function build_wrapper(rec, original)
     return function(...)
         local sp = scan.sp + 1
+        if sp > SCAN_MAX_DEPTH then return original(...) end
         scan.sp = sp
         local frame = scan.stack[sp]
         if not frame then frame = { timer = xprofiler.new() }; scan.stack[sp] = frame end
@@ -583,7 +591,7 @@ end
 --- @novalidate(code.unused_export, reason:"panel control surface")
 function add_target(name)
     name = tostring(name or ""):gsub("%.script$", "")
-    if name == "" or scan.set[name] then return end
+    if name == "" or scan.set[name] or SCAN_BLACKLIST[name] then return end
     scan.set[name] = true
     scan.count = scan.count + 1
     if scan.active then build_wraps(name) end
