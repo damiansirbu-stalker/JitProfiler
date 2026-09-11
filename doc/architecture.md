@@ -93,7 +93,8 @@ Under SAMPLING a CPU/MEM toggle shows the retained last capture through `get_las
 A view selector switches the table between by mod, by script, by leaf, and by root; each column header sorts and a filter box narrows the rows.
 The by-script rows carry a per-row button that adds or removes the script from the instrumentation set.
 Under INSTRUMENTATION a start and stop control arms the whole set and an overhead line shows the wrapped-function count, then two sub-views split the screen: SELECTED lists the working set, each target removable, and BROWSE is a modlist grouped by mod with a search box where a + adds a script.
-The results table ranks each function by own with an own-share bar, plus own ms, total ms, and calls, with avg, min, and max per call on row hover and in the text report, under a frame-budget bar reading own ms per frame against a 60fps frame.
+The results table ranks each function by own with an own-share bar, plus own ms, total ms, and calls, each column sortable on click, with avg, min, and max per call on row hover and in the text report, under a frame-budget bar reading own ms per frame against a 60fps frame.
+Number columns right-align through CalcTextSize, so magnitude scans down the column.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
 The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile), each explained on hover.
 The MEM view carries a live GC-health strip from `jit.util.gcstat`, a bar for the heap toward the next collection plus the live estimate and debt, hidden when the exe lacks the getter.

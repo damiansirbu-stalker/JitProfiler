@@ -80,6 +80,8 @@ local fold_baseline = false
 local filter_text = ""
 local sort_by = SORT_VALUE
 local sort_asc = false
+local scan_sort = "self_us"
+local scan_sort_asc = false
 local selected_frame = nil
 local selected_neighbors = nil
 local rows_sig, rows_cache
@@ -109,9 +111,11 @@ end
 local function push_mono() if mono_ok then ImGui.PushFont("jf_mono") end end
 local function pop_mono() if mono_ok then ImGui.PopFont() end end
 
--- A number cell in white; the panel-wide mono font (when present) aligns the caller's pre-justified digits as a column.
+-- A right-aligned white number cell: push the cursor to the cell's right edge minus the text width so magnitude lines up as a column.
 local function render_num(text)
     ImGui.TableNextColumn()
+    local pad = ImGui.GetContentRegionAvail().x - ImGui.CalcTextSize(text).x
+    if pad > 0 then ImGui.SetCursorPosX(ImGui.GetCursorPosX() + pad) end
     ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)
     ImGui.Text(text)
     ImGui.PopStyleColor(1)
@@ -123,9 +127,9 @@ local function get_mod_color(name)
     if color then return color end
     local hash = 0
     for i = 1, #name do hash = (hash * 131 + name:byte(i)) % 1000000007 end
-    local red   = 0.55 + (hash % 100) / 100 * 0.45
-    local green = 0.55 + (floor(hash / 100) % 100) / 100 * 0.45
-    local blue  = 0.55 + (floor(hash / 10000) % 100) / 100 * 0.45
+    local red   = 0.55 + (hash % 100) / 100 * 0.28
+    local green = 0.60 + (floor(hash / 100) % 100) / 100 * 0.28
+    local blue  = 0.70 + (floor(hash / 10000) % 100) / 100 * 0.28
     color = fcolor():set(red, green, blue, 1.0)
     mod_colors[name] = color
     return color
@@ -570,8 +574,26 @@ local function render_scan_row(cap, row)
     render_num(format("%8d", row.calls))
 end
 
--- The scan results: each wrapped function ranked by inclusive ms, owner-colored, with the filter applied.
+-- Sort the instrument rows in place by the chosen field; key sorts by name, the rest by value.
+local function sort_scan_rows(rows)
+    local field, asc = scan_sort, scan_sort_asc
+    table.sort(rows, function(left, right)
+        if asc then return left[field] < right[field] end
+        return left[field] > right[field]
+    end)
+end
+
+-- A clickable results header; a click sets the sort field, a second click on the same field flips direction.
+local function render_scan_header(label, field)
+    ImGui.TableNextColumn()
+    if ImGui.Button(label .. "##sh") then
+        if scan_sort == field then scan_sort_asc = not scan_sort_asc else scan_sort, scan_sort_asc = field, false end
+    end
+end
+
+-- The scan results: each wrapped function with an own-share bar, sortable by any column header.
 local function render_scan_table(cap)
+    sort_scan_rows(cap.rows or {})
     if not ImGui.BeginTable("jf_scan", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Function", 0, 240, 0)
     ImGui.TableSetupColumn("Own %", 0, 130, 0)
@@ -579,11 +601,11 @@ local function render_scan_table(cap)
     ImGui.TableSetupColumn("Total ms", 0, 70, 0)
     ImGui.TableSetupColumn("Calls", 0, 60, 0)
     ImGui.TableNextRow()
-    ImGui.TableNextColumn(); ImGui.Text("Function")
-    ImGui.TableNextColumn(); ImGui.Text("Own %")
-    ImGui.TableNextColumn(); ImGui.Text("Own ms")
-    ImGui.TableNextColumn(); ImGui.Text("Total ms")
-    ImGui.TableNextColumn(); ImGui.Text("Calls")
+    render_scan_header("Function", "key")
+    render_scan_header("Own %", "self_us")
+    render_scan_header("Own ms", "self_us")
+    render_scan_header("Total ms", "total_us")
+    render_scan_header("Calls", "calls")
     local rows = cap.rows or {}
     for i = 1, #rows do render_scan_row(cap, rows[i]) end
     ImGui.EndTable()
