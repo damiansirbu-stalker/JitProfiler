@@ -446,7 +446,24 @@ local function render_gc_health()
     ImGui.PopStyleColor(1)
     ImGui.SameLine()
     ImGui.Text(format("%.1f / %.1f MB to next GC", stat.total * mb, stat.threshold * mb))
-    ImGui.Text(format("live estimate %.1f MB   debt %.0f B", stat.estimate * mb, stat.debt))
+    local efrac = stat.total > 0 and stat.estimate / stat.total or 0
+    if efrac > 1 then efrac = 1 end
+    ImGui.Text(format("%-10s", "GC live"))
+    ImGui.SameLine(120)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(efrac * 100))
+    ImGui.ProgressBar(efrac, VMBAR_SIZE, "")
+    ImGui.PopStyleColor(1)
+    ImGui.SameLine()
+    ImGui.Text(format("%.1f MB live", stat.estimate * mb))
+    local dfrac = stat.threshold > 0 and stat.debt / stat.threshold or 0
+    if dfrac > 1 then dfrac = 1 end
+    ImGui.Text(format("%-10s", "GC debt"))
+    ImGui.SameLine(120)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(dfrac * 100))
+    ImGui.ProgressBar(dfrac, VMBAR_SIZE, "")
+    ImGui.PopStyleColor(1)
+    ImGui.SameLine()
+    ImGui.Text(format("%.0f B behind", stat.debt))
     if stat.cycles then
         local now = time_global and time_global() or 0
         if gc_t0 == 0 then gc_t0, gc_c0 = now, stat.cycles end
