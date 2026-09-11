@@ -7,6 +7,9 @@ local rawget, rawset = rawget, rawset
 local pairs, math, table, type, pcall = pairs, math, table, type, pcall
 local floor = math.floor
 local format, RegisterScriptCallback = string.format, RegisterScriptCallback
+local time_global = time_global
+-- Rolling GC-collection rate: cycle count and time at the last 1-second sample, and the derived per-second rate.
+local gc_c0, gc_t0, gc_rate = 0, 0, 0
 -- jit.util.gcstat exists only on a profiler build; nil elsewhere, so the GC-health strip stays hidden.
 local gcstat_fn = jit and jit.util and jit.util.gcstat
 
@@ -31,6 +34,9 @@ local VIEW_BY_MOD = "by_mod"
 local VIEW_BY_SCRIPT = "by_script_total"
 local SORT_VALUE = "value"
 local SORT_NAME = "name"
+local PCT_OWN = "Own %"
+local PCT_TOTAL = "Total %"
+local GC_RATE_MS = 1000
 
 local COLOR_BG     = fcolor():set(0.09, 0.10, 0.12, 0.97)
 local COLOR_TEXT   = fcolor():set(0.86, 0.89, 0.94, 1.0)
@@ -67,9 +73,9 @@ local VMSTATE = {
 -- The selectable views over a retained capture; BY MOD shows Own + Total columns, BY SCRIPT ranks by Total, frame views drill down.
 local VIEWS = {
     { key = VIEW_BY_MOD,    label = "BY MOD",    frame_keyed = false },
-    { key = VIEW_BY_SCRIPT, label = "BY SCRIPT", frame_keyed = false },
-    { key = "leaf",         label = "BY LEAF",   frame_keyed = true },
-    { key = "root",         label = "BY ROOT",   frame_keyed = true },
+    { key = VIEW_BY_SCRIPT, label = "BY SCRIPT", frame_keyed = false, pct_label = PCT_TOTAL },
+    { key = "leaf",         label = "BY LEAF",   frame_keyed = true,  pct_label = PCT_OWN },
+    { key = "root",         label = "BY ROOT",   frame_keyed = true,  pct_label = PCT_TOTAL },
 }
 
 local WF = ImGuiWindowFlags
@@ -200,7 +206,7 @@ local function render_bar(pct)
     ImGui.PopStyleColor(1)
 end
 
--- Clickable header: an invisible full-cell button takes the click; the label draws over it, right-aligned like render_num so it never clips.
+-- Clickable header: an invisible full-cell button takes the click; the label draws over it, right-aligned so it never clips, and brightens on hover.
 local function render_sort_header(label, dim, right)
     ImGui.TableNextColumn()
     local start_x = ImGui.GetCursorPosX()
@@ -209,16 +215,20 @@ local function render_sort_header(label, dim, right)
     if ImGui.InvisibleButton("##h" .. label, vector2(avail, HEADER_H)) then
         if sort_by == dim then sort_asc = not sort_asc else sort_by, sort_asc = dim, false end
     end
+    local hovered = ImGui.IsItemHovered()
     ImGui.SameLine()
     local pad = right and (avail - ImGui.CalcTextSize(label).x) or 0
     if pad < 0 then pad = 0 end
     ImGui.SetCursorPosX(start_x + pad)
+    if hovered then ImGui.PushStyleColor(ImGuiCol.Text, COLOR_ACCENT) end
     ImGui.Text(label)
+    if hovered then ImGui.PopStyleColor(1) end
 end
 
 local function render_tooltip(cap, key, owner, weight)
     if not ImGui.IsItemHovered() then return end
-    ImGui.SetTooltip(format("%s\n%s\n%s", key, owner, format_weight(cap.kind, weight)))
+    ImGui.SetTooltip(format("%s\n%s\nresolve: %s\n%s", key, owner,
+        JitProfiler.get_owner_method(key), format_weight(cap.kind, weight)))
 end
 
 local function select_frame(cap, key)
@@ -352,6 +362,12 @@ end
 
 local function render_view_table(cap, view)
     local entries = get_rows(cap)
+    local hint = (view.pct_label == PCT_OWN)
+        and "Own % = innermost frame only, sums to ~100%"
+        or "Total % = on the stack anywhere; rows overlap, so it exceeds 100%"
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+    ImGui.Text(hint)
+    ImGui.PopStyleColor(1)
     if not ImGui.BeginTable("jf_view", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Frame", 0, 260, 0)
     ImGui.TableSetupColumn("Mod", 0, 150, 0)
@@ -360,7 +376,7 @@ local function render_view_table(cap, view)
     ImGui.TableNextRow()
     render_sort_header("Frame", SORT_NAME)
     render_sort_header("Mod", SORT_NAME)
-    render_sort_header("%", SORT_VALUE)
+    render_sort_header(view.pct_label or "%", SORT_VALUE)
     render_sort_header("Value", SORT_VALUE, true)
     for i = 1, #entries do render_view_row(cap, view, entries[i]) end
     ImGui.EndTable()
@@ -431,6 +447,13 @@ local function render_gc_health()
     ImGui.SameLine()
     ImGui.Text(format("%.1f / %.1f MB to next GC", stat.total * mb, stat.threshold * mb))
     ImGui.Text(format("live estimate %.1f MB   debt %.0f B", stat.estimate * mb, stat.debt))
+    if stat.cycles then
+        local now = time_global and time_global() or 0
+        if gc_t0 == 0 then gc_t0, gc_c0 = now, stat.cycles end
+        local dt = now - gc_t0
+        if dt >= GC_RATE_MS then gc_rate = (stat.cycles - gc_c0) * GC_RATE_MS / dt; gc_t0, gc_c0 = now, stat.cycles end
+        ImGui.Text(format("GC collections %.0f   ~%.1f/s", stat.cycles, gc_rate))
+    end
 end
 
 -- On MT the CPU G% is inflated while parallel GC runs; this toggle flips lua_parallel_gc for a clean read. Hidden when the cvar is absent (single-thread exe).
@@ -492,8 +515,26 @@ local function render_tab(cap)
     local at_cap = (cap.total > 0) and 100 * (cap.meta.clipped or 0) / cap.total or 0
     ImGui.Text(format("stack depth %d / cap %d   %.1f%% at cap",
         cap.meta.max_depth or 0, cap.meta.depth or 0, at_cap))
+    local dropped = cap.meta.dropped or 0
+    if dropped > 0 then
+        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_WARN)
+        if cap.kind == KIND_CPU then
+            ImGui.Text(format("dropped %d samples (stack table full)", dropped))
+        else
+            ImGui.Text(format("dropped %s (alloc table full)", format_weight(KIND_MEM, dropped)))
+        end
+        ImGui.PopStyleColor(1)
+    end
+    if not JitProfiler.is_resolve_ready() then
+        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_WARN)
+        ImGui.Text("owner resolve unavailable (no FFI): mod names are name-guesses")
+        ImGui.PopStyleColor(1)
+    end
     if cap.kind == KIND_CPU then
         ImGui.Separator()
+        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+        ImGui.Text("VM state at each sample")
+        ImGui.PopStyleColor(1)
         render_vmstate(cap)
     end
     ImGui.Separator()
@@ -592,7 +633,7 @@ local function sort_scan_rows(rows)
     end)
 end
 
--- A clickable results header, same invisible-button-plus-label shape as render_sort_header; right aligns the label over the number column.
+-- A clickable results header; hovers brighten, and the active sort column carries a ^/v arrow since the scan sorts per column.
 local function render_scan_header(label, field, right)
     ImGui.TableNextColumn()
     local start_x = ImGui.GetCursorPosX()
@@ -601,11 +642,15 @@ local function render_scan_header(label, field, right)
     if ImGui.InvisibleButton("##sh" .. label, vector2(avail, HEADER_H)) then
         if scan_sort == field then scan_sort_asc = not scan_sort_asc else scan_sort, scan_sort_asc = field, false end
     end
+    local hovered = ImGui.IsItemHovered()
+    local shown = (scan_sort == field) and (label .. (scan_sort_asc and " ^" or " v")) or label
     ImGui.SameLine()
-    local pad = right and (avail - ImGui.CalcTextSize(label).x) or 0
+    local pad = right and (avail - ImGui.CalcTextSize(shown).x) or 0
     if pad < 0 then pad = 0 end
     ImGui.SetCursorPosX(start_x + pad)
-    ImGui.Text(label)
+    if hovered then ImGui.PushStyleColor(ImGuiCol.Text, COLOR_ACCENT) end
+    ImGui.Text(shown)
+    if hovered then ImGui.PopStyleColor(1) end
 end
 
 -- The scan results: each wrapped function with an own-share bar, sortable by any column header.
@@ -629,7 +674,7 @@ local function render_scan_table(cap)
 end
 
 local function render_scan_tab(cap)
-    ImGui.Text(format("%d scripts, %d functions   %d frames   %s",
+    ImGui.Text(format("last run: %d scripts, %d functions   %d frames   %s",
         cap.meta.targets or 0, cap.meta.wrapped or 0, cap.meta.frames or 0, cap.meta.stamp or "?"))
     if (cap.meta.frames or 0) > 0 then
         local pfm = cap.meta.per_frame_ms or 0
@@ -676,6 +721,13 @@ local function render_sampling_body()
     if active_tab == KIND_MEM and JitProfiler.is_mem_active() then
         ImGui.SameLine()
         if ImGui.Button("Snapshot##snap", BTN_SIZE) then JitProfiler.write_snapshot() end
+        local usage = JitProfiler.get_alloc_usage and JitProfiler.get_alloc_usage()
+        if usage then
+            ImGui.SameLine(0, 20)
+            ImGui.Text("alloc table")
+            ImGui.SameLine()
+            render_bar(usage)
+        end
     end
     render_controls()
     render_view_combo()
@@ -778,6 +830,7 @@ local function render_panel()
         else
             render_sampling_body()
         end
+        ImGui.Spacing()
         ImGui.Separator()
         render_settings()
         pop_mono()
