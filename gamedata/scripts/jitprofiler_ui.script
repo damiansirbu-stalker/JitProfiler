@@ -17,6 +17,7 @@ local VMBAR_W  = 130
 local BAR_W    = 80
 local FILTER_W = 180
 local VIEW_W   = 160
+local HEADER_H = 20
 local TOP_NEIGHBORS = 8
 local OVERHEAD_WARN = 4000
 local FRAME_MS_60 = 1000 / 60
@@ -35,6 +36,8 @@ local COLOR_BG     = fcolor():set(0.09, 0.10, 0.12, 0.97)
 local COLOR_TEXT   = fcolor():set(0.86, 0.89, 0.94, 1.0)
 local COLOR_DIM    = fcolor():set(0.22, 0.24, 0.28, 1.0)
 local COLOR_ACCENT = fcolor():set(0.26, 0.52, 0.85, 1.0)
+local COLOR_RUN    = fcolor():set(0.90, 0.35, 0.35, 1.0)
+local COLOR_WARN   = fcolor():set(0.85, 0.70, 0.35, 1.0)
 -- Reused fcolor for the single-hue blue heat ramp, lerped dim-to-bright by share in get_heat_color.
 local HEAT_COLOR   = fcolor():set(0.26, 0.52, 0.85, 1.0)
 
@@ -77,7 +80,8 @@ local SPAN_ALL = ImGuiSelectableFlags.SpanAllColumns
 
 local panel_open = false
 local active_tab = KIND_CPU
-local view_index = 1
+-- default view BY SCRIPT: its rows carry the +/- add-to-instrumentation button
+local view_index = 2
 local fold_baseline = false
 local filter_text = ""
 local sort_by = SORT_VALUE
@@ -89,9 +93,6 @@ local selected_neighbors = nil
 local rows_sig, rows_cache
 local mod_colors = {}
 
-local MODE_SAMPLING = "sampling"
-local MODE_INSTRUMENT = "instrument"
-local active_mode = MODE_SAMPLING
 local INST_SELECTED = "selected"
 local INST_BROWSE = "browse"
 local inst_view = INST_SELECTED
@@ -195,20 +196,24 @@ end
 
 local function render_bar(pct)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(pct))
-    ImGui.ProgressBar(pct / 100, BAR_SIZE, "")
-    ImGui.PopStyleColor(1)
-    ImGui.SameLine()
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)
-    ImGui.Text(format("%.1f%%", pct))
+    ImGui.ProgressBar(pct / 100, BAR_SIZE, format("%.1f%%", pct))
     ImGui.PopStyleColor(1)
 end
 
--- A clickable column header; the name column sorts by name, the rest by value, and a second click flips direction.
-local function render_sort_header(label, dim)
+-- Clickable header: an invisible full-cell button takes the click; the label draws over it, right-aligned like render_num so it never clips.
+local function render_sort_header(label, dim, right)
     ImGui.TableNextColumn()
-    if ImGui.Button(label .. "##h") then
+    local start_x = ImGui.GetCursorPosX()
+    local avail = ImGui.GetContentRegionAvail().x
+    if avail < 1 then avail = 1 end
+    if ImGui.InvisibleButton("##h" .. label, vector2(avail, HEADER_H)) then
         if sort_by == dim then sort_asc = not sort_asc else sort_by, sort_asc = dim, false end
     end
+    ImGui.SameLine()
+    local pad = right and (avail - ImGui.CalcTextSize(label).x) or 0
+    if pad < 0 then pad = 0 end
+    ImGui.SetCursorPosX(start_x + pad)
+    ImGui.Text(label)
 end
 
 local function render_tooltip(cap, key, owner, weight)
@@ -221,11 +226,11 @@ local function select_frame(cap, key)
     selected_neighbors = key and JitProfiler.compute_neighbors(cap.kind, key) or nil
 end
 
--- One capture-control button; grays out while the opposite axis runs, since the two are mutually exclusive.
+-- The Start/Stop button inside the open CPU or MEM tab; grays out while another capture runs, since the three are mutually exclusive.
 local function render_capture_button(kind)
     local this_on = (kind == KIND_CPU) and JitProfiler.is_cpu_active() or JitProfiler.is_mem_active()
     local other_on = ((kind == KIND_CPU) and JitProfiler.is_mem_active() or JitProfiler.is_cpu_active()) or JitProfiler.is_scan_active()
-    local label = (this_on and "Stop " or "Start ") .. ((kind == KIND_CPU) and "CPU" or "MEM")
+    local label = this_on and "Stop" or "Start"
     if other_on and not this_on then
         ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
         ImGui.Button(label .. "##cap" .. kind, BTN_SIZE)
@@ -242,10 +247,12 @@ local function render_capture_button(kind)
     end
 end
 
+-- One of the three top tabs (CPU / MEM / INSTRUMENT). While a capture runs, the tabs that are not the running one lock: dim and unclickable.
 local function render_tab_button(kind, label)
     local sel = (active_tab == kind)
+    local locked = not sel and (JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or JitProfiler.is_scan_active())
     ImGui.PushStyleColor(ImGuiCol.Button, sel and COLOR_ACCENT or COLOR_DIM)
-    if ImGui.Button(label .. "##tab", BTN_SIZE) and active_tab ~= kind then
+    if ImGui.Button(label .. "##tab", VZERO) and not locked and active_tab ~= kind then
         active_tab = kind
         selected_frame = nil
         selected_neighbors = nil
@@ -306,7 +313,7 @@ local function render_bymod_table(cap)
     render_sort_header("Mod", SORT_NAME)
     render_sort_header("Own %", SORT_VALUE)
     render_sort_header("Total %", SORT_VALUE)
-    render_sort_header("Value", SORT_VALUE)
+    render_sort_header("Value", SORT_VALUE, true)
     for i = 1, #entries do render_bymod_row(cap, entries[i], own_map) end
     ImGui.EndTable()
 end
@@ -354,7 +361,7 @@ local function render_view_table(cap, view)
     render_sort_header("Frame", SORT_NAME)
     render_sort_header("Mod", SORT_NAME)
     render_sort_header("%", SORT_VALUE)
-    render_sort_header("Value", SORT_VALUE)
+    render_sort_header("Value", SORT_VALUE, true)
     for i = 1, #entries do render_view_row(cap, view, entries[i]) end
     ImGui.EndTable()
 end
@@ -428,6 +435,12 @@ end
 
 -- On MT the CPU G% is inflated while parallel GC runs; this toggle flips lua_parallel_gc for a clean read. Hidden when the cvar is absent (single-thread exe).
 local has_pgc
+-- Whether the MT parallel-GC cvar exists and is on; drives both the checkbox and the CPU inflation warning.
+local function is_pgc_on()
+    if has_pgc == nil then has_pgc = get_console():get_string("lua_parallel_gc") ~= nil end
+    return has_pgc and get_console():get_integer("lua_parallel_gc") ~= 0
+end
+
 local function render_pgc_toggle()
     if has_pgc == nil then has_pgc = get_console():get_string("lua_parallel_gc") ~= nil end
     if not has_pgc then return end
@@ -437,15 +450,8 @@ local function render_pgc_toggle()
     if ImGui.IsItemHovered() then ImGui.SetTooltip("Off gives a clean CPU G%; the MT parallel GC inflates it.") end
 end
 
+-- The filter and fold row for a sampling tab, with the CPU-only Parallel GC toggle appended.
 local function render_controls()
-    render_capture_button(KIND_CPU)
-    ImGui.SameLine()
-    render_capture_button(KIND_MEM)
-    if JitProfiler.is_mem_active() then
-        ImGui.SameLine()
-        if ImGui.Button("Snapshot##snap", BTN_SIZE) then JitProfiler.write_snapshot() end
-    end
-    ImGui.SameLine(0, 20)
     ImGui.Text("Filter")
     ImGui.SameLine()
     ImGui.SetNextItemWidth(FILTER_W)
@@ -456,8 +462,10 @@ local function render_controls()
     local _, new_fold = ImGui.Checkbox("Fold baseline", fold_baseline)
     if new_fold ~= fold_baseline then JitProfiler.set_setting("fold", new_fold) end
     fold_baseline = new_fold
-    ImGui.SameLine(0, 20)
-    render_pgc_toggle()
+    if active_tab == KIND_CPU then
+        ImGui.SameLine(0, 20)
+        render_pgc_toggle()
+    end
 end
 
 -- One integer capture setting as a whole-number slider, written back to the session state on change.
@@ -584,12 +592,20 @@ local function sort_scan_rows(rows)
     end)
 end
 
--- A clickable results header; a click sets the sort field, a second click on the same field flips direction.
-local function render_scan_header(label, field)
+-- A clickable results header, same invisible-button-plus-label shape as render_sort_header; right aligns the label over the number column.
+local function render_scan_header(label, field, right)
     ImGui.TableNextColumn()
-    if ImGui.Button(label .. "##sh") then
+    local start_x = ImGui.GetCursorPosX()
+    local avail = ImGui.GetContentRegionAvail().x
+    if avail < 1 then avail = 1 end
+    if ImGui.InvisibleButton("##sh" .. label, vector2(avail, HEADER_H)) then
         if scan_sort == field then scan_sort_asc = not scan_sort_asc else scan_sort, scan_sort_asc = field, false end
     end
+    ImGui.SameLine()
+    local pad = right and (avail - ImGui.CalcTextSize(label).x) or 0
+    if pad < 0 then pad = 0 end
+    ImGui.SetCursorPosX(start_x + pad)
+    ImGui.Text(label)
 end
 
 -- The scan results: each wrapped function with an own-share bar, sortable by any column header.
@@ -604,9 +620,9 @@ local function render_scan_table(cap)
     ImGui.TableNextRow()
     render_scan_header("Function", "key")
     render_scan_header("Own %", "self_us")
-    render_scan_header("Own ms", "self_us")
-    render_scan_header("Total ms", "total_us")
-    render_scan_header("Calls", "calls")
+    render_scan_header("Own ms", "self_us", true)
+    render_scan_header("Total ms", "total_us", true)
+    render_scan_header("Calls", "calls", true)
     local rows = cap.rows or {}
     for i = 1, #rows do render_scan_row(cap, rows[i]) end
     ImGui.EndTable()
@@ -635,19 +651,35 @@ local function is_overlay_enabled()
     return not cfg or cfg.show_imgui ~= false
 end
 
--- One top-mode tab button (SAMPLING or INSTRUMENTATION).
-local function render_mode_tab(mode, label)
-    local sel = (active_mode == mode)
-    ImGui.PushStyleColor(ImGuiCol.Button, sel and COLOR_ACCENT or COLOR_DIM)
-    if ImGui.Button(label .. "##mode", VZERO) and active_mode ~= mode then
-        active_mode = mode
-        selected_frame, selected_neighbors = nil, nil
+-- Under the tabs: a red recording line while a capture runs, plus a CPU-tab caution when parallel GC would inflate the G%.
+local function render_status_line()
+    local prog = JitProfiler.get_capture_progress()
+    if prog then
+        local mode = JitProfiler.is_cpu_active() and "CPU"
+            or (JitProfiler.is_mem_active() and "MEM" or "INSTRUMENT")
+        local line = "REC  " .. mode .. "  " .. format_clock(prog.elapsed)
+        if prog.limit > 0 then line = line .. " / " .. format_clock(prog.limit) end
+        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_RUN)
+        ImGui.Text(line)
+        ImGui.PopStyleColor(1)
     end
-    ImGui.PopStyleColor(1)
+    if active_tab == KIND_CPU and is_pgc_on() then
+        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_WARN)
+        ImGui.Text("Parallel GC on: CPU GC% inflated. Uncheck Parallel GC below for a clean read.")
+        ImGui.PopStyleColor(1)
+    end
 end
 
--- The SAMPLING body: the retained CPU or MEM capture, under the axis tabs and controls drawn above it.
+-- A CPU or MEM tab: its own Start/Stop and Snapshot, the filter/fold/parallel-gc row, the view dropdown, then the retained capture.
 local function render_sampling_body()
+    render_capture_button(active_tab)
+    if active_tab == KIND_MEM and JitProfiler.is_mem_active() then
+        ImGui.SameLine()
+        if ImGui.Button("Snapshot##snap", BTN_SIZE) then JitProfiler.write_snapshot() end
+    end
+    render_controls()
+    render_view_combo()
+    ImGui.Separator()
     if active_tab == KIND_MEM then
         render_gc_health()
         ImGui.Separator()
@@ -656,7 +688,7 @@ local function render_sampling_body()
     if cap then
         render_tab(cap)
     else
-        ImGui.Text("No capture yet.  Start " .. ((active_tab == KIND_CPU) and "CPU" or "MEM") .. ", play, then Stop.")
+        ImGui.Text("No capture yet.  Press Start, play, then Stop.")
     end
 end
 
@@ -690,7 +722,7 @@ local function render_instrument()
     local active = JitProfiler.is_scan_active()
     if active then
         if ImGui.Button("Stop##inst", BTN_SIZE) then JitProfiler.stop_scan() end
-    elseif JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() then
+    elseif JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or targets == 0 then
         ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
         ImGui.Button("Start##inst", BTN_SIZE)
         ImGui.PopStyleColor(1)
@@ -698,7 +730,11 @@ local function render_instrument()
         if ImGui.Button("Start##inst", BTN_SIZE) then JitProfiler.start_scan() end
     end
     ImGui.SameLine()
-    ImGui.Text(format("%d scripts, %d functions", targets, wrapped))
+    if targets == 0 then
+        ImGui.Text("no scripts selected  -  add from BROWSE or a by-script row")
+    else
+        ImGui.Text(format("%d scripts, %d functions", targets, wrapped))
+    end
     if wrapped > OVERHEAD_WARN then
         ImGui.SameLine()
         ImGui.PushStyleColor(ImGuiCol.Text, VMSTATE[4].color)
@@ -719,26 +755,6 @@ local function render_instrument()
     if cap and not active then ImGui.Separator(); render_scan_tab(cap) end
 end
 
--- The CPU/MEM axis selector for SAMPLING, drawn above the controls so the axis precedes the view.
-local function render_axis_tabs()
-    render_tab_button(KIND_CPU, "CPU")
-    ImGui.SameLine()
-    render_tab_button(KIND_MEM, "MEM")
-end
-
--- The location line under the mode row: which mode, axis, and view (or instrumentation sub-view) is active.
-local function render_crumb()
-    local path
-    if active_mode == MODE_SAMPLING then
-        path = "SAMPLING > " .. ((active_tab == KIND_CPU) and "CPU" or "MEM") .. " > " .. VIEWS[view_index].label
-    else
-        path = "INSTRUMENTATION > " .. ((inst_view == INST_SELECTED) and "SELECTED" or "BROWSE")
-    end
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_ACCENT)
-    ImGui.Text(path)
-    ImGui.PopStyleColor(1)
-end
-
 local function render_panel()
     if not (panel_open and is_overlay_enabled()) then return end
     ImGui.SetNextWindowSize(WINDOW_SIZE, ImGuiCond.FirstUseEver)
@@ -750,20 +766,17 @@ local function render_panel()
     if expanded then
         init_mono()
         push_mono()
-        render_mode_tab(MODE_SAMPLING, "SAMPLING")
+        render_tab_button(KIND_CPU, "CPU")
         ImGui.SameLine()
-        render_mode_tab(MODE_INSTRUMENT, "INSTRUMENTATION")
-        render_crumb()
+        render_tab_button(KIND_MEM, "MEM")
+        ImGui.SameLine()
+        render_tab_button(KIND_SCAN, "INSTRUMENT")
+        render_status_line()
         ImGui.Separator()
-        if active_mode == MODE_SAMPLING then
-            render_axis_tabs()
-            ImGui.Separator()
-            render_controls()
-            render_view_combo()
-            ImGui.Separator()
-            render_sampling_body()
-        else
+        if active_tab == KIND_SCAN then
             render_instrument()
+        else
+            render_sampling_body()
         end
         ImGui.Separator()
         render_settings()
