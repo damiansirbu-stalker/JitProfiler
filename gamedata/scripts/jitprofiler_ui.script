@@ -559,7 +559,10 @@ local function render_scan_row(cap, row)
     ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
     ImGui.Text(row.key)
     ImGui.PopStyleColor(1)
-    if ImGui.IsItemHovered() then ImGui.SetTooltip(owner) end
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip(format("%s\navg %.1f us   min %.1f us   max %.1f us",
+            owner, row.calls > 0 and row.self_us / row.calls or 0, row.min_us or 0, row.max_us or 0))
+    end
     ImGui.TableNextColumn()
     render_bar(own_pct)
     render_num(format("%8.2f", row.self_us / 1000))
