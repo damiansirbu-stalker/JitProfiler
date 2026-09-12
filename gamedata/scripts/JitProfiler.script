@@ -4,7 +4,6 @@ local CPU_INTERVAL_MS     = 5
 local DEFAULT_STACK_DEPTH = 64
 local CPU_MAX_STACKS      = 50000
 local SCAN_MAX_DEPTH      = 200
-local TOP_N               = 40
 local AUTO_SNAP_PCT       = 90
 local BAR_WIDTH           = 20
 local BYTES_PER_MB        = 1048576
@@ -17,12 +16,12 @@ local OWNER_MOD           = "mod: "
 local OWNER_STRING        = "loadstring"
 
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
-local pcall, tostring, tonumber, require, io, os, type = pcall, tostring, tonumber, require, io, os, type
+local pcall, tostring, tonumber, require, os, type = pcall, tostring, tonumber, require, os, type
 local format = string.format
 local getFS, time_global, jit = getFS, time_global, jit
 local RegisterScriptCallback = RegisterScriptCallback
 local rawget, rawset = rawget, rawset
-local error, unpack, select = error, unpack, select
+local error, unpack, select, next = error, unpack, select, next
 
 -- Per-sample VM state from jit.profile: what the VM was doing when the timer fired.
 local VMSTATE = {
@@ -87,6 +86,10 @@ if not (profile and allocprof) then
     add_target, remove_target, start_scan, stop_scan = log_absent, log_absent, log_absent, log_absent
     start_callbacks, stop_callbacks = log_absent, log_absent
     is_callbacks_active = function() return false end
+    add_callback_target, remove_callback_target = log_absent, log_absent
+    is_callback_target = function() return false end
+    get_callback_pick_count = function() return 0 end
+    get_registered_callbacks = function() return {} end
     return
 end
 
@@ -96,10 +99,9 @@ local function build_log_path(name)
 end
 
 local function write_lines(path, lines)
-    local file = io.open(path, "w")
-    if not file then log("!JitProfiler: cannot write %s", tostring(path)); return nil end
-    for i = 1, #lines do file:write(lines[i]); file:write("\n") end
-    file:close()
+    if not xfs.write_file(path, table.concat(lines, "\n") .. "\n") then
+        log("!JitProfiler: cannot write %s", tostring(path)); return nil
+    end
     return path
 end
 
@@ -178,7 +180,7 @@ local ffi, k32
 -- Session capture settings, anchored to _G so the two chunk generations share one table. Edited from the panel, never persisted.
 local settings = rawget(_G, "__jitprofiler_settings")
 if not settings then
-    settings = { interval = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, top_n = TOP_N,
+    settings = { interval = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH,
                  auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false }
     rawset(_G, "__jitprofiler_settings", settings)
 end
@@ -247,18 +249,16 @@ end
 
 local function compute_pct(value, total) return total > 0 and (100.0 * value / total) or 0 end
 
--- Append a ranked top-N view; opts.owned resolves each row's mod and honours the report fold.
+-- Append a ranked view with every row (the report is the analysis artifact, never truncated); opts.owned resolves each row's mod and honours the report fold.
 local function build_view(lines, title, map, total, fmt, opts)
     local owned = opts and opts.owned
-    local top_n = settings.top_n
     local fold = fold_override
     if fold == nil then fold = settings.fold and true or false end
     lines[#lines + 1] = ""
     lines[#lines + 1] = "-- " .. title .. " " .. string.rep("-", math.max(2, 68 - #title))
     local entries = sort_entries(map)
-    local shown, skipped = 0, 0
+    local skipped = 0
     for i = 1, #entries do
-        if shown >= top_n then break end
         local key, weight = entries[i][1], entries[i][2]
         local owner = owned and get_owner(key) or nil
         if owned and fold and owner and owner:sub(1, #OWNER_MOD) ~= OWNER_MOD then
@@ -267,11 +267,8 @@ local function build_view(lines, title, map, total, fmt, opts)
             local percent = compute_pct(weight, total)
             local label = owner and format("%-30s [%s] %s", get_owner_label(key), get_owner_method(key), key) or key
             lines[#lines + 1] = format("  %6.2f%% %s %12s  %s", percent, build_bar(percent), fmt(weight), label)
-            shown = shown + 1
         end
     end
-    local rest = #entries - shown - skipped
-    if rest > 0 then lines[#lines + 1] = format("  ... %d more rows", rest) end
     if skipped > 0 then lines[#lines + 1] = format("  (%d baseline rows folded)", skipped) end
 end
 
@@ -553,7 +550,8 @@ function start_alloc(depth)
     alloc.snap_pct = settings.auto_snap
     allocprof.start(alloc.depth)
     alloc.capturing = true
-    log("JitProfiler/alloc: ON (JIT off, exact bytes, depth %d). Play, then JitProfiler.stop_alloc(). Auto-dumps at %d%% full.", alloc.depth, alloc.snap_pct)
+    log("JitProfiler/alloc: ON (JIT off, exact bytes, depth %d). FPS drops hard on a heavy modpack; capture short, then JitProfiler.stop_alloc(). Auto-dumps at %d%% full.",
+        alloc.depth, alloc.snap_pct)
     show_tip("JitProfiler ALLOC ON")
 end
 
@@ -595,9 +593,10 @@ scan = { set = {}, count = 0, records = {}, saved = {}, wrapped = 0, edges = {},
 -- Callbacks: time every registered handler by wrapping the make_callback intercepts table in place; state anchored to _G.
 callbacks = rawget(_G, "__jitprofiler_callbacks")
 if not callbacks then
-    callbacks = { active = false, records = {}, saved = {}, stack = {}, sp = 0, wrapped = 0, t0 = 0, limit = 0 }
+    callbacks = { active = false, records = {}, saved = {}, stack = {}, sp = 0, wrapped = 0, t0 = 0, limit = 0, set = {} }
     rawset(_G, "__jitprofiler_callbacks", callbacks)
 end
+callbacks.set = callbacks.set or {}
 local INTERCEPTS_UPVALUE = "intercepts"
 local intercepts_ref
 
@@ -858,11 +857,13 @@ function is_scan_active()
 end
 
 -- The intercepts table is file-local in axr_main; make_callback closes over it, so read the reference by upvalue.
+-- make_callback lives in the axr_main module table like every axr_main function, never as a bare _G global.
 --- @safety SAFE - if the upvalue is absent (a build without it) intercepts_ref stays nil and the callbacks mode goes inert.
 local function resolve_intercepts()
     if intercepts_ref then return true end
     if not (debug and debug.getupvalue) then return false end
-    local mc = rawget(_G, "make_callback")
+    local axr = rawget(_G, "axr_main")
+    local mc = type(axr) == "table" and axr.make_callback or nil
     if type(mc) ~= "function" then return false end
     for i = 1, 60 do
         local name, value = debug.getupvalue(mc, i)
@@ -885,6 +886,15 @@ local function is_own_handler(handler)
     local info = debug.getinfo(handler, "S")
     local src = info and info.short_src
     return src ~= nil and src:lower():find("jitprofiler", 1, true) ~= nil
+end
+
+-- The function handlers of one callback that are safe to wrap, each with its priority.
+local function collect_handlers(handlers)
+    local to_wrap = {}
+    for handler, prio in pairs(handlers) do
+        if type(handler) == "function" and not is_own_handler(handler) then to_wrap[#to_wrap + 1] = { handler, prio } end
+    end
+    return to_wrap
 end
 
 -- One callbacks wrapper: time the handler inclusive of engine C, bank own/total, re-raise a handler error unchanged.
@@ -961,13 +971,11 @@ local function write_callbacks_report(duration_sec)
     end
     local by_cb = {}
     for i = 1, #rows do by_cb[rows[i].callback] = (by_cb[rows[i].callback] or 0) + rows[i].self_us end
-    local cb_rows = {}
-    for name in pairs(by_cb) do cb_rows[#cb_rows + 1] = name end
-    table.sort(cb_rows, function(left, right) return by_cb[left] > by_cb[right] end)
+    local cb_rows = sort_entries(by_cb)
     lines[#lines + 1] = ""
     lines[#lines + 1] = "-- BY CALLBACK   own ms summed across handlers " .. string.rep("-", 40)
     for i = 1, #cb_rows do
-        lines[#lines + 1] = format("  %-40s %10.2f ms own", cb_rows[i], by_cb[cb_rows[i]] / 1000.0)
+        lines[#lines + 1] = format("  %-40s %10.2f ms own", cb_rows[i][1], cb_rows[i][2] / 1000.0)
     end
     local stamp = get_timestamp()
     local report_path = write_lines(build_log_path("jitprofiler_callbacks_" .. stamp .. ".txt"), lines)
@@ -989,11 +997,9 @@ function start_callbacks()
     if not resolve_intercepts() then log("!JitProfiler/callbacks: make_callback intercepts not reachable on this build; inert."); return end
     callbacks.records, callbacks.saved, callbacks.sp, callbacks.wrapped = {}, {}, 0, 0
     callbacks.t0, callbacks.active = get_time_ms(), true
+    local pick = next(callbacks.set) ~= nil
     for name, handlers in pairs(intercepts_ref) do
-        local to_wrap = {}
-        for handler, prio in pairs(handlers) do
-            if type(handler) == "function" and not is_own_handler(handler) then to_wrap[#to_wrap + 1] = { handler, prio } end
-        end
+        local to_wrap = (not pick or callbacks.set[name]) and collect_handlers(handlers) or {}
         for i = 1, #to_wrap do
             local handler, prio = to_wrap[i][1], to_wrap[i][2]
             local hframe = get_handler_frame(handler)
@@ -1007,7 +1013,7 @@ function start_callbacks()
             callbacks.wrapped = callbacks.wrapped + 1
         end
     end
-    log("JitProfiler/callbacks: wrapping %d handlers. Play, then JitProfiler.stop_callbacks().", callbacks.wrapped)
+    log("JitProfiler/callbacks: wrapping %d handlers%s. Play, then JitProfiler.stop_callbacks().", callbacks.wrapped, pick and " (picked callbacks only)" or "")
     show_tip(format("JitProfiler CALLBACKS %d handlers", callbacks.wrapped))
 end
 
@@ -1024,6 +1030,44 @@ end
 --- @novalidate(code.unused_export, reason:"panel control surface")
 function is_callbacks_active()
     return callbacks.active
+end
+
+--- Add a callback to the picker set; the next start_callbacks arms only picked callbacks (empty set = all).
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function add_callback_target(name)
+    if tostring(name or "") ~= "" then callbacks.set[tostring(name)] = true end
+end
+
+--- Remove a callback from the picker set.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function remove_callback_target(name)
+    callbacks.set[tostring(name or "")] = nil
+end
+
+--- @return boolean whether a callback is in the picker set.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function is_callback_target(name)
+    return callbacks.set[tostring(name or "")] == true
+end
+
+--- @return number the count of picked callbacks; 0 means every callback arms.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function get_callback_pick_count()
+    local count = 0
+    for _ in pairs(callbacks.set) do count = count + 1 end
+    return count
+end
+
+--- @return table the registered callbacks from the make_callback intercepts, sorted { name, handlers } rows; {} when unreachable.
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function get_registered_callbacks()
+    if not resolve_intercepts() then return {} end
+    local list = {}
+    for name, handlers in pairs(intercepts_ref) do
+        list[#list + 1] = { name = name, handlers = #collect_handlers(handlers) }
+    end
+    table.sort(list, function(left, right) return left.name < right.name end)
+    return list
 end
 
 -- Per-frame heartbeat: count scan frames, auto-stop a capture at its duration limit, auto-snapshot before the alloc table fills. Near-free when idle.
