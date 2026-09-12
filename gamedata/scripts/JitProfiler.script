@@ -14,6 +14,7 @@ local OWNER_UNKNOWN       = "unknown"
 local OWNER_ENGINE        = "engine"
 local OWNER_MODDED        = "modded exes"
 local OWNER_MOD           = "mod: "
+local OWNER_STRING        = "loadstring"
 
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
 local pcall, tostring, tonumber, require, io, os, type = pcall, tostring, tonumber, require, io, os, type
@@ -21,7 +22,7 @@ local format = string.format
 local getFS, time_global, jit = getFS, time_global, jit
 local RegisterScriptCallback = RegisterScriptCallback
 local rawget, rawset = rawget, rawset
-local error, unpack = error, unpack
+local error, unpack, select = error, unpack, select
 
 -- Per-sample VM state from jit.profile: what the VM was doing when the timer fired.
 local VMSTATE = {
@@ -78,6 +79,14 @@ if not (profile and allocprof) then
     get_setting = function() return 0 end
     set_setting = function() end
     compute_neighbors = function() return nil end
+    compute_scan_neighbors = function() return nil end
+    is_scan_active = function() return false end
+    is_target = function() return false end
+    get_targets = function() return {} end
+    get_target_stats = function() return 0, 0 end
+    add_target, remove_target, start_scan, stop_scan = log_absent, log_absent, log_absent, log_absent
+    start_callbacks, stop_callbacks = log_absent, log_absent
+    is_callbacks_active = function() return false end
     return
 end
 
@@ -106,20 +115,29 @@ local function get_timestamp()
     return os.date("%Y%m%d_%H%M%S")
 end
 
--- Reduce a frame to name@script:line, pulling the basename cleanly out of a truncated short_src.
--- On a truncated frame with no file token, return it unchanged: it already carries name@..., so prepending would double the name.
+-- The scripts-relative path (forward slash) of the .script/.lua a frame or key names; nil for a pseudo-leaf or no file token.
+-- A subdir require'd module keeps its subpath (illish/patches/x.lua), so it resolves to its real file and never collides with a root name.
+local function get_script_id(str)
+    local path = str:match("([%w_%.%-\\/]+%.script)") or str:match("([%w_%.%-\\/]+%.lua)")
+    if not path then return nil end
+    return (path:gsub("\\", "/"):gsub("^.*/scripts/", ""))
+end
+
+-- Reduce a frame to name@<scripts-relative path>:line, normalising separators and dropping the install prefix.
+-- A frame with no file token is returned unchanged: it already carries name@..., so prepending would double the name.
 local function get_short_frame(frame)
-    local file = frame:match("([%w_%.%-]+%.script:%-?%d+)")
-              or frame:match("([%w_%.%-]+%.lua:%-?%d+)")
+    local file = frame:match("([%w_%.%-\\/]+%.script:%-?%d+)")
+              or frame:match("([%w_%.%-\\/]+%.lua:%-?%d+)")
               or frame:match("(%[C%]:%-?%d+)")
     if not file then return frame end
+    file = file:gsub("\\", "/"):gsub("^.*/scripts/", "")
     local name = frame:match("^([%w_]+)@")
     return name and (name .. "@" .. file) or file
 end
 
--- Reduce a frame to its script file for the by-script rollup.
+-- Reduce a frame to its scripts-relative script file for the by-script rollup; a .lua rolls to its file just like a .script.
 local function get_frame_script(frame)
-    return (get_short_frame(frame):match("([%w_%.%-]+%.script)")) or get_short_frame(frame)
+    return get_script_id(frame) or get_short_frame(frame)
 end
 
 -- Leaf function name for the framework-vs-handler match.
@@ -268,6 +286,18 @@ local function get_anchor_frame(first, second, nframes)
     return first
 end
 
+-- Frame count excluding a prepended pseudo-leaf, so the depth and at-cap metrics do not count the [C]/[GC]/[JIT] marker.
+local function get_real_frame_count(first, nframes)
+    return PSEUDO_FRAME[first] and (nframes - 1) or nframes
+end
+
+-- Book a pseudo-led stack to its engine-C entry point (the resuming Lua frame), or to the trunk when no Lua frame resumed.
+local function collect_engine_entry(v, first, anchor, leaf_key, weight)
+    if not PSEUDO_FRAME[first] then return end
+    if anchor == first then v.engine_trunk = v.engine_trunk + weight
+    else v.engine_entry[leaf_key] = (v.engine_entry[leaf_key] or 0) + weight end
+end
+
 -- Credit one captured stack into every ranked map and update the depth stats.
 local function collect_stack(v, stack, weight, cap)
     local first, second, last, nframes = nil, nil, nil, 0
@@ -285,14 +315,16 @@ local function collect_stack(v, stack, weight, cap)
     local leaf_key = get_short_frame(anchor)
     local script_file = get_frame_script(anchor)
     local owner = get_owner(anchor)
+    collect_engine_entry(v, first, anchor, leaf_key, weight)
     v.leaf[leaf_key]              = (v.leaf[leaf_key] or 0) + weight
     v.by_script[script_file]      = (v.by_script[script_file] or 0) + weight
     v.root[get_short_frame(last)] = (v.root[get_short_frame(last)] or 0) + weight
     v.by_mod[owner]               = (v.by_mod[owner] or 0) + weight
     for owner_key in pairs(seen_owner) do v.by_mod_total[owner_key] = (v.by_mod_total[owner_key] or 0) + weight end
     for script_key in pairs(seen_script) do v.by_script_total[script_key] = (v.by_script_total[script_key] or 0) + weight end
-    if nframes > v.max_depth then v.max_depth = nframes end
-    if cap and nframes >= cap then v.clipped = v.clipped + weight end
+    local real_frames = get_real_frame_count(first, nframes)
+    if real_frames > v.max_depth then v.max_depth = real_frames end
+    if cap and real_frames >= cap then v.clipped = v.clipped + weight end
     local bucket = get_stack_bucket(anchor)
     v.framework[bucket]           = (v.framework[bucket] or 0) + weight
 end
@@ -300,7 +332,8 @@ end
 -- Own (innermost, exclusive) and Total (any frame, inclusive) maps per mod and per script, plus root, framework, and depth stats.
 local function compute_views(by_stack, cap)
     local v = { leaf = {}, by_script = {}, root = {}, framework = {},
-                by_mod = {}, by_mod_total = {}, by_script_total = {}, max_depth = 0, clipped = 0 }
+                by_mod = {}, by_mod_total = {}, by_script_total = {},
+                engine_entry = {}, engine_trunk = 0, max_depth = 0, clipped = 0 }
     for stack, weight in pairs(by_stack) do collect_stack(v, stack, weight, cap) end
     return v
 end
@@ -317,8 +350,8 @@ local function write_folded(kind, by_stack)
     return write_lines(build_log_path("jitprofiler_" .. kind .. ".folded"), folded)
 end
 
--- Forward-declared so the CPU, allocation, and scan engines can see each other and stay mutually exclusive.
-local alloc, scan
+-- Forward-declared so the CPU, allocation, scan, and callbacks engines can see each other and stay mutually exclusive.
+local alloc, scan, callbacks
 
 local cpu = { stacks = {}, state = {}, total = 0, nstacks = 0, dropped = 0, iv = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, t0 = 0, limit = 0, active = false }
 
@@ -361,6 +394,7 @@ function start_cpu(interval_ms, depth)
     if cpu.active then log("JitProfiler/cpu: already running -- JitProfiler.stop_cpu() first."); return end
     if alloc.capturing then log("JitProfiler/cpu: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
     if scan.active then log("JitProfiler/cpu: scanner is running -- JitProfiler.stop_scan() first."); return end
+    if callbacks.active then log("JitProfiler/cpu: callbacks profiler is running -- JitProfiler.stop_callbacks() first."); return end
     cpu.stacks, cpu.state, cpu.total, cpu.nstacks, cpu.dropped = {}, {}, 0, 0, 0
     cpu.iv = math.floor(tonumber(interval_ms) or settings.interval); if cpu.iv < 1 then cpu.iv = 1 end
     cpu.depth = math.floor(tonumber(depth) or settings.depth); if cpu.depth < 1 then cpu.depth = 1 end
@@ -413,6 +447,9 @@ function stop_cpu()
     if top_root then lines[#lines + 1] = format("  TOP DRIVER  %5.1f%%   %s", compute_pct(top_root[2], total), top_root[1]) end
     if top_leaf then lines[#lines + 1] = format("  TOP LEAF    %5.1f%%   %s", compute_pct(top_leaf[2], total), top_leaf[1]) end
 
+    build_view(lines, "ENGINE-C ENTRY POINTS   Lua call sites that drive engine C/GC (the Optick targets)", v.engine_entry, total, format_count, { owned = true })
+    lines[#lines + 1] = format("  engine trunk (no Lua caller on the stack)   %5.1f%%", compute_pct(v.engine_trunk, total))
+
     build_view(lines, "BY MOD   Total (on the stack anywhere; does not sum to 100%)", v.by_mod_total, total, format_count)
     build_view(lines, "BY MOD   Own (innermost frame only)", v.by_mod, total, format_count)
     build_view(lines, "BY SCRIPT   Total (on the stack anywhere)", v.by_script_total, total, format_count, { owned = true })
@@ -425,7 +462,7 @@ function stop_cpu()
     local report_path = write_lines(build_log_path("jitprofiler_cpu_" .. stamp .. ".txt"), lines)
     local folded_path = write_folded("cpu_" .. stamp, cpu.stacks)
     last_capture.cpu = {
-        kind = "cpu", by_stack = cpu.stacks, views = v, total = total,
+        kind = "cpu", by_stack = cpu.stacks, views = v, total = total, engine_entry = sort_entries(v.engine_entry),
         meta = { samples = total, interval = cpu.iv, duration = duration_sec, stamp = stamp,
                  vmstate = cpu.state, dropped = cpu.dropped, depth = cpu.depth, max_depth = v.max_depth, clipped = v.clipped },
     }
@@ -503,6 +540,7 @@ function start_alloc(depth)
     if alloc.capturing then log("JitProfiler/alloc: already running -- JitProfiler.stop_alloc() first."); return end
     if cpu.active then log("JitProfiler/alloc: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
     if scan.active then log("JitProfiler/alloc: scanner is running -- JitProfiler.stop_scan() first."); return end
+    if callbacks.active then log("JitProfiler/alloc: callbacks profiler is running -- JitProfiler.stop_callbacks() first."); return end
     alloc.depth = math.floor(tonumber(depth) or settings.depth); if alloc.depth < 2 then alloc.depth = 2 end
     alloc.t0 = get_time_ms()
     alloc.gc0 = gcstat_fn and gcstat_fn().cycles or 0
@@ -545,20 +583,34 @@ function stop_alloc()
     allocprof.stop()
     if jit and alloc.jit_was_on then jit.on() end
     local stacks = read_alloc(false)
-    local duration_sec = (get_time_ms() - alloc.t0) / 1000.0
+    local duration_sec = (get_time_ms() - alloc.snap_t0) / 1000.0
     write_alloc_report(stacks, duration_sec, "", "allocation profile   (exact bytes)")
     show_tip("JitProfiler ALLOC report written")
 end
 
 -- Instrumentation: wrap every function of a target-script SET and time each call for self and total, counting calls.
-scan = { set = {}, count = 0, records = {}, saved = {}, wrapped = 0,
+scan = { set = {}, count = 0, records = {}, saved = {}, wrapped = 0, edges = {},
          stack = {}, sp = 0, t0 = 0, limit = 0, frames = 0, active = false }
+
+-- Callbacks: time every registered handler by wrapping the make_callback intercepts table in place; state anchored to _G.
+callbacks = rawget(_G, "__jitprofiler_callbacks")
+if not callbacks then
+    callbacks = { active = false, records = {}, saved = {}, stack = {}, sp = 0, wrapped = 0, t0 = 0, limit = 0 }
+    rawset(_G, "__jitprofiler_callbacks", callbacks)
+end
+local INTERCEPTS_UPVALUE = "intercepts"
+local intercepts_ref
 
 -- Never wrap the profiler's own machinery: the wrapper builds each frame's timer with xprofiler, so wrapping xprofiler recurses without end.
 local SCAN_BLACKLIST = {
     xprofiler = true, JitProfiler = true, jitprofiler_ui = true,
     jitprofiler_names = true, jf_mcm = true, _jitprofiler_deps = true,
 }
+
+-- Collect a call's results with an explicit count, so a nil inside the return list survives unpack.
+local function collect_results(...)
+    return select("#", ...), { ... }
+end
 
 -- One wrapper: time the call on a pooled stack frame, bank self and total, charge the span to the parent.
 --- @safety SAFE - pcall keeps a wrapped error from skipping the frame close; the error re-raises unchanged (level 0).
@@ -571,7 +623,7 @@ local function build_wrapper(rec, original)
         if not frame then frame = { timer = xprofiler.new() }; scan.stack[sp] = frame end
         frame.rec, frame.child_us = rec, 0
         frame.timer:reset(); frame.timer:start()
-        local ret = { pcall(original, ...) }
+        local count, ret = collect_results(pcall(original, ...))
         frame.timer:stop()
         local elapsed = frame.timer:get_us()
         local own = elapsed - frame.child_us
@@ -584,8 +636,14 @@ local function build_wrapper(rec, original)
         if sp > 1 then
             local parent = scan.stack[sp - 1]
             parent.child_us = parent.child_us + elapsed
+            local bucket = scan.edges[parent.rec.key]
+            if not bucket then bucket = {}; scan.edges[parent.rec.key] = bucket end
+            local edge = bucket[rec.key]
+            if not edge then edge = { calls = 0, us = 0 }; bucket[rec.key] = edge end
+            edge.calls = edge.calls + 1
+            edge.us = edge.us + elapsed
         end
-        if ret[1] then return unpack(ret, 2) end
+        if ret[1] then return unpack(ret, 2, count) end
         error(ret[2], 0)
     end
 end
@@ -602,7 +660,7 @@ local function build_wraps(name)
             local src = (info and info.short_src) or "?"
             local base = src:match("([%w_%.%-]+%.script)") or src:match("([%w_%.%-]+%.lua)") or (name .. ".script")
             local key = func_name .. "@" .. base
-            local rec = scan.records[key] or { calls = 0, self_us = 0, total_us = 0, min_us = math.huge, max_us = 0 }
+            local rec = scan.records[key] or { key = key, calls = 0, self_us = 0, total_us = 0, min_us = math.huge, max_us = 0 }
             scan.records[key] = rec
             mod[func_name] = build_wrapper(rec, value)
             count = count + 1
@@ -673,7 +731,22 @@ function get_targets()
     return list
 end
 
--- Rank the wrapped functions by self time and write the report: self, total, calls, and us per call.
+-- Callers (who called it) and callees (what it called) of a function from the recorded call-graph edges, each ranked by time.
+--- @novalidate(conventions.pairs_on_sequence, reason:"edges and edges[key] are parent-key/child-key maps, not sequences")
+local function collect_edge_neighbors(edges, key)
+    local callers, callees = {}, {}
+    local out = edges[key]
+    if out then for ckey, edge in pairs(out) do callees[#callees + 1] = { ckey, edge.us, edge.calls } end end
+    for pkey, bucket in pairs(edges) do
+        local edge = bucket[key]
+        if edge then callers[#callers + 1] = { pkey, edge.us, edge.calls } end
+    end
+    table.sort(callers, function(left, right) return left[2] > right[2] end)
+    table.sort(callees, function(left, right) return left[2] > right[2] end)
+    return callers, callees
+end
+
+-- Rank the wrapped functions by self time and write the report: self, total, calls, per-mod subtotals, and a call graph.
 local function write_scan_report(records, frames, duration_sec)
     local rows, total_self = {}, 0
     for key, rec in pairs(records) do
@@ -708,10 +781,43 @@ local function write_scan_report(records, frames, duration_sec)
             row.key, get_owner(row.key), row.calls, row.self_us / 1000.0, row.total_us / 1000.0,
             row.self_us / row.calls, row.min_us, row.max_us)
     end
+    local RULE_DASH = string.rep("-", 60)
+    local mod_self, mod_total, mod_count = {}, {}, {}
+    for i = 1, #rows do
+        local owner = get_owner(rows[i].key)
+        mod_self[owner] = (mod_self[owner] or 0) + rows[i].self_us
+        mod_total[owner] = (mod_total[owner] or 0) + rows[i].total_us
+        mod_count[owner] = (mod_count[owner] or 0) + 1
+    end
+    local mod_rows = {}
+    for owner in pairs(mod_self) do mod_rows[#mod_rows + 1] = owner end
+    table.sort(mod_rows, function(left, right) return mod_self[left] > mod_self[right] end)
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- BY MOD   own / total ms across the wrapped functions " .. RULE_DASH
+    for i = 1, #mod_rows do
+        local owner = mod_rows[i]
+        local per_frame = frames > 0 and (mod_self[owner] / 1000.0 / frames) or 0
+        lines[#lines + 1] = format("  %-40s %8.2f ms own   %8.2f ms total   %6.3f ms/frame   %3d fns",
+            owner, mod_self[owner] / 1000.0, mod_total[owner] / 1000.0, per_frame, mod_count[owner])
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- CALL GRAPH   top functions: <- callers, -> callees (ms, calls) " .. RULE_DASH
+    for i = 1, math.min(#rows, 10) do
+        local row = rows[i]
+        lines[#lines + 1] = format("  %s   own %.2f ms   total %.2f ms",
+            row.key, row.self_us / 1000.0, row.total_us / 1000.0)
+        local callers, callees = collect_edge_neighbors(scan.edges, row.key)
+        for j = 1, math.min(#callers, 3) do
+            lines[#lines + 1] = format("      <- %-52s %8.2f ms  (%d)", callers[j][1], callers[j][2] / 1000.0, callers[j][3])
+        end
+        for j = 1, math.min(#callees, 3) do
+            lines[#lines + 1] = format("      -> %-52s %8.2f ms  (%d)", callees[j][1], callees[j][2] / 1000.0, callees[j][3])
+        end
+    end
     local stamp = get_timestamp()
     local report_path = write_lines(build_log_path("jitprofiler_inst_" .. stamp .. ".txt"), lines)
     last_capture.scan = {
-        kind = "scan", rows = rows, frames = frames, total_us = total_self,
+        kind = "scan", rows = rows, edges = scan.edges, frames = frames, total_us = total_self,
         meta = { targets = scan.count, wrapped = scan.wrapped, frames = frames,
                  duration = duration_sec, stamp = stamp, per_frame_ms = per_frame_ms },
     }
@@ -725,9 +831,10 @@ function start_scan(script_name)
     if scan.active then log("JitProfiler/inst: already running -- JitProfiler.stop_scan() first."); return end
     if cpu.active then log("JitProfiler/inst: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
     if alloc.capturing then log("JitProfiler/inst: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
+    if callbacks.active then log("JitProfiler/inst: callbacks profiler is running -- JitProfiler.stop_callbacks() first."); return end
     if script_name and tostring(script_name) ~= "" then add_target(script_name) end
     if scan.count == 0 then log("JitProfiler/inst: the set is empty -- add a script first."); return end
-    scan.records, scan.saved, scan.wrapped, scan.frames, scan.sp = {}, {}, 0, 0, 0
+    scan.records, scan.saved, scan.wrapped, scan.frames, scan.sp, scan.edges = {}, {}, 0, 0, 0, {}
     scan.t0, scan.limit, scan.active = get_time_ms(), settings.duration, true
     for name in pairs(scan.set) do build_wraps(name) end
     log("JitProfiler/inst: wrapping %d scripts (%d functions). Play, then JitProfiler.stop_scan().", scan.count, scan.wrapped)
@@ -748,6 +855,175 @@ end
 --- @novalidate(code.unused_export, reason:"panel control surface, wired in the UI increment")
 function is_scan_active()
     return scan.active
+end
+
+-- The intercepts table is file-local in axr_main; make_callback closes over it, so read the reference by upvalue.
+--- @safety SAFE - if the upvalue is absent (a build without it) intercepts_ref stays nil and the callbacks mode goes inert.
+local function resolve_intercepts()
+    if intercepts_ref then return true end
+    if not (debug and debug.getupvalue) then return false end
+    local mc = rawget(_G, "make_callback")
+    if type(mc) ~= "function" then return false end
+    for i = 1, 60 do
+        local name, value = debug.getupvalue(mc, i)
+        if not name then break end
+        if name == INTERCEPTS_UPVALUE and type(value) == "table" then intercepts_ref = value; return true end
+    end
+    return false
+end
+
+-- name@<scripts-relative path>:line for a handler, for the record key and owner resolve.
+local function get_handler_frame(handler)
+    local info = debug.getinfo(handler, "nS")
+    local src = (info and info.short_src) or "?"
+    return get_short_frame((info and info.name or "?") .. "@" .. src .. ":" .. (info and info.linedefined or -1))
+end
+
+-- A handler defined in one of our own scripts must never be wrapped (it would time or recurse the profiler).
+--- @safety SAFE - debug.getinfo on a function is read-only; a nil short_src just means the handler is not ours.
+local function is_own_handler(handler)
+    local info = debug.getinfo(handler, "S")
+    local src = info and info.short_src
+    return src ~= nil and src:lower():find("jitprofiler", 1, true) ~= nil
+end
+
+-- One callbacks wrapper: time the handler inclusive of engine C, bank own/total, re-raise a handler error unchanged.
+--- @safety SAFE - pcall keeps the frame close on a handler error; error re-raises at level 0, matching make_callback's raw dispatch.
+local function build_callbacks_wrapper(rec, handler)
+    return function(...)
+        local sp = callbacks.sp + 1
+        if sp > SCAN_MAX_DEPTH then return handler(...) end
+        callbacks.sp = sp
+        local frame = callbacks.stack[sp]
+        if not frame then frame = { timer = xprofiler.new() }; callbacks.stack[sp] = frame end
+        frame.child_us = 0
+        frame.timer:reset(); frame.timer:start()
+        local count, ret = collect_results(pcall(handler, ...))
+        frame.timer:stop()
+        local elapsed = frame.timer:get_us()
+        local own = elapsed - frame.child_us
+        rec.total_us = rec.total_us + elapsed
+        rec.self_us  = rec.self_us + own
+        rec.calls    = rec.calls + 1
+        if own > rec.max_us then rec.max_us = own end
+        if own < rec.min_us then rec.min_us = own end
+        callbacks.sp = sp - 1
+        if sp > 1 then
+            local parent = callbacks.stack[sp - 1]
+            parent.child_us = parent.child_us + elapsed
+        end
+        if ret[1] then return unpack(ret, 2, count) end
+        error(ret[2], 0)
+    end
+end
+
+-- Swap one callback's wrappers back to their original handlers, keeping each priority.
+local function reset_handlers(map, handlers)
+    for wrapper, original in pairs(map) do
+        local prio = handlers[wrapper]
+        if prio ~= nil then handlers[original] = prio; handlers[wrapper] = nil end
+    end
+end
+
+-- Swap every wrapper back to its original handler; safe on a partial arm and safe to call twice.
+local function reset_callbacks()
+    if not intercepts_ref then return end
+    for name, map in pairs(callbacks.saved) do
+        local handlers = intercepts_ref[name]
+        if handlers then reset_handlers(map, handlers) end
+    end
+    callbacks.saved = {}
+end
+
+-- Rank the timed handlers by own ms and write the report: per handler (callback + owner) plus a per-callback rollup.
+local function write_callbacks_report(duration_sec)
+    local rows, total_self = {}, 0
+    for _, rec in pairs(callbacks.records) do
+        if rec.calls > 0 then rows[#rows + 1] = rec; total_self = total_self + rec.self_us end
+    end
+    table.sort(rows, function(left, right) return left.self_us > right.self_us end)
+    local RULE = "================================================================================"
+    local lines = {
+        RULE,
+        "  JitProfiler  -  CALLBACKS   per-handler wall-clock over the make_callback dispatch (engine C included)",
+        format("  modded_exes %s   |   %d handlers wrapped   |   ~%.0f s   |   %.1f ms own total",
+            tostring(_G.MODDED_EXES_VERSION or "?"), callbacks.wrapped, duration_sec, total_self / 1000.0),
+        RULE,
+        "",
+        format("  %-34s %-30s %-22s %8s   %10s   %10s   %8s",
+            "CALLBACK", "HANDLER", "OWNER", "CALLS", "OWN ms", "TOTAL ms", "avg us"),
+    }
+    for i = 1, #rows do
+        local rec = rows[i]
+        lines[#lines + 1] = format("  %-34s %-30s %-22s %8d   %10.2f   %10.2f   %8.1f",
+            rec.callback, rec.handler, get_owner(rec.handler), rec.calls,
+            rec.self_us / 1000.0, rec.total_us / 1000.0, rec.self_us / rec.calls)
+    end
+    local by_cb = {}
+    for i = 1, #rows do by_cb[rows[i].callback] = (by_cb[rows[i].callback] or 0) + rows[i].self_us end
+    local cb_rows = {}
+    for name in pairs(by_cb) do cb_rows[#cb_rows + 1] = name end
+    table.sort(cb_rows, function(left, right) return by_cb[left] > by_cb[right] end)
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- BY CALLBACK   own ms summed across handlers " .. string.rep("-", 40)
+    for i = 1, #cb_rows do
+        lines[#lines + 1] = format("  %-40s %10.2f ms own", cb_rows[i], by_cb[cb_rows[i]] / 1000.0)
+    end
+    local stamp = get_timestamp()
+    local report_path = write_lines(build_log_path("jitprofiler_callbacks_" .. stamp .. ".txt"), lines)
+    last_capture.callbacks = {
+        kind = "callbacks", rows = rows, total_us = total_self,
+        meta = { wrapped = callbacks.wrapped, duration = duration_sec, stamp = stamp },
+    }
+    log("JitProfiler/callbacks: report -> %s", tostring(report_path))
+    show_tip("JitProfiler CALLBACKS report written")
+end
+
+--- Arm the callbacks profiler: wrap every registered function handler in place. Play, then stop_callbacks().
+--- @novalidate(code.unused_export, reason:"console command + panel control surface")
+function start_callbacks()
+    if callbacks.active then log("JitProfiler/callbacks: already running."); return end
+    if cpu.active then log("JitProfiler/callbacks: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
+    if alloc.capturing then log("JitProfiler/callbacks: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
+    if scan.active then log("JitProfiler/callbacks: scanner is running -- JitProfiler.stop_scan() first."); return end
+    if not resolve_intercepts() then log("!JitProfiler/callbacks: make_callback intercepts not reachable on this build; inert."); return end
+    callbacks.records, callbacks.saved, callbacks.sp, callbacks.wrapped = {}, {}, 0, 0
+    callbacks.t0, callbacks.active = get_time_ms(), true
+    for name, handlers in pairs(intercepts_ref) do
+        local to_wrap = {}
+        for handler, prio in pairs(handlers) do
+            if type(handler) == "function" and not is_own_handler(handler) then to_wrap[#to_wrap + 1] = { handler, prio } end
+        end
+        for i = 1, #to_wrap do
+            local handler, prio = to_wrap[i][1], to_wrap[i][2]
+            local hframe = get_handler_frame(handler)
+            local rec = { callback = name, handler = hframe, calls = 0, self_us = 0, total_us = 0, min_us = math.huge, max_us = 0 }
+            callbacks.records[name .. tostring(handler)] = rec
+            local wrapper = build_callbacks_wrapper(rec, handler)
+            handlers[wrapper] = prio
+            handlers[handler] = nil
+            callbacks.saved[name] = callbacks.saved[name] or {}
+            callbacks.saved[name][wrapper] = handler
+            callbacks.wrapped = callbacks.wrapped + 1
+        end
+    end
+    log("JitProfiler/callbacks: wrapping %d handlers. Play, then JitProfiler.stop_callbacks().", callbacks.wrapped)
+    show_tip(format("JitProfiler CALLBACKS %d handlers", callbacks.wrapped))
+end
+
+--- Restore every handler and write the report.
+--- @novalidate(code.unused_export, reason:"console command + panel control surface")
+function stop_callbacks()
+    if not callbacks.active then log("JitProfiler/callbacks: not running."); return end
+    callbacks.active = false
+    reset_callbacks()
+    callbacks.sp = 0
+    write_callbacks_report((get_time_ms() - callbacks.t0) / 1000.0)
+end
+
+--- @novalidate(code.unused_export, reason:"panel control surface")
+function is_callbacks_active()
+    return callbacks.active
 end
 
 -- Per-frame heartbeat: count scan frames, auto-stop a capture at its duration limit, auto-snapshot before the alloc table fills. Near-free when idle.
@@ -791,7 +1067,8 @@ end
 --- @return string the owner (mod / modded exes / anomaly / engine / unknown) for a view key, resolved through the script it names.
 function get_owner(key)
     if key:find("%[C%]") or key:find("%[GC%]") or key:find("%[JIT%]") then return OWNER_ENGINE end
-    local script_file = key:match("([%w_%.%-]+%.script)") or key:match("([%w_%.%-]+%.lua)")
+    if key:find("%[string") then return OWNER_STRING end
+    local script_file = get_script_id(key)
     return script_file and get_script_owner(script_file) or OWNER_UNKNOWN
 end
 
@@ -799,7 +1076,7 @@ end
 function get_owner_label(key)
     local owner = get_owner(key)
     if owner:sub(1, #OWNER_MOD) ~= OWNER_MOD then return owner end
-    local script_file = key:match("([%w_%.%-]+%.script)") or key:match("([%w_%.%-]+%.lua)")
+    local script_file = get_script_id(key)
     if script_file and jitprofiler_names.is_vanilla(script_file) then
         return owner .. " (override: " .. script_file .. ")"
     end
@@ -808,7 +1085,7 @@ end
 
 --- @return string how the owner was decided: mod / loose / packed / name (see get_script_owner); "?" for pseudo-frames.
 function get_owner_method(key)
-    local script_file = key:match("([%w_%.%-]+%.script)") or key:match("([%w_%.%-]+%.lua)")
+    local script_file = get_script_id(key)
     return (script_file and origin_method[script_file]) or "?"
 end
 
@@ -830,6 +1107,7 @@ function get_capture_progress()
     if cpu.active then return { elapsed = (get_time_ms() - cpu.t0) / 1000, limit = cpu.limit } end
     if alloc.capturing then return { elapsed = (get_time_ms() - alloc.t0) / 1000, limit = alloc.limit } end
     if scan.active then return { elapsed = (get_time_ms() - scan.t0) / 1000, limit = scan.limit } end
+    if callbacks.active then return { elapsed = (get_time_ms() - callbacks.t0) / 1000, limit = callbacks.limit } end
     return nil
 end
 
@@ -862,11 +1140,21 @@ function compute_neighbors(kind, frame)
     return { callers = sort_entries(out.callers), callees = sort_entries(out.callees) }
 end
 
+--- @return table|nil { callers, callees } of a scanned function from the retained call graph (each entry {key, us, calls}), or nil.
+function compute_scan_neighbors(key)
+    local cap = last_capture.scan
+    if not (cap and cap.edges and key) then return nil end
+    local callers, callees = collect_edge_neighbors(cap.edges, key)
+    return { callers = callers, callees = callees }
+end
+
 -- The chunk executes twice (see the _G capture anchor above), so guard the one-time callback registration.
 function on_game_start()
     if rawget(_G, "__jitprofiler_started") then return end
     rawset(_G, "__jitprofiler_started", true)
     RegisterScriptCallback("actor_on_update", update_capture)
+    RegisterScriptCallback("on_before_level_changing", function() if callbacks.active then stop_callbacks() end end)
+    RegisterScriptCallback("actor_on_net_destroy", function() if callbacks.active then stop_callbacks() end end)
     log("JitProfiler ready.  CPU: start_cpu([ms],[depth]) / stop_cpu().  ALLOC: start_alloc([depth]) / write_snapshot() / stop_alloc().")
     log("JitProfiler: SCAN start_scan(\"script\") / stop_scan() times every function of one script (engine C included).")
     log("JitProfiler: set_fold_baseline(true) folds the vanilla baseline.  Reports go to appdata/logs/jitprofiler_*.")

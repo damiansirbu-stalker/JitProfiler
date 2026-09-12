@@ -50,6 +50,15 @@ Each function shows its call count, own ms, total ms, and us per call, ranked by
 The wrapper runs the original under pcall, so a Lua error still closes the frame and re-raises unchanged, and a recursive function books own correctly while total stays inclusive by definition.
 It is opt-in and mutually exclusive with the CPU and allocation captures, because the wrapper tax and the JIT blinding are the per-call cost the sampler exists to avoid.
 The natural loop runs the sampler first, then instruments whichever scripts the `[C]` rows name.
+It also records the call graph: each wrapped call books its span to a parent-to-child edge, so the report shows where a function's total goes and who drove it, and a whole-mod scan totals the cost per owning mod.
+
+## Callbacks: per-handler over the dispatch
+Every script callback flows through one chokepoint, `make_callback` in axr_main, which dispatches each registered handler in priority order.
+`start_callbacks` reads that file-local `intercepts` table by upvalue and swaps each function handler in place for a timing wrapper, keeping its priority, so `make_callback` is never reimplemented and dispatch order and semantics stay untouched.
+Each wrapper times its handler inclusive of the engine C it triggers, banks own and total on a pooled stack like the scan, and re-raises a handler error unchanged.
+`stop_callbacks` swaps every original back and writes the report; a level change or actor destroy force-restores first so no wrapper orphans, and `spairs` snapshots the handler keys so a mid-dispatch restore is safe.
+The report ranks every handler by own ms with its callback and owning mod, plus a per-callback rollup, answering which mod hooks a callback and what each handler costs, engine C included.
+It is opt-in, mutually exclusive with the other captures, and goes inert on a build where the intercepts upvalue is not reachable.
 
 ## Per-mod attribution
 GAMMA merges every mod into one `gamedata/scripts`, so the script path never names the mod.
@@ -76,12 +85,12 @@ Per unit, JitProfiler reports two numbers, Own and Total.
 Total is inclusive. A mod or script gets credit whenever it appears anywhere in a sample, counted once per sample. It does not sum to 100%.
 Own is exclusive, the innermost frame when the sample fired.
 Total is the primary ranking, per mod and per script, and Own is the second column.
-The views are BY MOD, BY SCRIPT, BY LEAF, BY ROOT, FRAMEWORK vs handlers, and the VM-state split for CPU.
+The views are BY MOD, BY SCRIPT, BY LEAF, BY ROOT, FRAMEWORK vs handlers, and for CPU the VM-state split plus the engine-C entry points, the Lua call sites that drive the engine bucket and the map for a native profiler like Optick.
 Each capture also reports the deepest stack it saw and how often a stack reached the depth cap, so an under-counted Total is visible.
 The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) from the owned views, leaving only mods.
 
 ## Output
-`appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
+`appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text; the instrumentation and callbacks modes write `jitprofiler_inst_<timestamp>.txt` and `jitprofiler_callbacks_<timestamp>.txt`.
 `jitprofiler_{cpu,mem}[_snapN]_<timestamp>.folded` is the SpeedScope collapsed-stacks flamegraph.
 The timestamp is the capture's wall-clock time, so successive runs never overwrite.
 Both are ASCII only.
@@ -89,15 +98,16 @@ Both are ASCII only.
 ## In-game panel
 `jitprofiler_ui.script` registers a panel and a menu entry through the base ImGui Groups API.
 The panel draws in the Main group, so it appears while the F11 ImGui overlay is open.
-Two top tabs split the panel, SAMPLING and INSTRUMENTATION.
-Under SAMPLING a CPU/MEM toggle shows the retained last capture through `get_last_capture`, and the two never run at once.
+The top tabs are CPU, MEM, INSTRUMENT, and CALLBACKS; a running capture locks the others, and no two run at once.
+CPU and MEM show the retained last capture through `get_last_capture`.
 A view selector switches the table between by mod, by script, by leaf, and by root; each column header sorts and a filter box narrows the rows.
 The by-script rows carry a per-row button that adds or removes the script from the instrumentation set.
 Under INSTRUMENTATION a start and stop control arms the whole set and an overhead line shows the wrapped-function count, then two sub-views split the screen: SELECTED lists the working set, each target removable, and BROWSE is a modlist grouped by mod with a search box where a + adds a script.
 The results table ranks each function by own with an own-share bar, plus own ms, total ms, and calls, each column sortable on click, with avg, min, and max per call on row hover and in the text report, under a frame-budget bar reading own ms per frame against a 60fps frame.
 Number columns right-align through CalcTextSize, so magnitude scans down the column.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
-The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile), each explained on hover.
+The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile) each explained on hover, then the engine-C entry points, the Lua call sites that drive the engine bucket.
+The CALLBACKS tab arms `start_callbacks` and ranks every registered handler over the make_callback dispatch by own ms, with its callback and owning mod; a dim line under a running MEM or wrapping capture notes the FPS drop and that accuracy holds.
 The MEM view carries a live GC-health strip from `jit.util.gcstat`, a bar for the heap toward the next collection plus the live estimate and debt, hidden when the exe lacks the getter.
 On the multi-thread exe a Parallel GC toggle flips the `lua_parallel_gc` cvar, so a CPU capture reads a clean G share instead of the parallel-GC inflation.
 The panel renders in white JetBrains Mono when the font is present, so digits line up as a column, over a blue accent scheme; each cost bar carries a single-hue blue heat shade by share.
@@ -125,6 +135,7 @@ The panel, menu, and banner read `show_imgui` through a cached flag and draw not
 - Allocation attribution is instruction-granular, so bytes from a C or GC path are credited to the next Lua frame.
 - Per-mod attribution needs an MO2/USVFS install. Elsewhere it degrades to script level.
 - CPU and allocation are mutually exclusive. Each refuses to start while the other runs.
+- Instrumentation assumes strict call nesting; a wrapped function that yields a coroutine mid-call desyncs the timer stack until stop_scan restores it.
 
 ## Requires
 A demonized build exposing `jit.profile` and `jit.allocprof` (and `jit.util.gcstat` for the GC-health strip), and xlibs for `xlog`.

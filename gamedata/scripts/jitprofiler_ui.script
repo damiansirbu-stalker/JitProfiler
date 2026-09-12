@@ -30,10 +30,14 @@ local OWNER_MOD = "mod: "
 local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
 local KIND_SCAN = "scan"
+local KIND_CALLBACKS = "callbacks"
 local VIEW_BY_MOD = "by_mod"
-local VIEW_BY_SCRIPT = "by_script_total"
-local SORT_VALUE = "value"
+local VIEW_BY_SCRIPT = "by_script"
 local SORT_NAME = "name"
+local SORT_OWNER = "owner"
+local SORT_OWN = "own"
+local SORT_TOTAL = "total"
+local SORT_VALUE = "value"
 local PCT_OWN = "Own %"
 local PCT_TOTAL = "Total %"
 local GC_RATE_MS = 1000
@@ -70,12 +74,12 @@ local VMSTATE = {
       tip = "The JIT compiler working; a spike means traces recompiling." },
 }
 
--- The selectable views over a retained capture; BY MOD shows Own + Total columns, BY SCRIPT ranks by Total, frame views drill down.
+-- The selectable views over a retained capture; BY MOD and BY SCRIPT show Own + Total columns, frame views drill down. Each names its default sort column.
 local VIEWS = {
-    { key = VIEW_BY_MOD,    label = "BY MOD",    frame_keyed = false },
-    { key = VIEW_BY_SCRIPT, label = "BY SCRIPT", frame_keyed = false, pct_label = PCT_TOTAL },
-    { key = "leaf",         label = "BY LEAF",   frame_keyed = true,  pct_label = PCT_OWN },
-    { key = "root",         label = "BY ROOT",   frame_keyed = true,  pct_label = PCT_TOTAL },
+    { key = VIEW_BY_MOD,    label = "BY MOD",    dual = true, own_key = "by_mod",    total_key = "by_mod_total",    default_sort = SORT_TOTAL },
+    { key = VIEW_BY_SCRIPT, label = "BY SCRIPT", dual = true, own_key = "by_script", total_key = "by_script_total", default_sort = SORT_TOTAL },
+    { key = "leaf",         label = "BY LEAF",   frame_keyed = true,  pct_label = PCT_OWN,   default_sort = SORT_VALUE },
+    { key = "root",         label = "BY ROOT",   frame_keyed = true,  pct_label = PCT_TOTAL, default_sort = SORT_VALUE },
 }
 
 local WF = ImGuiWindowFlags
@@ -90,10 +94,13 @@ local active_tab = KIND_CPU
 local view_index = 2
 local fold_baseline = false
 local filter_text = ""
-local sort_by = SORT_VALUE
-local sort_asc = false
-local scan_sort = "self_us"
-local scan_sort_asc = false
+local samp_sort = { field = SORT_TOTAL, asc = false }
+local scan_srt = { field = "self_us", asc = false }
+local scan_sig
+local scan_selected
+local scan_neighbors_data
+local cb_srt = { field = "self_us", asc = false }
+local cb_sig
 local selected_frame = nil
 local selected_neighbors = nil
 local rows_sig, rows_cache
@@ -148,30 +155,43 @@ local function check_filter(key, owner)
     return (key and key:lower():find(needle, 1, true)) or (owner and owner:lower():find(needle, 1, true)) or false
 end
 
-local function sort_rows(entries)
-    if sort_by == SORT_NAME then
-        table.sort(entries, function(left, right)
-            if sort_asc then return left[1] < right[1] end
-            return left[1] > right[1]
-        end)
-    else
-        table.sort(entries, function(left, right)
-            if sort_asc then return left[2] < right[2] end
-            return left[2] > right[2]
-        end)
-    end
+-- Value a row sorts by for the active column: name and owner are strings, own/total/value are the weights.
+local function sort_key(entry)
+    local col = samp_sort.field
+    if col == SORT_NAME then return entry.key end
+    if col == SORT_OWNER then return entry.owner or "" end
+    if col == SORT_OWN then return entry.own or entry.value or 0 end
+    if col == SORT_TOTAL then return entry.total or entry.value or 0 end
+    return entry.value or entry.total or 0
 end
 
--- The retained capture is static, so sort and resolve each row's owner once per tab/view/sort/capture, not per frame.
+local function sort_rows(entries)
+    local asc = samp_sort.asc
+    table.sort(entries, function(left, right)
+        local lv, rv = sort_key(left), sort_key(right)
+        if asc then return lv < rv end
+        return lv > rv
+    end)
+end
+
+-- The retained capture is static, so build, resolve owners, and sort each row once per tab/view/sort/capture, not per frame.
 local function get_rows(cap)
     local view = VIEWS[view_index]
-    local sig = active_tab .. ":" .. view_index .. ":" .. sort_by .. ":" .. (sort_asc and "a" or "d") .. ":" .. (cap.meta.stamp or "?")
+    local sig = active_tab .. ":" .. view_index .. ":" .. samp_sort.field .. ":" .. (samp_sort.asc and "a" or "d") .. ":" .. (cap.meta.stamp or "?")
     if sig == rows_sig then return rows_cache end
     local entries = {}
-    local map = (view.key == VIEW_BY_MOD) and cap.views.by_mod_total or cap.views[view.key]
-    for key, weight in pairs(map) do entries[#entries + 1] = { key, weight } end
-    if view.key ~= VIEW_BY_MOD then
-        for i = 1, #entries do entries[i][3] = JitProfiler.get_owner(entries[i][1]) end
+    if view.dual then
+        local total_map, own_map = cap.views[view.total_key], cap.views[view.own_key]
+        local by_mod = (view.key == VIEW_BY_MOD)
+        for key, total in pairs(total_map) do
+            entries[#entries + 1] = { key = key, total = total, own = own_map[key] or 0,
+                                      owner = by_mod and key or JitProfiler.get_owner(key) }
+        end
+    else
+        local map = cap.views[view.key]
+        for key, weight in pairs(map) do
+            entries[#entries + 1] = { key = key, value = weight, owner = JitProfiler.get_owner(key) }
+        end
     end
     sort_rows(entries)
     rows_cache, rows_sig = entries, sig
@@ -191,8 +211,7 @@ local function format_clock(sec)
     return format("%d:%02d", floor(whole / 60), whole % 60)
 end
 
--- Fixed-width bar with the percent as text beside it, so the number sits on the dark background at a consistent spot.
--- Amber heat colour for a share: dim at low, bright amber at high, monotonic in luminance. Reuses HEAT_COLOR, no per-row allocation.
+-- Blue heat colour for a share: dim at low, bright at high, monotonic in luminance. Reuses HEAT_COLOR, no per-row allocation.
 local function get_heat_color(pct)
     local frac = pct / 100
     if frac > 1 then frac = 1 elseif frac < 0 then frac = 0 end
@@ -200,30 +219,33 @@ local function get_heat_color(pct)
     return HEAT_COLOR
 end
 
+-- Fixed-width bar with the percent as text beside it, so the number sits on the dark background at a consistent spot.
 local function render_bar(pct)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(pct))
     ImGui.ProgressBar(pct / 100, BAR_SIZE, format("%.1f%%", pct))
     ImGui.PopStyleColor(1)
 end
 
--- Clickable header: an invisible full-cell button takes the click; the label draws over it, right-aligned so it never clips, and brightens on hover.
-local function render_sort_header(label, dim, right)
+-- Clickable table header: an invisible full-cell button takes the click; the label draws over it, right-aligned, with a ^/v arrow on the active column.
+local function render_header(state, prefix, label, field, right)
     ImGui.TableNextColumn()
     local start_x = ImGui.GetCursorPosX()
     local avail = ImGui.GetContentRegionAvail().x
     if avail < 1 then avail = 1 end
-    if ImGui.InvisibleButton("##h" .. label, vector2(avail, HEADER_H)) then
-        if sort_by == dim then sort_asc = not sort_asc else sort_by, sort_asc = dim, false end
+    if ImGui.InvisibleButton("##" .. prefix .. label, vector2(avail, HEADER_H)) then
+        if state.field == field then state.asc = not state.asc else state.field, state.asc = field, false end
     end
     local hovered = ImGui.IsItemHovered()
+    local shown = (state.field == field) and (label .. (state.asc and " ^" or " v")) or label
     ImGui.SameLine()
-    local pad = right and (avail - ImGui.CalcTextSize(label).x) or 0
+    local pad = right and (avail - ImGui.CalcTextSize(shown).x) or 0
     if pad < 0 then pad = 0 end
     ImGui.SetCursorPosX(start_x + pad)
     if hovered then ImGui.PushStyleColor(ImGuiCol.Text, COLOR_ACCENT) end
-    ImGui.Text(label)
+    ImGui.Text(shown)
     if hovered then ImGui.PopStyleColor(1) end
 end
+local function render_sort_header(label, col, right) render_header(samp_sort, "h", label, col, right) end
 
 local function render_tooltip(cap, key, owner, weight)
     if not ImGui.IsItemHovered() then return end
@@ -260,12 +282,14 @@ end
 -- One of the three top tabs (CPU / MEM / INSTRUMENT). While a capture runs, the tabs that are not the running one lock: dim and unclickable.
 local function render_tab_button(kind, label)
     local sel = (active_tab == kind)
-    local locked = not sel and (JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or JitProfiler.is_scan_active())
+    local locked = not sel and (JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or JitProfiler.is_scan_active() or JitProfiler.is_callbacks_active())
     ImGui.PushStyleColor(ImGuiCol.Button, sel and COLOR_ACCENT or COLOR_DIM)
     if ImGui.Button(label .. "##tab", VZERO) and not locked and active_tab ~= kind then
         active_tab = kind
         selected_frame = nil
         selected_neighbors = nil
+        scan_selected = nil
+        scan_neighbors_data = nil
     end
     ImGui.PopStyleColor(1)
 end
@@ -279,6 +303,7 @@ local function render_view_combo()
     for i = 1, #VIEWS do
         if ImGui.Selectable(VIEWS[i].label, i == view_index, 0, VZERO) and i ~= view_index then
             view_index = i
+            samp_sort.field, samp_sort.asc = VIEWS[i].default_sort, false
             selected_frame = nil
             selected_neighbors = nil
         end
@@ -291,19 +316,19 @@ local function is_baseline(owner)
     return owner:sub(1, #OWNER_MOD) ~= OWNER_MOD
 end
 
-local function render_bymod_row(cap, entry, own_map)
-    local owner, total_weight = entry[1], entry[2]
+local function render_bymod_row(cap, entry)
+    local owner, own_weight, total_weight = entry.key, entry.own, entry.total
     if fold_baseline and is_baseline(owner) then return end
     if not check_filter(owner, owner) then return end
     local total = cap.total
-    local own_pct = total > 0 and 100 * (own_map[owner] or 0) / total or 0
+    local own_pct = total > 0 and 100 * own_weight / total or 0
     local total_pct = total > 0 and 100 * total_weight / total or 0
     ImGui.TableNextRow()
     ImGui.TableNextColumn()
     ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
     ImGui.Text(owner)
     ImGui.PopStyleColor(1)
-    render_tooltip(cap, owner, owner, total_weight)
+    if ImGui.IsItemHovered() then ImGui.SetTooltip(format("%s\n%s", owner, format_weight(cap.kind, total_weight))) end
     ImGui.TableNextColumn()
     render_bar(own_pct)
     ImGui.TableNextColumn()
@@ -312,7 +337,6 @@ local function render_bymod_row(cap, entry, own_map)
 end
 
 local function render_bymod_table(cap)
-    local own_map = cap.views.by_mod
     local entries = get_rows(cap)
     if not ImGui.BeginTable("jf_bymod", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Mod", 0, 180, 0)
@@ -321,15 +345,15 @@ local function render_bymod_table(cap)
     ImGui.TableSetupColumn("Value", 0, 90, 0)
     ImGui.TableNextRow()
     render_sort_header("Mod", SORT_NAME)
-    render_sort_header("Own %", SORT_VALUE)
-    render_sort_header("Total %", SORT_VALUE)
-    render_sort_header("Value", SORT_VALUE, true)
-    for i = 1, #entries do render_bymod_row(cap, entries[i], own_map) end
+    render_sort_header("Own %", SORT_OWN)
+    render_sort_header("Total %", SORT_TOTAL)
+    render_sort_header("Value", SORT_TOTAL, true)
+    for i = 1, #entries do render_bymod_row(cap, entries[i]) end
     ImGui.EndTable()
 end
 
 local function render_view_row(cap, view, entry)
-    local key, weight, owner = entry[1], entry[2], entry[3]
+    local key, weight, owner = entry.key, entry.value, entry.owner
     if fold_baseline and is_baseline(owner) then return end
     if not check_filter(key, owner) then return end
     local pct = cap.total > 0 and 100 * weight / cap.total or 0
@@ -340,13 +364,6 @@ local function render_view_row(cap, view, entry)
         if ImGui.Selectable(key .. "##row", is_sel, SPAN_ALL, VZERO) then
             select_frame(cap, is_sel and nil or key)
         end
-    elseif view.key == VIEW_BY_SCRIPT then
-        local on = JitProfiler.is_target(key)
-        if ImGui.Button((on and "-##" or "+##") .. key, VZERO) then
-            if on then JitProfiler.remove_target(key) else JitProfiler.add_target(key) end
-        end
-        ImGui.SameLine()
-        ImGui.Text(key)
     else
         ImGui.Text(key)
     end
@@ -375,16 +392,68 @@ local function render_view_table(cap, view)
     ImGui.TableSetupColumn("Value", 0, 90, 0)
     ImGui.TableNextRow()
     render_sort_header("Frame", SORT_NAME)
-    render_sort_header("Mod", SORT_NAME)
+    render_sort_header("Mod", SORT_OWNER)
     render_sort_header(view.pct_label or "%", SORT_VALUE)
     render_sort_header("Value", SORT_VALUE, true)
     for i = 1, #entries do render_view_row(cap, view, entries[i]) end
     ImGui.EndTable()
 end
 
+-- One BY SCRIPT row: the +/- instrument button and script name, the owner colour, then Own% and Total% bars with the raw value.
+local function render_byscript_row(cap, entry)
+    local key, own_weight, total_weight, owner = entry.key, entry.own, entry.total, entry.owner
+    if fold_baseline and is_baseline(owner) then return end
+    if not check_filter(key, owner) then return end
+    local total = cap.total
+    local own_pct = total > 0 and 100 * own_weight / total or 0
+    local total_pct = total > 0 and 100 * total_weight / total or 0
+    ImGui.TableNextRow()
+    ImGui.TableNextColumn()
+    local on = JitProfiler.is_target(key)
+    if ImGui.Button((on and "-##" or "+##") .. key, VZERO) then
+        if on then JitProfiler.remove_target(key) else JitProfiler.add_target(key) end
+    end
+    ImGui.SameLine()
+    ImGui.Text(key)
+    render_tooltip(cap, key, owner, total_weight)
+    ImGui.TableNextColumn()
+    ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
+    ImGui.Text(JitProfiler.get_owner_label(key))
+    ImGui.PopStyleColor(1)
+    ImGui.TableNextColumn()
+    render_bar(own_pct)
+    ImGui.TableNextColumn()
+    render_bar(total_pct)
+    render_num(format("%10s", format_weight(cap.kind, total_weight)))
+end
+
+-- BY SCRIPT: Own and Total side by side like BY MOD, each column sortable, with the per-row instrument button kept.
+local function render_byscript_table(cap)
+    local entries = get_rows(cap)
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+    ImGui.Text("Own % = innermost frame (sums ~100%);  Total % = on the stack anywhere (exceeds 100%)")
+    ImGui.PopStyleColor(1)
+    if not ImGui.BeginTable("jf_byscript", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
+    ImGui.TableSetupColumn("Function", 0, 210, 0)
+    ImGui.TableSetupColumn("Mod", 0, 110, 0)
+    ImGui.TableSetupColumn("Own %", 0, 70, 0)
+    ImGui.TableSetupColumn("Total %", 0, 110, 0)
+    ImGui.TableSetupColumn("Value", 0, 80, 0)
+    ImGui.TableNextRow()
+    render_sort_header("Function", SORT_NAME)
+    render_sort_header("Mod", SORT_OWNER)
+    render_sort_header("Own %", SORT_OWN)
+    render_sort_header("Total %", SORT_TOTAL)
+    render_sort_header("Value", SORT_TOTAL, true)
+    for i = 1, #entries do render_byscript_row(cap, entries[i]) end
+    ImGui.EndTable()
+end
+
 local function render_table(cap)
     local view = VIEWS[view_index]
-    if view.key == VIEW_BY_MOD then render_bymod_table(cap) else render_view_table(cap, view) end
+    if view.key == VIEW_BY_MOD then render_bymod_table(cap)
+    elseif view.key == VIEW_BY_SCRIPT then render_byscript_table(cap)
+    else render_view_table(cap, view) end
 end
 
 local function render_ranked(title, list, total)
@@ -429,6 +498,23 @@ local function render_vmstate(cap)
     if not vm or total <= 0 then return end
     for i = 1, #VMSTATE do
         render_vmstate_bar(VMSTATE[i], vm[VMSTATE[i].code] or 0, total)
+    end
+end
+
+-- The Lua call sites that drove the most engine C/GC this capture: what to reduce, and where to point Optick.
+local function render_engine_entry(cap)
+    local list = cap.engine_entry
+    if not list or #list == 0 then return end
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+    ImGui.Text("ENGINE-C ENTRY POINTS  (Lua call sites driving engine time; Optick targets)")
+    ImGui.PopStyleColor(1)
+    local total = cap.total
+    for i = 1, math.min(#list, TOP_NEIGHBORS) do
+        local key, weight = list[i][1], list[i][2]
+        local pct = total > 0 and 100 * weight / total or 0
+        ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(JitProfiler.get_owner(key)))
+        ImGui.Text(format("  %5.1f%%  %s", pct, key))
+        ImGui.PopStyleColor(1)
     end
 end
 
@@ -553,6 +639,7 @@ local function render_tab(cap)
         ImGui.Text("VM state at each sample")
         ImGui.PopStyleColor(1)
         render_vmstate(cap)
+        render_engine_entry(cap)
     end
     ImGui.Separator()
     render_table(cap)
@@ -628,7 +715,11 @@ local function render_scan_row(cap, row)
     ImGui.TableNextRow()
     ImGui.TableNextColumn()
     ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
-    ImGui.Text(row.key)
+    local is_sel = (scan_selected == row.key)
+    if ImGui.Selectable(row.key .. "##s", is_sel, 0, VZERO) then
+        scan_selected = is_sel and nil or row.key
+        scan_neighbors_data = scan_selected and JitProfiler.compute_scan_neighbors(scan_selected) or nil
+    end
     ImGui.PopStyleColor(1)
     if ImGui.IsItemHovered() then
         ImGui.SetTooltip(format("%s\navg %.1f us   min %.1f us   max %.1f us",
@@ -641,38 +732,23 @@ local function render_scan_row(cap, row)
     render_num(format("%8d", row.calls))
 end
 
--- Sort the instrument rows in place by the chosen field; key sorts by name, the rest by value.
-local function sort_scan_rows(rows)
-    local field, asc = scan_sort, scan_sort_asc
+-- Sort the instrument rows in place once per capture or sort change; key sorts by name, the rest by value.
+local function sort_scan_rows(rows, stamp)
+    local sig = scan_srt.field .. ":" .. (scan_srt.asc and "a" or "d") .. ":" .. (stamp or "?")
+    if sig == scan_sig then return end
+    scan_sig = sig
+    local field, asc = scan_srt.field, scan_srt.asc
     table.sort(rows, function(left, right)
         if asc then return left[field] < right[field] end
         return left[field] > right[field]
     end)
 end
 
--- A clickable results header; hovers brighten, and the active sort column carries a ^/v arrow since the scan sorts per column.
-local function render_scan_header(label, field, right)
-    ImGui.TableNextColumn()
-    local start_x = ImGui.GetCursorPosX()
-    local avail = ImGui.GetContentRegionAvail().x
-    if avail < 1 then avail = 1 end
-    if ImGui.InvisibleButton("##sh" .. label, vector2(avail, HEADER_H)) then
-        if scan_sort == field then scan_sort_asc = not scan_sort_asc else scan_sort, scan_sort_asc = field, false end
-    end
-    local hovered = ImGui.IsItemHovered()
-    local shown = (scan_sort == field) and (label .. (scan_sort_asc and " ^" or " v")) or label
-    ImGui.SameLine()
-    local pad = right and (avail - ImGui.CalcTextSize(shown).x) or 0
-    if pad < 0 then pad = 0 end
-    ImGui.SetCursorPosX(start_x + pad)
-    if hovered then ImGui.PushStyleColor(ImGuiCol.Text, COLOR_ACCENT) end
-    ImGui.Text(shown)
-    if hovered then ImGui.PopStyleColor(1) end
-end
+local function render_scan_header(label, field, right) render_header(scan_srt, "sh", label, field, right) end
 
 -- The scan results: each wrapped function with an own-share bar, sortable by any column header.
 local function render_scan_table(cap)
-    sort_scan_rows(cap.rows or {})
+    sort_scan_rows(cap.rows or {}, cap.meta.stamp)
     if not ImGui.BeginTable("jf_scan", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Function", 0, 240, 0)
     ImGui.TableSetupColumn("Own %", 0, 130, 0)
@@ -690,6 +766,26 @@ local function render_scan_table(cap)
     ImGui.EndTable()
 end
 
+-- One ranked list for the scan drill-down: time in ms and call count per neighbor.
+local function render_scan_ranked(title, list)
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+    ImGui.Text(title)
+    ImGui.PopStyleColor(1)
+    if not list or #list == 0 then ImGui.Text("  (none)"); return end
+    for i = 1, math.min(#list, TOP_NEIGHBORS) do
+        ImGui.Text(format("  %8.2f ms  (%d)  %s", list[i][2] / 1000, list[i][3], list[i][1]))
+    end
+end
+
+-- Call-graph neighbors of the selected scan function: callers drove it, callees are where its time went.
+local function render_scan_neighbors()
+    if not (scan_selected and scan_neighbors_data) then return end
+    ImGui.Separator()
+    ImGui.Text("SELECTED  " .. scan_selected)
+    render_scan_ranked("CALLERS (who called it)", scan_neighbors_data.callers)
+    render_scan_ranked("CALLEES (where its time went)", scan_neighbors_data.callees)
+end
+
 local function render_scan_tab(cap)
     ImGui.Text(format("last run: %d scripts, %d functions   %d frames   %s",
         cap.meta.targets or 0, cap.meta.wrapped or 0, cap.meta.frames or 0, cap.meta.stamp or "?"))
@@ -705,6 +801,7 @@ local function render_scan_tab(cap)
     end
     ImGui.Separator()
     render_scan_table(cap)
+    render_scan_neighbors()
 end
 
 -- The MCM toggle for the ImGui overlay; defaults to shown until the config loads. Cached table read, no per-frame ini parse.
@@ -718,7 +815,8 @@ local function render_status_line()
     local prog = JitProfiler.get_capture_progress()
     if prog then
         local mode = JitProfiler.is_cpu_active() and "CPU"
-            or (JitProfiler.is_mem_active() and "MEM" or "INSTRUMENT")
+            or (JitProfiler.is_mem_active() and "MEM"
+            or (JitProfiler.is_scan_active() and "INSTRUMENT" or "CALLBACKS"))
         local line = "REC  " .. mode .. "  " .. format_clock(prog.elapsed)
         if prog.limit > 0 then line = line .. " / " .. format_clock(prog.limit) end
         ImGui.PushStyleColor(ImGuiCol.Text, COLOR_RUN)
@@ -728,6 +826,15 @@ local function render_status_line()
     if active_tab == KIND_CPU and is_pgc_on() then
         ImGui.PushStyleColor(ImGuiCol.Text, COLOR_WARN)
         ImGui.Text("Parallel GC on: CPU GC% inflated. Uncheck Parallel GC below for a clean read.")
+        ImGui.PopStyleColor(1)
+    end
+    if JitProfiler.is_mem_active() then
+        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+        ImGui.Text("JIT off for exact bytes: FPS drops while capturing, accuracy stays 100%.")
+        ImGui.PopStyleColor(1)
+    elseif JitProfiler.is_scan_active() or JitProfiler.is_callbacks_active() then
+        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+        ImGui.Text("Wrapping adds per-call cost: FPS drops while capturing, accuracy stays 100%.")
         ImGui.PopStyleColor(1)
     end
 end
@@ -824,6 +931,90 @@ local function render_instrument()
     if cap and not active then ImGui.Separator(); render_scan_tab(cap) end
 end
 
+-- One callbacks row: the callback name, the handler coloured by owner, then own/total ms and calls. Skipped when filtered.
+local function render_callbacks_row(cap, row)
+    local owner = JitProfiler.get_owner(row.handler)
+    if not check_filter(row.callback .. " " .. row.handler, owner) then return end
+    ImGui.TableNextRow()
+    ImGui.TableNextColumn()
+    ImGui.Text(row.callback)
+    ImGui.TableNextColumn()
+    ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
+    ImGui.Text(row.handler)
+    ImGui.PopStyleColor(1)
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip(format("%s\navg %.1f us   min %.1f us   max %.1f us",
+            owner, row.calls > 0 and row.self_us / row.calls or 0, row.min_us or 0, row.max_us or 0))
+    end
+    render_num(format("%8.2f", row.self_us / 1000))
+    render_num(format("%8.2f", row.total_us / 1000))
+    render_num(format("%8d", row.calls))
+end
+
+-- Sort the callbacks rows in place once per capture or sort change; callback/handler by name, the rest by value.
+local function sort_cb_rows(rows, stamp)
+    local sig = cb_srt.field .. ":" .. (cb_srt.asc and "a" or "d") .. ":" .. (stamp or "?")
+    if sig == cb_sig then return end
+    cb_sig = sig
+    local field, asc = cb_srt.field, cb_srt.asc
+    table.sort(rows, function(left, right)
+        if asc then return left[field] < right[field] end
+        return left[field] > right[field]
+    end)
+end
+
+local function render_cb_header(label, field, right) render_header(cb_srt, "cbh", label, field, right) end
+
+-- The callbacks results: each timed handler under its callback, sortable by any column.
+local function render_callbacks_table(cap)
+    sort_cb_rows(cap.rows or {}, cap.meta.stamp)
+    if not ImGui.BeginTable("jf_cb", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
+    ImGui.TableSetupColumn("Callback", 0, 170, 0)
+    ImGui.TableSetupColumn("Handler", 0, 210, 0)
+    ImGui.TableSetupColumn("Own ms", 0, 70, 0)
+    ImGui.TableSetupColumn("Total ms", 0, 70, 0)
+    ImGui.TableSetupColumn("Calls", 0, 60, 0)
+    ImGui.TableNextRow()
+    render_cb_header("Callback", "callback")
+    render_cb_header("Handler", "handler")
+    render_cb_header("Own ms", "self_us", true)
+    render_cb_header("Total ms", "total_us", true)
+    render_cb_header("Calls", "calls", true)
+    local rows = cap.rows or {}
+    for i = 1, #rows do render_callbacks_row(cap, rows[i]) end
+    ImGui.EndTable()
+end
+
+-- The CALLBACKS body: the run control and a filter, then the retained per-handler timings over the make_callback dispatch.
+local function render_callbacks()
+    local active = JitProfiler.is_callbacks_active()
+    if active then
+        if ImGui.Button("Stop##cb", BTN_SIZE) then JitProfiler.stop_callbacks() end
+    elseif JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or JitProfiler.is_scan_active() then
+        ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
+        ImGui.Button("Start##cb", BTN_SIZE)
+        ImGui.PopStyleColor(1)
+    else
+        if ImGui.Button("Start##cb", BTN_SIZE) then JitProfiler.start_callbacks() end
+    end
+    ImGui.SameLine()
+    ImGui.Text("times every registered handler over the make_callback dispatch")
+    ImGui.SameLine(0, 20)
+    ImGui.SetNextItemWidth(FILTER_W)
+    local new_filter = ImGui.InputText("##cbfilter", filter_text, 64)
+    if new_filter then filter_text = new_filter end
+    ImGui.Separator()
+    local cap = JitProfiler.get_last_capture(KIND_CALLBACKS)
+    if cap and not active then
+        ImGui.Text(format("last run: %d handlers   ~%.0fs   %s",
+            cap.meta.wrapped or 0, cap.meta.duration or 0, cap.meta.stamp or "?"))
+        ImGui.Separator()
+        render_callbacks_table(cap)
+    else
+        ImGui.Text("No capture yet.  Press Start, play, then Stop.")
+    end
+end
+
 local function render_panel()
     if not (panel_open and is_overlay_enabled()) then return end
     ImGui.SetNextWindowSize(WINDOW_SIZE, ImGuiCond.FirstUseEver)
@@ -840,10 +1031,14 @@ local function render_panel()
         render_tab_button(KIND_MEM, "MEM")
         ImGui.SameLine()
         render_tab_button(KIND_SCAN, "INSTRUMENT")
+        ImGui.SameLine()
+        render_tab_button(KIND_CALLBACKS, "CALLBACKS")
         render_status_line()
         ImGui.Separator()
         if active_tab == KIND_SCAN then
             render_instrument()
+        elseif active_tab == KIND_CALLBACKS then
+            render_callbacks()
         else
             render_sampling_body()
         end
@@ -869,8 +1064,9 @@ local function render_banner()
     if not is_overlay_enabled() then return end
     local cpu_on = JitProfiler.is_cpu_active()
     local scan_on = JitProfiler.is_scan_active()
-    if not (cpu_on or JitProfiler.is_mem_active() or scan_on) then return end
-    local label = cpu_on and "CPU PROFILER" or (scan_on and "INSTRUMENT" or "MEM PROFILER")
+    local cb_on = JitProfiler.is_callbacks_active()
+    if not (cpu_on or JitProfiler.is_mem_active() or scan_on or cb_on) then return end
+    local label = cpu_on and "CPU PROFILER" or (scan_on and "INSTRUMENT" or (cb_on and "CALLBACKS" or "MEM PROFILER"))
     local prog = JitProfiler.get_capture_progress()
     if prog then
         label = label .. "   " .. format_clock(prog.elapsed)
