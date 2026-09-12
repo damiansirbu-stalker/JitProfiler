@@ -1,4 +1,7 @@
 JitProfiler: engine-native LuaJIT sampling profiler for STALKER Anomaly, by Damian
+
+Preview release. The engine primitives it needs (jit.profile, jit.allocprof, jit.util.gcstat) are not in an official modded-exes release yet. To run it now, download the prebuilt preview exes from my fork, ahead of demonized's official build: https://github.com/damiansirbu/xray-monolith/releases/tag/mt-preview-2026.09.12. On a stock exe it loads and stays inert.
+
 Version: next (xlibs 1.8.3, demonized 20250908)
 GitHub: https://github.com/damiansirbu-stalker/JitProfiler
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
@@ -24,10 +27,21 @@ There is nothing to select and nothing to suspect in advance.
 Point it at the slow scene and read the ranking.
 The sampling is jittered, so a mod that runs on a schedule cannot dodge the sampler.
 
-It offers CPU sampling, memory allocation profiling, and targeted instrumentation.
+It offers CPU sampling, memory allocation profiling, targeted instrumentation, and a callbacks profiler.
 CPU sampling shows where the Lua time goes.
 Memory profiling shows which code generates the garbage the collector must clear, the real source of Anomaly's stutter and something script-side profilers cannot measure.
 Instrumentation wraps a chosen set of scripts and times each function for its own and total wall-clock, including the engine C beneath a call, the one axis the sampler cannot reach.
+Framerate drops while a scan runs, because each wrapped call carries a timer. That is expected, and the timings stay exact.
+It records the call graph as it runs, so each function shows its callers and its callees with their time, and a whole-mod scan totals the cost per owning mod.
+The callbacks profiler wraps every registered handler over the make_callback dispatch and ranks each by own ms with its callback and owning mod, so it names which mod hooks a callback such as actor_on_update and what each handler costs, engine C included.
+
+Engine C stays one bucket by nature.
+The sampler catches that Lua entered the engine, but the C++ routine underneath stays invisible to it.
+JitProfiler makes that bucket actionable anyway.
+It ranks the Lua call sites that enter engine C and the collector, the engine-C entry points, so you know which of your own calls drive the engine cost.
+Those entry points are the map for a native C++ profiler.
+Point Optick at the engine paths JitProfiler names.
+The Lua layer finds the entry, and the native profiler opens what lies beneath it.
 
 The sampler and the allocation counter are native code in the modded exe, beneath the script layer.
 That native core is my own work in xray-monolith. I backported the timer sampler and wrote the allocation profiler, so JitProfiler runs from the C up, one author for the whole stack.
@@ -38,7 +52,7 @@ It reads this from the MO2 virtual filesystem, so the name always matches what e
 
 Requirements:
 Anomaly 1.5.3
-A demonized modded-exes build with the JitProfiler primitives (jit.profile, jit.allocprof).
+A modded-exes build with the JitProfiler primitives (jit.profile, jit.allocprof, jit.util.gcstat). Not in an official release yet; download the prebuilt preview exes from my fork ahead of the official build: https://github.com/damiansirbu/xray-monolith/releases/tag/mt-preview-2026.09.12
 xlibs (used for logging).
 Launch with -dbg (MO2 launch arguments) so the console accepts run_string.
 
@@ -62,6 +76,7 @@ run_string JitProfiler.start_alloc()
 run_string JitProfiler.stop_alloc()
 ```
 Allocation counts exact bytes, so only depth is tunable, as start_alloc(20). A long session auto-writes numbered snapshots. Call JitProfiler.write_snapshot() to force one.
+Framerate drops sharply while the allocation profile runs, because the JIT is off for the capture. That is expected, and the byte counts stay exact regardless of framerate.
 
 Fold the baseline (anomaly, modded exes, engine) to focus on your mods:
 ```
@@ -71,9 +86,17 @@ Then stop as usual.
 
 In-game panel:
 An ImGui panel does everything without the console. Open the ImGui overlay (default F11), then pick JitProfiler in the menu bar.
-Two tabs split it. SAMPLING holds the CPU and memory captures with the ranked views (by mod, script, leaf, root), the VM-state split, and a live GC-health strip. Select a row to read the callers and callees of that frame.
-INSTRUMENTATION holds the targeted mode. Add scripts to a set from the BROWSE modlist or the + on a sampling row, run, and read each function's own and total time, sortable by any column, with avg, min, and max on hover and a frame-budget bar.
-On the multi-thread exe a Parallel GC toggle gives a clean CPU garbage-collector read. A small corner banner shows while a capture runs.
+The panel carries a CPU tab, a MEM tab, an INSTRUMENT tab, and a CALLBACKS tab, and a running capture locks the others.
+CPU and MEM hold the sampling captures with the ranked views.
+BY MOD and BY SCRIPT show Own and Total side by side, every column sortable, while BY LEAF and BY ROOT drill into frames, and selecting a row reads its callers and callees.
+The CPU tab adds the VM-state split and the engine-C entry-points list.
+The MEM tab adds a live GC-health strip with the heap toward the next collection, the live estimate, the debt, and the collection rate.
+INSTRUMENT holds the targeted mode.
+Add scripts from the BROWSE modlist or the + on a by-script row, then run and read the per-function own and total time, sortable by any column, with avg, min, and max on hover and a frame-budget bar.
+Select a function to read its callers and callees with their time.
+CALLBACKS arms the callbacks profiler and lists every registered handler ranked by own ms, with its callback and owning mod.
+On the multi-thread exe a Parallel GC toggle gives a clean CPU garbage-collector read.
+A small corner banner shows while a capture runs.
 
 Configuration (MCM):
 The JitProfiler MCM page holds the capture defaults for the sample interval, stack depth, report rows, auto-snapshot threshold, and the report fold.
@@ -86,12 +109,15 @@ jitprofiler_cpu_<timestamp>.txt     ranked text report
 jitprofiler_cpu_<timestamp>.folded  flamegraph for speedscope.app
 jitprofiler_mem_<timestamp>.txt     ranked text report
 jitprofiler_mem_<timestamp>.folded  flamegraph
-jitprofiler_inst_<timestamp>.txt    instrumentation report (own, total, avg, min, max)
+jitprofiler_inst_<timestamp>.txt    instrumentation report (own, total, avg, min, max, per-mod subtotals, call graph)
+jitprofiler_callbacks_<timestamp>.txt  callbacks report (per handler: callback, owner, own, total; per-callback rollup)
 ```
 
-The report opens with a VM-state split, showing how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.
+The report opens with a VM-state split, how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.
+A GC line follows with the heap, the live estimate, the debt, and the collections per second.
 The GC share flags allocation pressure without a separate run.
-Then the ranked views: BY MOD own (where the code ran) and total (every mod on the stack), BY LEAF (hot function), BY SCRIPT, BY ROOT (outermost frame driving the cost), and framework vs handlers.
+Then the engine-C entry points name the Lua call sites that drive the engine bucket.
+The ranked views follow, each carrying Own (where the code ran) and Total (on the stack anywhere): BY MOD, BY SCRIPT, BY LEAF, BY ROOT, and framework vs handlers.
 The allocation report carries the same views by bytes.
 
 The .folded files open at speedscope.app, a flamegraph viewer that runs in your browser.
