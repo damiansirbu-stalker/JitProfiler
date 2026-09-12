@@ -1,6 +1,6 @@
 JitProfiler: engine-native LuaJIT sampling profiler for STALKER Anomaly, by Damian
 
-Preview release. The engine primitives it needs (jit.profile, jit.allocprof, jit.util.gcstat) are not in an official modded-exes release yet. To run it now, download the prebuilt preview exes from my fork, ahead of demonized's official build: https://github.com/damiansirbu/xray-monolith/releases/tag/mt-preview-2026.09.12. On a stock exe it loads and stays inert.
+Preview release. Two of the engine primitives it needs, jit.profile and jit.allocprof, shipped in the official 2026.9.12 modded exes. The third, jit.util.gcstat, is not in an official release yet, so the GC-health readout needs the preview exes from my fork: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler. On a stock exe it loads and stays inert.
 
 Version: next (xlibs 1.8.3, demonized 20250908)
 GitHub: https://github.com/damiansirbu-stalker/JitProfiler
@@ -52,7 +52,7 @@ It reads this from the MO2 virtual filesystem, so the name always matches what e
 
 Requirements:
 Anomaly 1.5.3
-A modded-exes build with the JitProfiler primitives (jit.profile, jit.allocprof, jit.util.gcstat). Not in an official release yet; download the prebuilt preview exes from my fork ahead of the official build: https://github.com/damiansirbu/xray-monolith/releases/tag/mt-preview-2026.09.12
+A modded-exes build with the JitProfiler primitives. jit.profile and jit.allocprof are in the official 2026.9.12 modded exes. jit.util.gcstat, which drives the GC-health readout, is not yet, so for the full feature set use the preview exes from my fork: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 xlibs (used for logging).
 Launch with -dbg (MO2 launch arguments) so the console accepts run_string.
 
