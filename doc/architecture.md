@@ -57,6 +57,7 @@ Every script callback flows through one chokepoint, `make_callback` in axr_main,
 `start_callbacks` reads that file-local `intercepts` table by upvalue and swaps each function handler in place for a timing wrapper, keeping its priority, so `make_callback` is never reimplemented and dispatch order and semantics stay untouched.
 Each wrapper times its handler inclusive of the engine C it triggers, banks own and total on a pooled stack like the scan, and re-raises a handler error unchanged.
 `stop_callbacks` swaps every original back and writes the report; a level change or actor destroy force-restores first so no wrapper orphans, and `spairs` snapshots the handler keys so a mid-dispatch restore is safe.
+A picker set narrows the capture: picked callback names arm alone, and an empty pick arms every callback.
 The report ranks every handler by own ms with its callback and owning mod, plus a per-callback rollup, answering which mod hooks a callback and what each handler costs, engine C included.
 It is opt-in, mutually exclusive with the other captures, and goes inert on a build where the intercepts upvalue is not reachable.
 
@@ -107,7 +108,7 @@ The results table ranks each function by own with an own-share bar, plus own ms,
 Number columns right-align through CalcTextSize, so magnitude scans down the column.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
 The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile) each explained on hover, then the engine-C entry points, the Lua call sites that drive the engine bucket.
-The CALLBACKS tab arms `start_callbacks` and ranks every registered handler over the make_callback dispatch by own ms, with its callback and owning mod; a dim line under a running MEM or wrapping capture notes the FPS drop and that accuracy holds.
+The CALLBACKS tab arms `start_callbacks` and ranks every registered handler over the make_callback dispatch by own ms, with its callback and owning mod; a BROWSE subtab lists every registered callback with its handler count and a picker toggle, and a dim line under a running MEM or wrapping capture notes the FPS drop and that accuracy holds.
 The MEM view carries a live GC-health strip from `jit.util.gcstat`, a bar for the heap toward the next collection plus the live estimate and debt, hidden when the exe lacks the getter.
 On the multi-thread exe a Parallel GC toggle flips the `lua_parallel_gc` cvar, so a CPU capture reads a clean G share instead of the parallel-GC inflation.
 The panel renders in white JetBrains Mono when the font is present, so digits line up as a column, over a blue accent scheme; each cost bar carries a single-hue blue heat shade by share.
@@ -118,7 +119,7 @@ The chunk executes twice, so registration and the retained capture anchor to `_G
 ## Settings and MCM
 Capture settings live in the panel, not in MCM.
 `JitProfiler.script` keeps them as session state anchored to `_G`, edited from the panel through `get_setting` and `set_setting`.
-They cover interval, depth, report rows, the auto-snapshot threshold, auto-stop, and fold.
+They cover interval, depth, the auto-snapshot threshold, auto-stop, and fold.
 A console argument to `start_cpu` or `start_alloc` overrides one capture, and nothing is persisted.
 An auto-stop duration above 0 ends a running capture from the `update_capture` heartbeat and writes its report, so a forgotten allocation capture never holds the JIT off past the limit.
 

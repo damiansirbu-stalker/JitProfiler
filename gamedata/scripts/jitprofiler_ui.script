@@ -48,6 +48,8 @@ local COLOR_DIM    = fcolor():set(0.22, 0.24, 0.28, 1.0)
 local COLOR_ACCENT = fcolor():set(0.26, 0.52, 0.85, 1.0)
 local COLOR_RUN    = fcolor():set(0.90, 0.35, 0.35, 1.0)
 local COLOR_WARN   = fcolor():set(0.85, 0.70, 0.35, 1.0)
+-- Muted Anomaly amber for table headers: static chrome only, dimmer than COLOR_WARN so warnings stay louder; hover stays blue.
+local COLOR_HEADER = fcolor():set(0.72, 0.58, 0.32, 1.0)
 -- Reused fcolor for the single-hue blue heat ramp, lerped dim-to-bright by share in get_heat_color.
 local HEAT_COLOR   = fcolor():set(0.26, 0.52, 0.85, 1.0)
 
@@ -96,11 +98,9 @@ local fold_baseline = false
 local filter_text = ""
 local samp_sort = { field = SORT_TOTAL, asc = false }
 local scan_srt = { field = "self_us", asc = false }
-local scan_sig
 local scan_selected
 local scan_neighbors_data
 local cb_srt = { field = "self_us", asc = false }
-local cb_sig
 local selected_frame = nil
 local selected_neighbors = nil
 local rows_sig, rows_cache
@@ -110,6 +110,10 @@ local INST_SELECTED = "selected"
 local INST_BROWSE = "browse"
 local inst_view = INST_SELECTED
 local tree_search = ""
+local CB_RESULTS = "results"
+local CB_BROWSE = "browse"
+local cb_view = CB_RESULTS
+local cb_search = ""
 local tree_cache
 local mono_ok = false
 local mono_checked = false
@@ -241,9 +245,9 @@ local function render_header(state, prefix, label, field, right)
     local pad = right and (avail - ImGui.CalcTextSize(shown).x) or 0
     if pad < 0 then pad = 0 end
     ImGui.SetCursorPosX(start_x + pad)
-    if hovered then ImGui.PushStyleColor(ImGuiCol.Text, COLOR_ACCENT) end
+    ImGui.PushStyleColor(ImGuiCol.Text, hovered and COLOR_ACCENT or COLOR_HEADER)
     ImGui.Text(shown)
-    if hovered then ImGui.PopStyleColor(1) end
+    ImGui.PopStyleColor(1)
 end
 local function render_sort_header(label, col, right) render_header(samp_sort, "h", label, col, right) end
 
@@ -518,38 +522,27 @@ local function render_engine_entry(cap)
     end
 end
 
--- Live LuaJIT GC health from jit.util.gcstat: a bar for the heap toward the next collection, then the live estimate and debt.
-local function render_gc_health()
-    if not gcstat_fn then return end
-    local stat = gcstat_fn()
-    local mb = 1 / BYTES_PER_MB
-    local frac = stat.threshold > 0 and stat.total / stat.threshold or 0
-    if frac > 1 then frac = 1 end
-    ImGui.Text(format("%-10s", "GC heap"))
+-- One GC-health row: the label, a heat bar for the clamped fraction, then the value text.
+local function render_gc_bar(label, frac, text)
+    if frac > 1 then frac = 1 elseif frac < 0 then frac = 0 end
+    ImGui.Text(format("%-10s", label))
     ImGui.SameLine(120)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(frac * 100))
     ImGui.ProgressBar(frac, VMBAR_SIZE, "")
     ImGui.PopStyleColor(1)
     ImGui.SameLine()
-    ImGui.Text(format("%.1f / %.1f MB to next GC", stat.total * mb, stat.threshold * mb))
-    local efrac = stat.total > 0 and stat.estimate / stat.total or 0
-    if efrac > 1 then efrac = 1 end
-    ImGui.Text(format("%-10s", "GC live"))
-    ImGui.SameLine(120)
-    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(efrac * 100))
-    ImGui.ProgressBar(efrac, VMBAR_SIZE, "")
-    ImGui.PopStyleColor(1)
-    ImGui.SameLine()
-    ImGui.Text(format("%.1f MB live", stat.estimate * mb))
-    local dfrac = stat.threshold > 0 and stat.debt / stat.threshold or 0
-    if dfrac > 1 then dfrac = 1 end
-    ImGui.Text(format("%-10s", "GC debt"))
-    ImGui.SameLine(120)
-    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(dfrac * 100))
-    ImGui.ProgressBar(dfrac, VMBAR_SIZE, "")
-    ImGui.PopStyleColor(1)
-    ImGui.SameLine()
-    ImGui.Text(format("%.0f B behind", stat.debt))
+    ImGui.Text(text)
+end
+
+-- Live LuaJIT GC health from jit.util.gcstat: a bar for the heap toward the next collection, then the live estimate and debt.
+local function render_gc_health()
+    if not gcstat_fn then return end
+    local stat = gcstat_fn()
+    local mb = 1 / BYTES_PER_MB
+    render_gc_bar("GC heap", stat.threshold > 0 and stat.total / stat.threshold or 0,
+        format("%.1f / %.1f MB to next GC", stat.total * mb, stat.threshold * mb))
+    render_gc_bar("GC live", stat.total > 0 and stat.estimate / stat.total or 0, format("%.1f MB live", stat.estimate * mb))
+    render_gc_bar("GC debt", stat.threshold > 0 and stat.debt / stat.threshold or 0, format("%.0f B behind", stat.debt))
     if stat.cycles then
         local now = time_global and time_global() or 0
         if gc_t0 == 0 then gc_t0, gc_c0 = now, stat.cycles end
@@ -604,17 +597,12 @@ local function render_settings()
     if not ImGui.CollapsingHeader("Settings") then return end
     render_int_setting("interval", "CPU interval (ms)", 1, 20)
     render_int_setting("depth", "Stack depth", 4, 64)
-    render_int_setting("top_n", "Report rows", 10, 100)
     render_int_setting("auto_snap", "Auto-snapshot at (%)", 50, 99)
     render_int_setting("duration", "Auto-stop after (s)", 0, 600)
 end
 
-local function render_tab(cap)
-    if cap.kind == KIND_CPU then
-        ImGui.Text(format("%d samples   ~%.0fs   %s", cap.meta.samples or 0, cap.meta.duration or 0, cap.meta.stamp or "?"))
-    else
-        ImGui.Text(format("%s allocated   ~%.0fs   %s", format_weight(KIND_MEM, cap.total), cap.meta.duration or 0, cap.meta.stamp or "?"))
-    end
+-- Depth, drop, and resolver warnings for a retained capture.
+local function render_tab_health(cap)
     local at_cap = (cap.total > 0) and 100 * (cap.meta.clipped or 0) / cap.total or 0
     ImGui.Text(format("stack depth %d / cap %d   %.1f%% at cap",
         cap.meta.max_depth or 0, cap.meta.depth or 0, at_cap))
@@ -633,6 +621,15 @@ local function render_tab(cap)
         ImGui.Text("owner resolve unavailable (no FFI): mod names are name-guesses")
         ImGui.PopStyleColor(1)
     end
+end
+
+local function render_tab(cap)
+    if cap.kind == KIND_CPU then
+        ImGui.Text(format("%d samples   ~%.0fs   %s", cap.meta.samples or 0, cap.meta.duration or 0, cap.meta.stamp or "?"))
+    else
+        ImGui.Text(format("%s allocated   ~%.0fs   %s", format_weight(KIND_MEM, cap.total), cap.meta.duration or 0, cap.meta.stamp or "?"))
+    end
+    render_tab_health(cap)
     if cap.kind == KIND_CPU then
         ImGui.Separator()
         ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
@@ -732,12 +729,12 @@ local function render_scan_row(cap, row)
     render_num(format("%8d", row.calls))
 end
 
--- Sort the instrument rows in place once per capture or sort change; key sorts by name, the rest by value.
-local function sort_scan_rows(rows, stamp)
-    local sig = scan_srt.field .. ":" .. (scan_srt.asc and "a" or "d") .. ":" .. (stamp or "?")
-    if sig == scan_sig then return end
-    scan_sig = sig
-    local field, asc = scan_srt.field, scan_srt.asc
+-- Sort capture rows in place once per capture or sort change; name fields sort by string, the rest by value. Sig cached on the state table.
+local function sort_capture_rows(state, rows, stamp)
+    local sig = state.field .. ":" .. (state.asc and "a" or "d") .. ":" .. (stamp or "?")
+    if sig == state.sig then return end
+    state.sig = sig
+    local field, asc = state.field, state.asc
     table.sort(rows, function(left, right)
         if asc then return left[field] < right[field] end
         return left[field] > right[field]
@@ -748,7 +745,7 @@ local function render_scan_header(label, field, right) render_header(scan_srt, "
 
 -- The scan results: each wrapped function with an own-share bar, sortable by any column header.
 local function render_scan_table(cap)
-    sort_scan_rows(cap.rows or {}, cap.meta.stamp)
+    sort_capture_rows(scan_srt, cap.rows or {}, cap.meta.stamp)
     if not ImGui.BeginTable("jf_scan", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Function", 0, 240, 0)
     ImGui.TableSetupColumn("Own %", 0, 130, 0)
@@ -829,8 +826,8 @@ local function render_status_line()
         ImGui.PopStyleColor(1)
     end
     if JitProfiler.is_mem_active() then
-        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
-        ImGui.Text("JIT off for exact bytes: FPS drops while capturing, accuracy stays 100%.")
+        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_WARN)
+        ImGui.Text("JIT off for exact bytes: FPS drops HARD on a heavy modpack. Accuracy stays 100%; capture short.")
         ImGui.PopStyleColor(1)
     elseif JitProfiler.is_scan_active() or JitProfiler.is_callbacks_active() then
         ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
@@ -884,12 +881,13 @@ local function render_selected()
     end
 end
 
--- One instrumentation sub-view tab (SELECTED or BROWSE).
-local function render_inst_view_tab(view, label)
-    local sel = (inst_view == view)
+-- One sub-view tab button (INSTRUMENT and CALLBACKS subtabs); returns the active view.
+local function render_view_tab(current, view, label, id)
+    local sel = (current == view)
     ImGui.PushStyleColor(ImGuiCol.Button, sel and COLOR_ACCENT or COLOR_DIM)
-    if ImGui.Button(label .. "##iv", VZERO) then inst_view = view end
+    if ImGui.Button(label .. id, VZERO) then current = view end
     ImGui.PopStyleColor(1)
+    return current
 end
 
 -- The INSTRUMENTATION body: the run control and overhead guard, then either the SELECTED working list plus results, or the BROWSE modlist.
@@ -918,9 +916,9 @@ local function render_instrument()
         ImGui.PopStyleColor(1)
     end
     ImGui.Separator()
-    render_inst_view_tab(INST_SELECTED, "SELECTED")
+    inst_view = render_view_tab(inst_view, INST_SELECTED, "SELECTED", "##iv")
     ImGui.SameLine()
-    render_inst_view_tab(INST_BROWSE, "BROWSE")
+    inst_view = render_view_tab(inst_view, INST_BROWSE, "BROWSE", "##iv")
     ImGui.Separator()
     if inst_view == INST_BROWSE then
         render_tree()
@@ -951,23 +949,11 @@ local function render_callbacks_row(cap, row)
     render_num(format("%8d", row.calls))
 end
 
--- Sort the callbacks rows in place once per capture or sort change; callback/handler by name, the rest by value.
-local function sort_cb_rows(rows, stamp)
-    local sig = cb_srt.field .. ":" .. (cb_srt.asc and "a" or "d") .. ":" .. (stamp or "?")
-    if sig == cb_sig then return end
-    cb_sig = sig
-    local field, asc = cb_srt.field, cb_srt.asc
-    table.sort(rows, function(left, right)
-        if asc then return left[field] < right[field] end
-        return left[field] > right[field]
-    end)
-end
-
 local function render_cb_header(label, field, right) render_header(cb_srt, "cbh", label, field, right) end
 
 -- The callbacks results: each timed handler under its callback, sortable by any column.
 local function render_callbacks_table(cap)
-    sort_cb_rows(cap.rows or {}, cap.meta.stamp)
+    sort_capture_rows(cb_srt, cap.rows or {}, cap.meta.stamp)
     if not ImGui.BeginTable("jf_cb", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Callback", 0, 170, 0)
     ImGui.TableSetupColumn("Handler", 0, 210, 0)
@@ -985,7 +971,31 @@ local function render_callbacks_table(cap)
     ImGui.EndTable()
 end
 
--- The CALLBACKS body: the run control and a filter, then the retained per-handler timings over the make_callback dispatch.
+-- One picker row: the +/- toggle that narrows the next capture, then the callback with its handler count.
+local function render_cb_item(row)
+    local on = JitProfiler.is_callback_target(row.name)
+    if ImGui.Button((on and "-##cbb" or "+##cbb") .. row.name, VZERO) then
+        if on then JitProfiler.remove_callback_target(row.name) else JitProfiler.add_callback_target(row.name) end
+    end
+    ImGui.SameLine()
+    ImGui.Text(format("%s  (%d)", row.name, row.handlers))
+end
+
+-- The BROWSE picker: every registered callback with its handler count and a +/- toggle; an empty pick arms all.
+local function render_cb_browse()
+    local list = JitProfiler.get_registered_callbacks()
+    if #list == 0 then ImGui.Text("make_callback intercepts not reachable on this build"); return end
+    local npick = JitProfiler.get_callback_pick_count()
+    ImGui.Text(npick == 0 and "arming ALL callbacks  -  pick some to narrow the capture" or format("arming %d picked callbacks", npick))
+    local new_search = ImGui.InputText("Search##cbb", cb_search, 64)
+    if new_search then cb_search = new_search end
+    local needle = cb_search:lower()
+    for i = 1, #list do
+        if check_match(list[i].name, needle) then render_cb_item(list[i]) end
+    end
+end
+
+-- The CALLBACKS body: the run control and a filter, the RESULTS/BROWSE subtabs, then the retained per-handler timings.
 local function render_callbacks()
     local active = JitProfiler.is_callbacks_active()
     if active then
@@ -998,12 +1008,21 @@ local function render_callbacks()
         if ImGui.Button("Start##cb", BTN_SIZE) then JitProfiler.start_callbacks() end
     end
     ImGui.SameLine()
-    ImGui.Text("times every registered handler over the make_callback dispatch")
+    local npick = JitProfiler.get_callback_pick_count()
+    ImGui.Text(npick == 0 and "times every registered handler over the make_callback dispatch" or format("times %d picked callbacks (BROWSE to change)", npick))
     ImGui.SameLine(0, 20)
     ImGui.SetNextItemWidth(FILTER_W)
     local new_filter = ImGui.InputText("##cbfilter", filter_text, 64)
     if new_filter then filter_text = new_filter end
     ImGui.Separator()
+    cb_view = render_view_tab(cb_view, CB_RESULTS, "RESULTS", "##cbv")
+    ImGui.SameLine()
+    cb_view = render_view_tab(cb_view, CB_BROWSE, "BROWSE", "##cbv")
+    ImGui.Separator()
+    if cb_view == CB_BROWSE then
+        render_cb_browse()
+        return
+    end
     local cap = JitProfiler.get_last_capture(KIND_CALLBACKS)
     if cap and not active then
         ImGui.Text(format("last run: %d handlers   ~%.0fs   %s",

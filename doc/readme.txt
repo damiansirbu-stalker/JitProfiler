@@ -69,7 +69,8 @@ run_string JitProfiler.stop_cpu()
 ```
 start_cpu(interval_ms, depth) overrides the 5 ms and depth 64 defaults. start_cpu(1) samples more often, start_cpu(5, 32) traces shallower and faster.
 
-The allocation profile shows which code generates GC garbage, with the JIT off and slower:
+The allocation profile shows which code generates GC garbage, with the JIT off for the whole capture.
+Expect a hard FPS drop that scales with the modpack's script load; the byte counts stay exact, so capture short at the spot you care about:
 ```
 run_string JitProfiler.start_alloc()
 -- play 30-60 seconds
@@ -95,11 +96,12 @@ INSTRUMENT holds the targeted mode.
 Add scripts from the BROWSE modlist or the + on a by-script row, then run and read the per-function own and total time, sortable by any column, with avg, min, and max on hover and a frame-budget bar.
 Select a function to read its callers and callees with their time.
 CALLBACKS arms the callbacks profiler and lists every registered handler ranked by own ms, with its callback and owning mod.
+Its BROWSE subtab lists every registered callback with a picker toggle; picked callbacks arm alone, none picked arms all.
 On the multi-thread exe a Parallel GC toggle gives a clean CPU garbage-collector read.
 A small corner banner shows while a capture runs.
 
 Configuration (MCM):
-The JitProfiler MCM page holds the capture defaults for the sample interval, stack depth, report rows, auto-snapshot threshold, and the report fold.
+The JitProfiler MCM page holds the capture defaults for the sample interval, stack depth, auto-snapshot threshold, and the report fold.
 The panel and the console commands use these defaults, and a console argument to start_cpu or start_alloc overrides the matching value for that capture.
 The MCM also has an auto-stop duration. Set it above 0 and a running capture stops itself after that many seconds, a safety limit for the allocation profile.
 
