@@ -490,8 +490,13 @@ local MODDED_EXES = {
     ["zz_ui_debug_inputs.script"] = true,
 }
 
+-- Index each baked set by lowered name: the VFS lowercases file names, the sets keep on-disk case (scopeRadii).
+local VANILLA_LOWER, MODDED_EXES_LOWER = {}, {}
+for key in pairs(VANILLA) do VANILLA_LOWER[key:lower()] = true end
+for key in pairs(MODDED_EXES) do MODDED_EXES_LOWER[key:lower()] = true end
+
 --- @return boolean whether the name is a stock Anomaly script.
-function is_vanilla(name) return VANILLA[name] == true end
+function is_vanilla(name) return VANILLA_LOWER[name:lower()] == true end
 
 --- @return boolean whether the name is a demonized modded-exes overlay script.
-function is_modded_exes(name) return MODDED_EXES[name] == true end
+function is_modded_exes(name) return MODDED_EXES_LOWER[name:lower()] == true end

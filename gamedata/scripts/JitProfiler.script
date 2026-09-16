@@ -13,12 +13,13 @@ local OWNER_UNKNOWN       = "unknown"
 local OWNER_ENGINE        = "engine"
 local OWNER_MODDED        = "modded exes"
 local OWNER_MOD           = "mod: "
+local OWNER_LOOSE         = "loose: "
 local OWNER_STRING        = "loadstring"
 
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
 local pcall, tostring, tonumber, require, os, type = pcall, tostring, tonumber, require, os, type
 local format = string.format
-local getFS, time_global, jit = getFS, time_global, jit
+local time_global, jit = time_global, jit
 local RegisterScriptCallback = RegisterScriptCallback
 local rawget, rawset = rawget, rawset
 local error, unpack, select, next = error, unpack, select, next
@@ -94,7 +95,7 @@ if not (profile and allocprof) then
 end
 
 local function build_log_path(name)
-    local base = getFS():update_path("$logs$", "")
+    local base = xfs.resolve_path("$logs$", "")
     return (base or "") .. name
 end
 
@@ -118,21 +119,21 @@ local function get_timestamp()
 end
 
 -- The scripts-relative path (forward slash) of the .script/.lua a frame or key names; nil for a pseudo-leaf or no file token.
--- A subdir require'd module keeps its subpath (illish/patches/x.lua), so it resolves to its real file and never collides with a root name.
+-- A subdir module keeps its subpath; a LuaJIT '...' short_src truncation is stripped so a long path keys to its real basename, not '...cripts/name'.
 local function get_script_id(str)
     local path = str:match("([%w_%.%-\\/]+%.script)") or str:match("([%w_%.%-\\/]+%.lua)")
     if not path then return nil end
-    return (path:gsub("\\", "/"):gsub("^.*/scripts/", ""))
+    return (path:gsub("\\", "/"):gsub("^.*/scripts/", ""):gsub("^%.%.%.[^/]*/", ""))
 end
 
--- Reduce a frame to name@<scripts-relative path>:line, normalising separators and dropping the install prefix.
+-- Reduce a frame to name@<scripts-relative path>:line, normalising separators and dropping the install prefix (or a "..." truncation marker).
 -- A frame with no file token is returned unchanged: it already carries name@..., so prepending would double the name.
 local function get_short_frame(frame)
     local file = frame:match("([%w_%.%-\\/]+%.script:%-?%d+)")
               or frame:match("([%w_%.%-\\/]+%.lua:%-?%d+)")
               or frame:match("(%[C%]:%-?%d+)")
     if not file then return frame end
-    file = file:gsub("\\", "/"):gsub("^.*/scripts/", "")
+    file = file:gsub("\\", "/"):gsub("^.*/scripts/", ""):gsub("^%.%.%.[^/]*/", "")
     local name = frame:match("^([%w_]+)@")
     return name and (name .. "@" .. file) or file
 end
@@ -212,18 +213,18 @@ local function resolve_real_path(vpath)
     return (written > 0) and ffi.string(buffer) or nil
 end
 
--- Owner from the winning mod (real backing path), then the baked name sets: demonized overlay, stock Anomaly, else unknown.
+-- Owner from the winning mod (real backing path), then the baked name sets, then the loose folder for a stray file, else unknown.
 -- origin_method records how the owner was decided: mod (real mods\ path), loose (real non-mod path), packed (open failed, so in a db), name (no FFI guess).
 --- @safety SAFE - pcall contains any FFI error to a nil path, so an unresolved script falls through to the name sets.
 local function get_script_owner(script_file)
     if not script_file or script_file == "" then return OWNER_UNKNOWN end
     if origin_cache[script_file] then return origin_cache[script_file] end
-    local owner, method
+    local owner, method, loose_root
     if resolve_ready then
-        local ok, real = pcall(resolve_real_path, getFS():update_path("$game_scripts$", script_file))
+        local ok, real = pcall(resolve_real_path, xfs.resolve_path("$game_scripts$", script_file))
         if ok and real then
             local mod = real:match("[\\/][Mm][Oo][Dd][Ss][\\/]([^\\/]+)")
-            if mod then owner, method = OWNER_MOD .. mod, "mod" else method = "loose" end
+            if mod then owner, method = OWNER_MOD .. mod, "mod" else method, loose_root = "loose", real:match("[\\/]([^\\/]+)[\\/][Gg]amedata[\\/]") end
         else
             method = "packed"
         end
@@ -233,6 +234,7 @@ local function get_script_owner(script_file)
     if not owner then
         if jitprofiler_names.is_modded_exes(script_file) then owner = OWNER_MODDED
         elseif jitprofiler_names.is_vanilla(script_file) then owner = OWNER_ANOMALY
+        elseif loose_root then owner = OWNER_LOOSE .. loose_root
         else owner = OWNER_UNKNOWN end
     end
     origin_cache[script_file] = owner
