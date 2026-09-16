@@ -358,7 +358,9 @@ end
 -- Forward-declared so the CPU, allocation, scan, and callbacks engines can see each other and stay mutually exclusive.
 local alloc, scan, callbacks
 
-local cpu = { stacks = {}, state = {}, total = 0, nstacks = 0, dropped = 0, iv = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, t0 = 0, limit = 0, active = false }
+-- Anchored to _G: the chunk executes twice, so the actor_on_update heartbeat and the console entry points must share one table.
+local cpu = rawget(_G, "__jitprofiler_cpu") or { stacks = {}, state = {}, total = 0, nstacks = 0, dropped = 0, iv = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, t0 = 0, limit = 0, active = false }
+rawset(_G, "__jitprofiler_cpu", cpu)
 
 -- The most recent CPU, allocation, and scan capture, retained for the in-game panel to render.
 local last_capture = rawget(_G, "__jitprofiler_capture")
@@ -475,9 +477,10 @@ function stop_cpu()
     show_tip("JitProfiler CPU report written")
 end
 
--- Allocation profiler: exact per-allocation bytes, drained at instruction boundaries with the JIT off.
-alloc = { depth = DEFAULT_STACK_DEPTH, t0 = 0, snap_t0 = 0, snap_n = 0, snap_pct = AUTO_SNAP_PCT, limit = 0,
-          capturing = false, jit_was_on = false }
+-- Allocation profiler: exact per-allocation bytes, drained at instruction boundaries with the JIT off. Anchored to _G like cpu/scan.
+alloc = rawget(_G, "__jitprofiler_alloc") or { depth = DEFAULT_STACK_DEPTH, t0 = 0, snap_t0 = 0, snap_n = 0,
+        snap_pct = AUTO_SNAP_PCT, limit = 0, capturing = false, jit_was_on = false }
+rawset(_G, "__jitprofiler_alloc", alloc)
 
 -- Turn a dump result into the text report and folded flamegraph, then write both.
 local function write_alloc_report(stacks, duration_sec, suffix, title)
@@ -595,8 +598,9 @@ function stop_alloc()
 end
 
 -- Instrumentation: wrap every function of a target-script SET and time each call for self and total, counting calls.
-scan = { set = {}, count = 0, records = {}, saved = {}, wrapped = 0, edges = {},
-         stack = {}, sp = 0, t0 = 0, limit = 0, frames = 0, active = false }
+scan = rawget(_G, "__jitprofiler_scan") or { set = {}, count = 0, records = {}, saved = {}, wrapped = 0, edges = {},
+       stack = {}, sp = 0, t0 = 0, limit = 0, frames = 0, active = false }
+rawset(_G, "__jitprofiler_scan", scan)
 
 -- Callbacks: time every registered handler by wrapping the make_callback intercepts table in place; state anchored to _G.
 callbacks = rawget(_G, "__jitprofiler_callbacks")

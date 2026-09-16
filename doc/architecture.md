@@ -137,6 +137,7 @@ The panel renders in white JetBrains Mono when the font is present, so digits li
 A fold-baseline toggle drops the non-mod rows, leaving only mods.
 A corner banner in the Unique group renders every frame and shows only while a capture runs.
 The chunk executes twice, so registration and the retained capture anchor to `_G` singletons.
+Measured: unanchored, the `actor_on_update` heartbeat and the console entry points hold separate state tables and `scan.frames` reads 0; anchored, they share one and frames track ticks.
 
 ## Settings and MCM
 Capture settings live in the panel, not in MCM.
