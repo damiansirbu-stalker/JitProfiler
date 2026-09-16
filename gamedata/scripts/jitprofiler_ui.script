@@ -315,7 +315,7 @@ local function render_view_combo()
     ImGui.EndCombo()
 end
 
--- A baseline owner is anything not resolved to a specific mod: anomaly, modded exes, engine, unknown.
+-- A baseline owner is any owner without the "mod: " prefix, i.e. not resolved to a specific mod.
 local function is_baseline(owner)
     return owner:sub(1, #OWNER_MOD) ~= OWNER_MOD
 end
