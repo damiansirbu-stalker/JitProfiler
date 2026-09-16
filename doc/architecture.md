@@ -160,6 +160,7 @@ The panel, menu, and banner read `show_imgui` through a cached flag and draw not
 - Per-mod attribution needs an MO2/USVFS install. Elsewhere it degrades to script level.
 - CPU and allocation are mutually exclusive. Each refuses to start while the other runs.
 - Instrumentation assumes strict call nesting. A wrapped function that yields a coroutine mid-call desyncs the timer stack until stop_scan restores it.
+- Instrumentation wraps a script's module-table functions. A function reached through a saved reference (a registered callback, a stored upvalue, a local alias) still calls the original and is not timed; the callbacks mode covers the dispatch case.
 
 ## Requires
 A demonized build exposing `jit.profile` and `jit.allocprof` (and `jit.util.gcstat` for the GC-health strip), and xlibs for `xlog`.
