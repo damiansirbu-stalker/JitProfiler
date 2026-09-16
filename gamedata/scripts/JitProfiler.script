@@ -279,9 +279,15 @@ local function get_stack_bucket(leaf_frame)
     return DISPATCH[get_leaf_name(leaf_frame)] and "[framework] callback dispatch" or "[handlers] mod + engine work"
 end
 
--- The frame a stack's weight books to: past a pseudo-leaf with 2+ real frames, the resuming frame that made the C/GC call.
+-- A runtime-compiled chunk (loadstring/loadfile) frame: no backing file, so it can own no mod.
+local function is_string_frame(frame)
+    return frame:find("%[string") ~= nil
+end
+
+-- The frame Own weight books to: past a prepended [C]/[GC]/[JIT] pseudo-leaf or a [string] chunk, to the real Lua frame below that drove it.
 local function get_anchor_frame(first, second, nframes)
     if PSEUDO_FRAME[first] and second and nframes >= 3 then return second end
+    if is_string_frame(first) and second and not PSEUDO_FRAME[second] and not is_string_frame(second) and get_script_id(second) then return second end
     return first
 end
 
@@ -1113,7 +1119,7 @@ end
 --- @return string the owner (mod / modded exes / anomaly / engine / unknown) for a view key, resolved through the script it names.
 function get_owner(key)
     if key:find("%[C%]") or key:find("%[GC%]") or key:find("%[JIT%]") then return OWNER_ENGINE end
-    if key:find("%[string") then return OWNER_STRING end
+    if is_string_frame(key) then return OWNER_STRING end
     local script_file = get_script_id(key)
     return script_file and get_script_owner(script_file) or OWNER_UNKNOWN
 end
