@@ -1,0 +1,397 @@
+--- jitprofiler_report: JitProfiler's presentation layer -- text reports, SpeedScope .folded flamegraphs, and call-graph neighbors over the computed views.
+
+local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
+local tostring, os, format = tostring, os, string.format
+
+local RULE = "================================================================================"
+local BAR_WIDTH    = 20
+local BYTES_PER_MB = 1048576
+local BYTES_PER_KB = 1024
+local OWNER_MOD    = "mod: "
+
+-- Per-sample VM state label for the CPU report header.
+local VMSTATE = {
+    N = "JIT-compiled (native)", I = "interpreter", C = "C / engine call",
+    G = "garbage collector", J = "JIT compiler",
+}
+local VMORDER = { "N", "I", "C", "G", "J" }
+
+-- xlog resolves lazily; the "JitProfiler" logger is shared with the front-end (get_logger returns the cached facade).
+local log_handle
+local function log(fmt, ...)
+    if not log_handle then log_handle = xlog.get_logger("JitProfiler", { outfile = "jitprofiler.log", level = "INFO" }) end
+    log_handle.info(fmt, ...)
+end
+
+-- Effective fold for the report in flight; each write_* entry point sets it, build_view reads it.
+local report_fold = false
+
+local function get_timestamp()
+    return os.date("%Y%m%d_%H%M%S")
+end
+
+local function build_log_path(name)
+    local base = xfs.resolve_path("$logs$", "")
+    return (base or "") .. name
+end
+
+local function write_lines(path, lines)
+    if not xfs.write_file(path, table.concat(lines, "\n") .. "\n") then
+        log("!JitProfiler: cannot write %s", tostring(path)); return nil
+    end
+    return path
+end
+
+local function format_bytes(value)
+    if value >= BYTES_PER_MB then return format("%.1f MB", value / BYTES_PER_MB) end
+    if value >= BYTES_PER_KB then return format("%.1f KB", value / BYTES_PER_KB) end
+    return format("%.0f B", value)
+end
+local function format_count(value) return format("%d", value) end
+
+-- ASCII percentage bar that renders in any editor and encoding.
+local function build_bar(percent)
+    local fill = math.floor((percent / 100) * BAR_WIDTH + 0.5)
+    if fill > BAR_WIDTH then fill = BAR_WIDTH elseif fill < 0 then fill = 0 end
+    return "[" .. string.rep("#", fill) .. string.rep(" ", BAR_WIDTH - fill) .. "]"
+end
+
+-- Reverse a leaf-first stack into the root-first order SpeedScope .folded expects.
+local function build_folded_stack(stack)
+    local parts, count = {}, 0
+    for frame in string.gmatch(stack, "[^;]+") do count = count + 1; parts[count] = JitProfiler.get_short_frame(frame) end
+    local out = {}
+    for i = count, 1, -1 do out[#out + 1] = parts[i] end
+    return table.concat(out, ";")
+end
+
+local function sort_entries(map)
+    local entries = {}
+    for key, weight in pairs(map) do entries[#entries + 1] = { key, weight } end
+    table.sort(entries, function(left, right) return left[2] > right[2] end)
+    return entries
+end
+
+local function compute_pct(value, total) return total > 0 and (100.0 * value / total) or 0 end
+
+local function get_key_count(map)
+    local count = 0
+    for _ in pairs(map) do count = count + 1 end
+    return count
+end
+
+local function write_folded(kind, by_stack)
+    local folded = {}
+    for stack, weight in pairs(by_stack) do folded[#folded + 1] = build_folded_stack(stack) .. " " .. format("%.0f", weight) end
+    return write_lines(build_log_path("jitprofiler_" .. kind .. ".folded"), folded)
+end
+
+-- Append a ranked view with every row (the report is the analysis artifact, never truncated); opts.owned resolves each row's mod and honours report_fold.
+local function build_view(lines, title, map, total, fmt, opts)
+    local owned = opts and opts.owned
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- " .. title .. " " .. string.rep("-", math.max(2, 68 - #title))
+    local entries = sort_entries(map)
+    local skipped = 0
+    for i = 1, #entries do
+        local key, weight = entries[i][1], entries[i][2]
+        local owner = owned and JitProfiler.get_owner(key) or nil
+        if owned and report_fold and owner and owner:sub(1, #OWNER_MOD) ~= OWNER_MOD then
+            skipped = skipped + 1
+        else
+            local percent = compute_pct(weight, total)
+            local label = owner and format("%-30s [%s] %s", JitProfiler.get_owner_label(key), JitProfiler.get_owner_method(key), key) or key
+            lines[#lines + 1] = format("  %6.2f%% %s %12s  %s", percent, build_bar(percent), fmt(weight), label)
+        end
+    end
+    if skipped > 0 then lines[#lines + 1] = format("  (%d baseline rows folded)", skipped) end
+end
+
+-- One stack's contribution to a frame's neighbors: callers stand toward root (i+1), callees toward leaf (i-1).
+local function collect_neighbors(entry, frame, out)
+    local frames, count = {}, 0
+    for raw in string.gmatch(entry.stack, "[^;]+") do count = count + 1; frames[count] = JitProfiler.get_short_frame(raw) end
+    for i = 1, count do
+        local matched = frames[i] == frame
+        local up = matched and frames[i + 1]
+        local down = matched and frames[i - 1]
+        if up then out.callers[up] = (out.callers[up] or 0) + entry.weight end
+        if down then out.callees[down] = (out.callees[down] or 0) + entry.weight end
+    end
+end
+
+-- Callers (who called it) and callees (what it called) of a function from the recorded call-graph edges, each ranked by time.
+--- @novalidate(conventions.pairs_on_sequence, reason:"edges and edges[key] are parent-key/child-key maps, not sequences")
+local function collect_edge_neighbors(edges, key)
+    local callers, callees = {}, {}
+    local out = edges[key]
+    if out then for ckey, edge in pairs(out) do callees[#callees + 1] = { ckey, edge.us, edge.calls } end end
+    for pkey, bucket in pairs(edges) do
+        local edge = bucket[key]
+        if edge then callers[#callers + 1] = { pkey, edge.us, edge.calls } end
+    end
+    table.sort(callers, function(left, right) return left[2] > right[2] end)
+    table.sort(callees, function(left, right) return left[2] > right[2] end)
+    return callers, callees
+end
+
+-- The .txt call-graph for a sampling capture: the top leaves, each with its callers (toward root) and callees (toward leaf) from the retained stacks.
+local function build_call_graph(lines, by_stack, v, total)
+    local leaves = sort_entries(v.leaf)
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- CALL GRAPH   top leaves: <- callers (toward root), -> callees (toward leaf) " .. string.rep("-", 6)
+    for i = 1, math.min(#leaves, 10) do
+        local frame = leaves[i][1]
+        local out = { callers = {}, callees = {} }
+        for stack, weight in pairs(by_stack) do collect_neighbors({ stack = stack, weight = weight }, frame, out) end
+        lines[#lines + 1] = format("  %-58s %5.1f%%", frame, compute_pct(leaves[i][2], total))
+        local callers, callees = sort_entries(out.callers), sort_entries(out.callees)
+        for j = 1, math.min(#callers, 3) do lines[#lines + 1] = format("      <- %5.1f%%  %s", compute_pct(callers[j][2], total), callers[j][1]) end
+        for j = 1, math.min(#callees, 3) do lines[#lines + 1] = format("      -> %5.1f%%  %s", compute_pct(callees[j][2], total), callees[j][1]) end
+    end
+end
+
+-- CPU report from the computed views; writes the ranked .txt plus the SpeedScope .folded and returns the retained capture entry.
+function write_cpu(cpu, v, opts)
+    local total, duration_sec, gc_line = opts.total, opts.duration, opts.gc_line
+    report_fold = opts.fold and true or false
+    local top_root = sort_entries(v.root)[1]
+    local top_leaf = sort_entries(v.leaf)[1]
+    local stacks_note = cpu.dropped > 0
+        and format("%d stacks (capped; +%s beyond the ceiling not attributed)", cpu.nstacks, format_count(cpu.dropped))
+        or  format("%d stacks", cpu.nstacks)
+    local lines = {
+        RULE,
+        "  JitProfiler  -  CPU sampling profile   (engine-native; the JIT stays on)",
+        format("  modded_exes %s   |   %d samples @ %d ms   |   ~%.0f s   |   %s",
+            tostring(_G.MODDED_EXES_VERSION or "?"), total, cpu.iv, duration_sec, stacks_note),
+    }
+    if gc_line then lines[#lines + 1] = gc_line end
+    lines[#lines + 1] = RULE
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "  WHERE THE LUA TIME GOES  (VM state at each sample)"
+    for _, state_code in ipairs(VMORDER) do
+        local weight = cpu.state[state_code] or 0
+        if weight > 0 then
+            local percent = compute_pct(weight, total)
+            local flag = (state_code == "G" and percent >= 3) and "  <- allocation pressure: run JitProfiler.start_alloc()" or ""
+            lines[#lines + 1] = format("    %s  %-20s %s %5.1f%%%s", state_code, VMSTATE[state_code] or state_code, build_bar(percent), percent, flag)
+        end
+    end
+    lines[#lines + 1] = "    (N is a floor: phase-1 sampling under-counts JIT-compiled traces)"
+    lines[#lines + 1] = format("  STACK DEPTH   deepest %d, cap %d, %.1f%% of samples reached the cap",
+        v.max_depth, cpu.depth, compute_pct(v.clipped, total))
+    lines[#lines + 1] = ""
+    if top_root then lines[#lines + 1] = format("  TOP DRIVER  %5.1f%%   %s", compute_pct(top_root[2], total), top_root[1]) end
+    if top_leaf then lines[#lines + 1] = format("  TOP LEAF    %5.1f%%   %s", compute_pct(top_leaf[2], total), top_leaf[1]) end
+
+    build_view(lines, "ENGINE-C ENTRY POINTS   Lua call sites that drive engine C/GC (the Optick targets)", v.engine_entry, total, format_count, { owned = true })
+    lines[#lines + 1] = format("  engine trunk (no Lua caller on the stack)   %5.1f%%", compute_pct(v.engine_trunk, total))
+
+    build_view(lines, "BY MOD   Total (on the stack anywhere; does not sum to 100%)", v.by_mod_total, total, format_count)
+    build_view(lines, "BY MOD   Own (innermost frame only)", v.by_mod, total, format_count)
+    build_view(lines, "BY SCRIPT   Total (on the stack anywhere)", v.by_script_total, total, format_count, { owned = true })
+    build_view(lines, "BY SCRIPT   Own (innermost frame only)", v.by_script, total, format_count, { owned = true })
+    build_view(lines, "BY LEAF   the hot function (Own)", v.leaf, total, format_count, { owned = true })
+    build_view(lines, "BY ROOT   the outermost frame", v.root, total, format_count, { owned = true })
+    build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", v.framework, total, format_count)
+    build_call_graph(lines, cpu.stacks, v, total)
+
+    local stamp = get_timestamp()
+    local report_path = write_lines(build_log_path("jitprofiler_cpu_" .. stamp .. ".txt"), lines)
+    local folded_path = write_folded("cpu_" .. stamp, cpu.stacks)
+    log("JitProfiler/cpu: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
+    return {
+        kind = "cpu", by_stack = cpu.stacks, views = v, total = total, engine_entry = sort_entries(v.engine_entry),
+        meta = { samples = total, interval = cpu.iv, duration = duration_sec, stamp = stamp,
+                 vmstate = cpu.state, dropped = cpu.dropped, depth = cpu.depth, max_depth = v.max_depth, clipped = v.clipped },
+    }
+end
+
+-- Allocation report from the computed views; writes .txt + .folded and returns the retained capture entry (nil for a numbered snapshot).
+function write_alloc(v, opts)
+    local by_stack, total, duration_sec, suffix = opts.by_stack, opts.total, opts.duration, opts.suffix
+    local title, depth, peak, gc_line, diag = opts.title, opts.depth, opts.peak, opts.gc_line, opts.diag
+    report_fold = opts.fold and true or false
+    if diag.drains == 0 or diag.entries == 0 then
+        log("!JitProfiler/alloc: capture problem -- drains=%.0f  seen=%s  pending=%s  entries=%d",
+            diag.drains, format_bytes(diag.seen), format_bytes(diag.pending), diag.entries)
+    end
+    local top_root = sort_entries(v.root)[1]
+    local top_leaf = sort_entries(v.leaf)[1]
+    local rate_mb = duration_sec > 0 and (total / BYTES_PER_MB / duration_sec) or 0
+    local lines = {
+        RULE,
+        "  JitProfiler  -  " .. title,
+        format("  modded_exes %s   |   %s allocated (%.1f MB/s)   |   ~%.0f s   |   %d stacks",
+            tostring(_G.MODDED_EXES_VERSION or "?"), format_bytes(total), rate_mb, duration_sec, get_key_count(by_stack)),
+    }
+    if gc_line then lines[#lines + 1] = gc_line end
+    lines[#lines + 1] = format("  ALLOC TABLE   peak %d%% full", peak)
+    lines[#lines + 1] = RULE
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "  WHO GENERATES THE GARBAGE  (GC pressure is the stutter source)"
+    if diag.dropped > 0 then
+        lines[#lines + 1] = format(
+            "  NOTE  window exceeded table capacity; %s not attributed -- snapshot/stop sooner", format_bytes(diag.dropped))
+    end
+    if top_leaf then lines[#lines + 1] = format("  TOP ALLOCATOR  %5.1f%%   %s", compute_pct(top_leaf[2], total), top_leaf[1]) end
+    if top_root then lines[#lines + 1] = format("  TOP DRIVER     %5.1f%%   %s", compute_pct(top_root[2], total), top_root[1]) end
+    lines[#lines + 1] = format("  STACK DEPTH    deepest %d, cap %d, %.1f%% of bytes reached the cap",
+        v.max_depth, depth, compute_pct(v.clipped, total))
+
+    build_view(lines, "BY MOD   Total (on the stack anywhere; does not sum to 100%)", v.by_mod_total, total, format_bytes)
+    build_view(lines, "BY MOD   Own (innermost frame only)", v.by_mod, total, format_bytes)
+    build_view(lines, "BY SCRIPT   Total (on the stack anywhere)", v.by_script_total, total, format_bytes, { owned = true })
+    build_view(lines, "BY SCRIPT   Own (innermost frame only)", v.by_script, total, format_bytes, { owned = true })
+    build_view(lines, "BY LEAF   who allocates (Own)", v.leaf, total, format_bytes, { owned = true })
+    build_view(lines, "BY ROOT   the outermost frame", v.root, total, format_bytes, { owned = true })
+    build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", v.framework, total, format_bytes)
+    build_call_graph(lines, by_stack, v, total)
+
+    local stamp = get_timestamp()
+    local report_path = write_lines(build_log_path("jitprofiler_mem" .. suffix .. "_" .. stamp .. ".txt"), lines)
+    local folded_path = write_folded("mem" .. suffix .. "_" .. stamp, by_stack)
+    log("JitProfiler/alloc: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
+    if suffix ~= "" then return end
+    return {
+        kind = "mem", by_stack = by_stack, views = v, total = total,
+        meta = { bytes = total, duration = duration_sec, stamp = stamp, stacks = get_key_count(by_stack),
+                 dropped = diag.dropped, depth = depth, max_depth = v.max_depth, clipped = v.clipped },
+    }
+end
+
+-- Instrumentation report: rank the wrapped functions by own time, per-mod subtotals, and a call graph. Returns the retained capture entry.
+function write_scan(records, opts)
+    local frames, duration_sec, targets, wrapped, edges = opts.frames, opts.duration, opts.targets, opts.wrapped, opts.edges
+    local rows, total_self = {}, 0
+    for key, rec in pairs(records) do
+        if rec.calls > 0 then
+            rows[#rows + 1] = { key = key, calls = rec.calls, self_us = rec.self_us, total_us = rec.total_us,
+                                min_us = rec.min_us, max_us = rec.max_us }
+            total_self = total_self + rec.self_us
+        end
+    end
+    table.sort(rows, function(left, right) return left.self_us > right.self_us end)
+    local ms_self = total_self / 1000.0
+    local per_frame_ms = frames > 0 and (ms_self / frames) or 0
+    local total_line = frames > 0
+        and format("  OWN TOTAL   %.1f ms over %d frames   =   %.3f ms per frame", ms_self, frames, per_frame_ms)
+        or  format("  OWN TOTAL   %.1f ms over ~%.0f s   (menu capture, no actor frames)", ms_self, duration_sec)
+    local lines = {
+        RULE,
+        "  JitProfiler  -  INSTRUMENTATION   own + total wall-clock (engine C included)",
+        format("  modded_exes %s   |   %d scripts, %d functions   |   ~%.0f s   |   %d frames",
+            tostring(_G.MODDED_EXES_VERSION or "?"), targets, wrapped, duration_sec, frames),
+        RULE,
+        "",
+        total_line,
+        "",
+        format("  %-46s %-22s %8s   %10s   %10s   %8s   %8s   %8s",
+            "FUNCTION", "OWNER", "CALLS", "OWN ms", "TOTAL ms", "avg us", "min us", "max us"),
+    }
+    for i = 1, #rows do
+        local row = rows[i]
+        lines[#lines + 1] = format("  %-46s %-22s %8d   %10.2f   %10.2f   %8.1f   %8.1f   %8.1f",
+            row.key, JitProfiler.get_owner(row.key), row.calls, row.self_us / 1000.0, row.total_us / 1000.0,
+            row.self_us / row.calls, row.min_us, row.max_us)
+    end
+    local RULE_DASH = string.rep("-", 60)
+    local mod_self, mod_total, mod_count = {}, {}, {}
+    for i = 1, #rows do
+        local owner = JitProfiler.get_owner(rows[i].key)
+        mod_self[owner] = (mod_self[owner] or 0) + rows[i].self_us
+        mod_total[owner] = (mod_total[owner] or 0) + rows[i].total_us
+        mod_count[owner] = (mod_count[owner] or 0) + 1
+    end
+    local mod_rows = {}
+    for owner in pairs(mod_self) do mod_rows[#mod_rows + 1] = owner end
+    table.sort(mod_rows, function(left, right) return mod_self[left] > mod_self[right] end)
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- BY MOD   own / total ms across the wrapped functions " .. RULE_DASH
+    for i = 1, #mod_rows do
+        local owner = mod_rows[i]
+        local per_frame = frames > 0 and (mod_self[owner] / 1000.0 / frames) or 0
+        lines[#lines + 1] = format("  %-40s %8.2f ms own   %8.2f ms total   %6.3f ms/frame   %3d fns",
+            owner, mod_self[owner] / 1000.0, mod_total[owner] / 1000.0, per_frame, mod_count[owner])
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- CALL GRAPH   top functions: <- callers, -> callees (ms, calls) " .. RULE_DASH
+    for i = 1, math.min(#rows, 10) do
+        local row = rows[i]
+        lines[#lines + 1] = format("  %s   own %.2f ms   total %.2f ms",
+            row.key, row.self_us / 1000.0, row.total_us / 1000.0)
+        local callers, callees = collect_edge_neighbors(edges, row.key)
+        for j = 1, math.min(#callers, 3) do
+            lines[#lines + 1] = format("      <- %-52s %8.2f ms  (%d)", callers[j][1], callers[j][2] / 1000.0, callers[j][3])
+        end
+        for j = 1, math.min(#callees, 3) do
+            lines[#lines + 1] = format("      -> %-52s %8.2f ms  (%d)", callees[j][1], callees[j][2] / 1000.0, callees[j][3])
+        end
+    end
+    local stamp = get_timestamp()
+    local report_path = write_lines(build_log_path("jitprofiler_inst_" .. stamp .. ".txt"), lines)
+    log("JitProfiler/inst: report -> %s", tostring(report_path))
+    return {
+        kind = "scan", rows = rows, edges = edges, frames = frames, total_us = total_self,
+        meta = { targets = targets, wrapped = wrapped, frames = frames,
+                 duration = duration_sec, stamp = stamp, per_frame_ms = per_frame_ms },
+    }
+end
+
+-- Callbacks report: rank the timed handlers by own ms with a per-callback rollup. Returns the retained capture entry.
+function write_callbacks(records, wrapped, duration_sec)
+    local rows, total_self = {}, 0
+    for _, rec in pairs(records) do
+        if rec.calls > 0 then rows[#rows + 1] = rec; total_self = total_self + rec.self_us end
+    end
+    table.sort(rows, function(left, right) return left.self_us > right.self_us end)
+    local lines = {
+        RULE,
+        "  JitProfiler  -  CALLBACKS   per-handler wall-clock over the make_callback dispatch (engine C included)",
+        format("  modded_exes %s   |   %d handlers wrapped   |   ~%.0f s   |   %.1f ms own total",
+            tostring(_G.MODDED_EXES_VERSION or "?"), wrapped, duration_sec, total_self / 1000.0),
+        RULE,
+        "",
+        format("  %-34s %-30s %-22s %8s   %10s   %10s   %8s   %8s   %8s",
+            "CALLBACK", "HANDLER", "OWNER", "CALLS", "OWN ms", "TOTAL ms", "avg us", "min us", "max us"),
+    }
+    for i = 1, #rows do
+        local rec = rows[i]
+        lines[#lines + 1] = format("  %-34s %-30s %-22s %8d   %10.2f   %10.2f   %8.1f   %8.1f   %8.1f",
+            rec.callback, rec.handler, JitProfiler.get_owner(rec.handler), rec.calls,
+            rec.self_us / 1000.0, rec.total_us / 1000.0, rec.self_us / rec.calls, rec.min_us, rec.max_us)
+    end
+    local by_cb = {}
+    for i = 1, #rows do by_cb[rows[i].callback] = (by_cb[rows[i].callback] or 0) + rows[i].self_us end
+    local cb_rows = sort_entries(by_cb)
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- BY CALLBACK   own ms summed across handlers " .. string.rep("-", 40)
+    for i = 1, #cb_rows do
+        lines[#lines + 1] = format("  %-40s %10.2f ms own", cb_rows[i][1], cb_rows[i][2] / 1000.0)
+    end
+    local stamp = get_timestamp()
+    local report_path = write_lines(build_log_path("jitprofiler_callbacks_" .. stamp .. ".txt"), lines)
+    log("JitProfiler/callbacks: report -> %s", tostring(report_path))
+    return {
+        kind = "callbacks", rows = rows, total_us = total_self,
+        meta = { wrapped = wrapped, duration = duration_sec, stamp = stamp },
+    }
+end
+
+-- Callers (toward root) and callees (toward leaf) of a frame, summed across a retained sampling capture's leaf-first stacks.
+function compute_neighbors(cap, frame)
+    if not (cap and frame and cap.by_stack) then return nil end
+    local out = { callers = {}, callees = {} }
+    for stack, weight in pairs(cap.by_stack) do
+        collect_neighbors({ stack = stack, weight = weight }, frame, out)
+    end
+    return { callers = sort_entries(out.callers), callees = sort_entries(out.callees) }
+end
+
+--- @return table|nil { callers, callees } of a scanned function from a retained instrumentation capture's call graph, or nil.
+function compute_scan_neighbors(cap, key)
+    if not (cap and cap.edges and key) then return nil end
+    local callers, callees = collect_edge_neighbors(cap.edges, key)
+    return { callers = callers, callees = callees }
+end

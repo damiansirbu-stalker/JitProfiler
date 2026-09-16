@@ -9,9 +9,8 @@ The engine layer is C, compiled into the demonized exe.
 `jit.util.gcstat` reads the live GC counters (total, threshold, estimate, debt) for the GC-health strip.
 These are raw capability delivered in the engine, not in this mod.
 
-The mod layer is Lua, `JitProfiler.script`, the front-end.
-It drives the primitives from the console and aggregates the samples.
-It resolves each script to its owning mod, then writes the reports and SpeedScope flamegraphs.
+The mod layer is Lua. `JitProfiler.script` is the front-end: it drives the primitives from the console, aggregates the samples, and resolves each script to its owning mod.
+`jitprofiler_report.script` is the presentation layer: it renders the computed views into ranked text reports, SpeedScope flamegraphs, and the call-graph neighbors, so the front-end holds only capture and resolution.
 It logs through xlibs `xlog`.
 
 ## CPU: sampling, not instrumentation
@@ -107,6 +106,7 @@ The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) 
 `appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
 The instrumentation and callbacks modes write `jitprofiler_inst_<timestamp>.txt` and `jitprofiler_callbacks_<timestamp>.txt`.
 `jitprofiler_{cpu,mem}[_snapN]_<timestamp>.folded` is the SpeedScope collapsed-stacks flamegraph.
+Every text report is self-contained: the sampling reports close with a call graph (each top leaf with its callers toward root and callees toward leaf), and the instrumentation and callbacks reports carry per-call avg, min, and max, so nothing the panel shows lives only in the panel.
 The timestamp is the capture's wall-clock time, so successive runs never overwrite.
 Both are ASCII only.
 
