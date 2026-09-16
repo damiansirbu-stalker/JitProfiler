@@ -665,8 +665,7 @@ local function build_wraps(name)
             saved[func_name] = value
             local info = debug.getinfo(value, "S")
             local src = (info and info.short_src) or "?"
-            local base = src:match("([%w_%.%-]+%.script)") or src:match("([%w_%.%-]+%.lua)") or (name .. ".script")
-            local key = func_name .. "@" .. base
+            local key = get_short_frame(func_name .. "@" .. src .. ":" .. tostring((info and info.linedefined) or -1))
             local rec = scan.records[key] or { key = key, calls = 0, self_us = 0, total_us = 0, min_us = math.huge, max_us = 0 }
             scan.records[key] = rec
             mod[func_name] = build_wrapper(rec, value)
