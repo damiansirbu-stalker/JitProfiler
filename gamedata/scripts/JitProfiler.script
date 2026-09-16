@@ -202,7 +202,7 @@ local function init_ffi()
 end
 init_ffi()
 
--- Real backing path of a virtual script path via the OS handle; nil when the open fails (packed base db0).
+-- Real backing path of a virtual script path via the OS handle; nil when the open fails (packed base db0) or the path exceeds the 1024-byte buffer.
 local function resolve_real_path(vpath)
     local invalid = ffi.cast("void*", -1)
     local handle = k32.CreateFileA(vpath, 0x80000000, 0x1, nil, 3, 0, nil)
@@ -210,7 +210,7 @@ local function resolve_real_path(vpath)
     local buffer = ffi.new("char[?]", 1024)
     local written = k32.GetFinalPathNameByHandleA(handle, buffer, 1024, 0)
     k32.CloseHandle(handle)
-    return (written > 0) and ffi.string(buffer) or nil
+    return (written > 0 and written < 1024) and ffi.string(buffer) or nil
 end
 
 -- Owner from the winning mod (real backing path), then the baked name sets, then the loose folder for a stray file, else unknown.

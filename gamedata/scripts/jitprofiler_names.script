@@ -1,6 +1,8 @@
 --- jitprofiler_names: baked script-name sets for owner classification, regenerated from the unpacked Anomaly tree and the demonized overlay.
 -- @novalidate(xray.early_script_access, reason:"script names are string keys in a lookup set, not module-level accesses")
 
+local type = type
+
 local VANILLA = {
     ["_g.script"] = true,
     ["actor_effects.script"] = true,
@@ -496,7 +498,7 @@ for key in pairs(VANILLA) do VANILLA_LOWER[key:lower()] = true end
 for key in pairs(MODDED_EXES) do MODDED_EXES_LOWER[key:lower()] = true end
 
 --- @return boolean whether the name is a stock Anomaly script.
-function is_vanilla(name) return VANILLA_LOWER[name:lower()] == true end
+function is_vanilla(name) return type(name) == "string" and VANILLA_LOWER[name:lower()] == true end
 
 --- @return boolean whether the name is a demonized modded-exes overlay script.
-function is_modded_exes(name) return MODDED_EXES_LOWER[name:lower()] == true end
+function is_modded_exes(name) return type(name) == "string" and MODDED_EXES_LOWER[name:lower()] == true end
