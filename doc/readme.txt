@@ -93,7 +93,7 @@ BY MOD and BY SCRIPT show Own and Total side by side, every column sortable, whi
 The CPU tab adds the VM-state split and the engine-C entry-points list.
 The MEM tab adds a live GC-health strip with the heap toward the next collection, the live estimate, the debt, and the collection rate.
 INSTRUMENT holds the targeted mode.
-Add scripts from the BROWSE modlist or the + on a by-script row, then run and read the per-function own and total time, sortable by any column, with avg, min, and max on hover and a frame-budget bar.
+Add scripts from the BROWSE modlist (a + per script, or +all on a mod header to instrument the whole mod) or the + on a by-script row, then run and read the per-function own and total time, sortable by any column, with avg, min, and max on hover and a frame-budget bar.
 Select a function to read its callers and callees with their time.
 CALLBACKS arms the callbacks profiler and lists every registered handler ranked by own ms, with its callback and owning mod.
 Its BROWSE subtab lists every registered callback with a picker toggle; picked callbacks arm alone, none picked arms all.

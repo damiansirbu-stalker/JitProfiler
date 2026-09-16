@@ -120,7 +120,7 @@ The by-script rows carry a per-row button that adds or removes the script from t
 Under INSTRUMENTATION a start and stop control arms the whole set, and an overhead line shows the wrapped-function count.
 Two sub-views split the screen.
 SELECTED lists the working set, each target removable.
-BROWSE is a modlist grouped by mod with a search box where a + adds a script.
+BROWSE is a modlist grouped by mod with a search box, where a + adds a script and a +all on the mod header adds every script that mod owns through add_mod_targets.
 The results table ranks each function by own with an own-share bar, plus own ms, total ms, and calls, each column sortable on click.
 Avg, min, and max per call show on row hover and in the text report.
 A frame-budget bar reads own ms per frame against a 60fps frame.

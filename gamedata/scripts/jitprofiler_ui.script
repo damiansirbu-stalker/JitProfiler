@@ -684,9 +684,12 @@ local function check_match(name, needle)
     return needle == "" or name:lower():find(needle, 1, true) ~= nil
 end
 
--- One mod group: a collapsing header over its scripts, each filtered by the search needle.
+-- One mod group: the header carries a +all that instruments the whole mod, and each script row keeps its own +/-.
 local function render_tree_group(group, needle)
-    if not ImGui.CollapsingHeader(group.owner .. "##g") then return end
+    local open = ImGui.CollapsingHeader(group.owner .. "##g")
+    ImGui.SameLine()
+    if ImGui.Button("+all##m" .. group.owner, VZERO) then JitProfiler.add_mod_targets(group.owner) end
+    if not open then return end
     for j = 1, #group.scripts do
         local name = group.scripts[j]
         if check_match(name, needle) then render_tree_item(name) end
