@@ -496,7 +496,7 @@ local function remove_wraps(name)
 end
 
 --- Add a script to the instrumentation set; wraps it live when a capture is running.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function add_target(name)
     name = tostring(name or ""):gsub("%.script$", "")
     if name == "" or scan.set[name] or SCAN_BLACKLIST[name] then return end
@@ -506,7 +506,7 @@ function add_target(name)
 end
 
 --- Remove a script from the instrumentation set; unwraps it live when a capture is running.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function remove_target(name)
     name = tostring(name or ""):gsub("%.script$", "")
     if not scan.set[name] then return end
@@ -516,7 +516,7 @@ function remove_target(name)
 end
 
 --- Add every loaded script a mod owns to the instrumentation set.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function add_mod_targets(owner)
     for name in pairs(_G) do
         local mod = type(name) == "string" and rawget(_G, name)
@@ -525,19 +525,19 @@ function add_mod_targets(owner)
 end
 
 --- @return boolean whether a script is in the instrumentation set.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function is_target(name)
     return scan.set[tostring(name or ""):gsub("%.script$", "")] == true
 end
 
 --- @return number, number the count of targeted scripts and of wrapped functions.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function get_target_stats()
     return scan.count, scan.wrapped
 end
 
 --- @return table the sorted list of script names in the instrumentation set.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function get_targets()
     local list = {}
     for name in pairs(scan.set) do list[#list + 1] = name end
@@ -546,7 +546,7 @@ function get_targets()
 end
 
 --- Arm instrumentation: wrap every function of every script in the set. Play, then stop_scan().
---- @novalidate(code.unused_export, reason:"console command")
+--- @novalidate(conventions.unused_export, reason:"console command")
 function start_scan(script_name)
     if scan.active then log("JitProfiler/inst: already running -- JitProfiler.stop_scan() first."); return end
     if cpu.active then log("JitProfiler/inst: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
@@ -562,7 +562,7 @@ function start_scan(script_name)
 end
 
 --- Restore every wrapped function and write the report.
---- @novalidate(code.unused_export, reason:"console command")
+--- @novalidate(conventions.unused_export, reason:"console command")
 function stop_scan()
     if not scan.active then log("JitProfiler/inst: not running."); return end
     scan.active = false
@@ -574,7 +574,7 @@ function stop_scan()
     show_tip("JitProfiler INSTRUMENTATION report written")
 end
 
---- @novalidate(code.unused_export, reason:"panel control surface, wired in the UI increment")
+--- @novalidate(conventions.unused_export, reason:"panel control surface, wired in the UI increment")
 function is_scan_active()
     return scan.active
 end
@@ -669,7 +669,7 @@ local function reset_callbacks()
 end
 
 --- Arm the callbacks profiler: wrap every registered function handler in place. Play, then stop_callbacks().
---- @novalidate(code.unused_export, reason:"console command + panel control surface")
+--- @novalidate(conventions.unused_export, reason:"console command + panel control surface")
 function start_callbacks()
     if callbacks.active then log("JitProfiler/callbacks: already running."); return end
     if cpu.active then log("JitProfiler/callbacks: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
@@ -699,7 +699,7 @@ function start_callbacks()
 end
 
 --- Restore every handler and write the report.
---- @novalidate(code.unused_export, reason:"console command + panel control surface")
+--- @novalidate(conventions.unused_export, reason:"console command + panel control surface")
 function stop_callbacks()
     if not callbacks.active then log("JitProfiler/callbacks: not running."); return end
     callbacks.active = false
@@ -709,31 +709,31 @@ function stop_callbacks()
     show_tip("JitProfiler CALLBACKS report written")
 end
 
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function is_callbacks_active()
     return callbacks.active
 end
 
 --- Add a callback to the picker set; the next start_callbacks arms only picked callbacks (empty set = all).
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function add_callback_target(name)
     if tostring(name or "") ~= "" then callbacks.set[tostring(name)] = true end
 end
 
 --- Remove a callback from the picker set.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function remove_callback_target(name)
     callbacks.set[tostring(name or "")] = nil
 end
 
 --- @return boolean whether a callback is in the picker set.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function is_callback_target(name)
     return callbacks.set[tostring(name or "")] == true
 end
 
 --- @return number the count of picked callbacks; 0 means every callback arms.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function get_callback_pick_count()
     local count = 0
     for _ in pairs(callbacks.set) do count = count + 1 end
@@ -741,7 +741,7 @@ function get_callback_pick_count()
 end
 
 --- @return table the registered callbacks from the make_callback intercepts, sorted { name, handlers } rows; {} when unreachable.
---- @novalidate(code.unused_export, reason:"panel control surface")
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
 function get_registered_callbacks()
     if not resolve_intercepts() then return {} end
     local list = {}
