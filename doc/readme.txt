@@ -1,11 +1,10 @@
 JitProfiler: engine-native LuaJIT sampling profiler for STALKER Anomaly, by Damian
-
-Preview release. Two of the engine primitives it needs, jit.profile and jit.allocprof, shipped in the official 2026.9.12 modded exes. The third, jit.util.gcstat, is not in an official release yet, so the GC-health readout needs the preview exes from my fork: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler. On a stock exe it loads and stays inert.
-
 Version: next (xlibs 1.8.3, demonized 20250908)
 GitHub: https://github.com/damiansirbu-stalker/JitProfiler
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
 Report bugs and suggestions at https://github.com/damiansirbu-stalker/JitProfiler/issues
+
+Preview release. Two of the engine primitives it needs, jit.profile and jit.allocprof, shipped in the official 2026.9.12 modded exes. The third, jit.util.gcstat, is not in an official release yet, so the GC-health readout needs the preview exes from my fork: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler. On a stock exe it loads and stays inert.
 
 Alife Collection:
 AlifeAmbience: https://github.com/damiansirbu-stalker/AlifeAmbience

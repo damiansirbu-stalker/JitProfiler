@@ -147,7 +147,7 @@ A console argument to `start_cpu` or `start_alloc` overrides one capture, and no
 An auto-stop duration above 0 ends a running capture from the `update_capture` heartbeat and writes its report, so a forgotten allocation capture never holds the JIT off past the limit.
 
 `jf_mcm.script` is an about page through `xmcm.create_config`.
-It carries the description, the usage and SpeedScope notes, the version and compatibility footer from `_jitprofiler_deps.platform_functor`, and one persistent toggle, `show_imgui`.
+It carries the description, the usage and SpeedScope notes, the version and compatibility footer from `_jitprofiler_init.get_platform_functor`, and one persistent toggle, `show_imgui`.
 The panel, menu, and banner read `show_imgui` through a cached flag and draw nothing while it is off, so JitProfiler leaves the ImGui menu bar.
 
 ## Limitations
