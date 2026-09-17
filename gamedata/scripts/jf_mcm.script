@@ -26,7 +26,7 @@ function on_mcm_load()
             { id = "show_imgui", type = "check", val = 1, def = true },
             { id = "div_footer", type = "line" },
             { id = "platform", type = "desc", text = "ui_mcm_xmcm_footer",
-                ui_hook_functor = { _jitprofiler_deps.platform_functor() }, clr = {255, 212, 201, 168} },
+                ui_hook_functor = { _jitprofiler_init.get_platform_functor() }, clr = {255, 212, 201, 168} },
         },
     }
 end

@@ -1,0 +1,7 @@
+--- _jitprofiler_manifest: JitProfiler identity. Pure data, no logic. Read by _jitprofiler_init (the gate) and the validator (deps.manifest_structure).
+
+MANIFEST = {
+    name    = "JitProfiler",
+    version = "next",
+    xlibs   = "1.8.3",
+}
