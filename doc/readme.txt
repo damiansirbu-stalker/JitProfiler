@@ -4,7 +4,10 @@ GitHub: https://github.com/damiansirbu-stalker/JitProfiler
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
 Report bugs and suggestions at https://github.com/damiansirbu-stalker/JitProfiler/issues
 
-Preview release. Two of the engine primitives it needs, jit.profile and jit.allocprof, shipped in the official 2026.9.12 modded exes. The third, jit.util.gcstat, is not in an official release yet, so the GC-health readout needs the preview exes from my fork: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler. On a stock exe it loads and stays inert.
+Preview release. Two of the engine primitives it needs, jit.profile and jit.allocprof, shipped in the official 2026.9.12 modded exes.
+The third, jit.util.gcstat, is not in an official release yet, so the GC-health readout needs the preview exes from my fork:
+https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
+On a stock exe it loads and stays inert.
 
 Alife Collection:
 AlifeAmbience: https://github.com/damiansirbu-stalker/AlifeAmbience
@@ -32,7 +35,8 @@ Memory profiling shows which code generates the garbage the collector must clear
 Instrumentation wraps a chosen set of scripts and times each function for its own and total wall-clock, including the engine C beneath a call, the one axis the sampler cannot reach.
 Framerate drops while a scan runs, because each wrapped call carries a timer. That is expected, and the timings stay exact.
 It records the call graph as it runs, so each function shows its callers and its callees with their time, and a whole-mod scan totals the cost per owning mod.
-The callbacks profiler wraps every registered handler over the make_callback dispatch and ranks each by own ms with its callback and owning mod, so it names which mod hooks a callback such as actor_on_update and what each handler costs, engine C included.
+The callbacks profiler wraps every registered handler over the make_callback dispatch and ranks each by own ms with its callback and owning mod.
+So it names which mod hooks a given callback and what each handler costs, engine C included.
 
 Engine C stays one bucket by nature.
 The sampler catches that Lua entered the engine, but the C++ routine underneath stays invisible to it.
@@ -51,7 +55,11 @@ It reads this from the MO2 virtual filesystem, so the name always matches what e
 
 Requirements:
 Anomaly 1.5.3
-A modded-exes build with the JitProfiler primitives. jit.profile and jit.allocprof are in the official 2026.9.12 modded exes. jit.util.gcstat, which drives the GC-health readout, is not yet, so for the full feature set use the preview exes from my fork: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
+A modded-exes build with the JitProfiler primitives.
+jit.profile and jit.allocprof are in the official 2026.9.12 modded exes.
+jit.util.gcstat, which drives the GC-health readout, is not yet.
+For the full feature set, use the preview exes from my fork:
+https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 xlibs (used for logging).
 Launch with -dbg (MO2 launch arguments) so the console accepts run_string.
 
@@ -69,7 +77,7 @@ run_string JitProfiler.stop_cpu()
 start_cpu(interval_ms, depth) overrides the 5 ms and depth 64 defaults. start_cpu(1) samples more often, start_cpu(5, 32) traces shallower and faster.
 
 The allocation profile shows which code generates GC garbage, with the JIT off for the whole capture.
-Expect a hard FPS drop that scales with the modpack's script load; the byte counts stay exact, so capture short at the spot you care about:
+Expect a hard FPS drop that scales with the modpack's script load. The byte counts stay exact, so capture short at the spot you care about:
 ```
 run_string JitProfiler.start_alloc()
 -- play 30-60 seconds
@@ -92,15 +100,16 @@ BY MOD and BY SCRIPT show Own and Total side by side, every column sortable, whi
 The CPU tab adds the VM-state split and the engine-C entry-points list.
 The MEM tab adds a live GC-health strip with the heap toward the next collection, the live estimate, the debt, and the collection rate.
 INSTRUMENT holds the targeted mode.
-Add scripts from the BROWSE modlist (a + per script, or +all on a mod header to instrument the whole mod) or the + on a by-script row, then run and read the per-function own and total time, sortable by any column, with avg, min, and max on hover and a frame-budget bar.
+Add scripts from the BROWSE modlist (a + per script, or +all on a mod header to instrument the whole mod) or the + on a by-script row.
+Then run and read the per-function own and total time, sortable by any column, with avg, min, and max on hover and a frame-budget bar.
 Select a function to read its callers and callees with their time.
 CALLBACKS arms the callbacks profiler and lists every registered handler ranked by own ms, with its callback and owning mod.
-Its BROWSE subtab lists every registered callback with a picker toggle; picked callbacks arm alone, none picked arms all.
+Its BROWSE subtab lists every registered callback with a picker toggle. Picked callbacks arm alone, and none picked arms all.
 On the multi-thread exe a Parallel GC toggle gives a clean CPU garbage-collector read.
 A small corner banner shows while a capture runs.
 
 Configuration (MCM):
-The JitProfiler MCM page holds the capture defaults for the sample interval, stack depth, auto-snapshot threshold, and the report fold.
+The JitProfiler MCM page holds the capture defaults. These are the sample interval and stack depth, plus the auto-snapshot threshold and the report fold.
 The panel and the console commands use these defaults, and a console argument to start_cpu or start_alloc overrides the matching value for that capture.
 The MCM also has an auto-stop duration. Set it above 0 and a running capture stops itself after that many seconds, a safety limit for the allocation profile.
 

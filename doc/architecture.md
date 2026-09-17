@@ -9,8 +9,10 @@ The engine layer is C, compiled into the demonized exe.
 `jit.util.gcstat` reads the live GC counters (total, threshold, estimate, debt) for the GC-health strip.
 These are raw capability delivered in the engine, not in this mod.
 
-The mod layer is Lua. `JitProfiler.script` is the front-end: it drives the primitives from the console, aggregates the samples, and resolves each script to its owning mod.
-`jitprofiler_report.script` is the presentation layer: it renders the computed views into ranked text reports, SpeedScope flamegraphs, and the call-graph neighbors, so the front-end holds only capture and resolution.
+The mod layer is Lua. `JitProfiler.script` is the front-end.
+It drives the primitives from the console and aggregates the samples. It also resolves each script to its owning mod.
+`jitprofiler_report.script` is the presentation layer.
+It renders the computed views into ranked text reports, SpeedScope flamegraphs, and the call-graph neighbors, so the front-end holds only capture and resolution.
 It logs through xlibs `xlog`.
 
 ## CPU: sampling, not instrumentation
@@ -47,7 +49,7 @@ Each call pushes a pooled stack frame. On return the frame banks total, its whol
 Own is exclusive and correct across nesting and cross-mod calls. Total is inclusive.
 Each function shows its call count, own ms, total ms, and us per call, ranked by own, with own ms per frame as the budget.
 The wrapper runs the original under pcall.
-A Lua error still closes the frame and re-raises unchanged.
+A Lua error still closes the frame, then re-raises to the caller unchanged.
 A recursive function books own correctly, and total stays inclusive by definition.
 It is opt-in and mutually exclusive with the CPU and allocation captures, because the wrapper tax and the JIT blinding are the per-call cost the sampler exists to avoid.
 The natural loop runs the sampler first, then instruments whichever scripts the `[C]` rows name.
@@ -106,7 +108,9 @@ The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) 
 `appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
 The instrumentation and callbacks modes write `jitprofiler_inst_<timestamp>.txt` and `jitprofiler_callbacks_<timestamp>.txt`.
 `jitprofiler_{cpu,mem}[_snapN]_<timestamp>.folded` is the SpeedScope collapsed-stacks flamegraph.
-Every text report is self-contained: the sampling reports close with a call graph (each top leaf with its callers toward root and callees toward leaf), and the instrumentation and callbacks reports carry per-call avg, min, and max, so nothing the panel shows lives only in the panel.
+Every text report is self-contained.
+The sampling reports close with a call graph (each top leaf with its callers toward root and callees toward leaf).
+The instrumentation and callbacks reports carry per-call avg, min, and max, so nothing the panel shows lives only in the panel.
 The timestamp is the capture's wall-clock time, so successive runs never overwrite.
 Both are ASCII only.
 
@@ -137,7 +141,7 @@ The panel renders in white JetBrains Mono when the font is present, so digits li
 A fold-baseline toggle drops the non-mod rows, leaving only mods.
 A corner banner in the Unique group renders every frame and shows only while a capture runs.
 The chunk executes twice, so registration and the retained capture anchor to `_G` singletons.
-Measured: unanchored, the `actor_on_update` heartbeat and the console entry points hold separate state tables and `scan.frames` reads 0; anchored, they share one and frames track ticks.
+Measured: unanchored, the `actor_on_update` heartbeat and the console entry points hold separate state tables and `scan.frames` reads 0. Anchored, they share one and frames track ticks.
 
 ## Settings and MCM
 Capture settings live in the panel, not in MCM.
@@ -160,7 +164,9 @@ The panel, menu, and banner read `show_imgui` through a cached flag and draw not
 - Per-mod attribution needs an MO2/USVFS install. Elsewhere it degrades to script level.
 - CPU and allocation are mutually exclusive. Each refuses to start while the other runs.
 - Instrumentation assumes strict call nesting. A wrapped function that yields a coroutine mid-call desyncs the timer stack until stop_scan restores it.
-- Instrumentation wraps a script's module-table functions. A function reached through a saved reference (a registered callback, a stored upvalue, a local alias) still calls the original and is not timed; the callbacks mode covers the dispatch case.
+- Instrumentation wraps a script's module-table functions.
+  A function reached through a saved reference (a registered callback, a stored upvalue, a local alias) still calls the original and is not timed.
+  The callbacks mode covers the dispatch case.
 
 ## Requires
 A demonized build exposing `jit.profile` and `jit.allocprof` (and `jit.util.gcstat` for the GC-health strip), and xlibs for `xlog`.
