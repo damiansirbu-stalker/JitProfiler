@@ -1,6 +1,5 @@
 JitProfiler: engine-native LuaJIT sampling profiler for STALKER Anomaly, by Damian
 Version: next (xlibs 1.8.3, demonized 20250908)
-GitHub: https://github.com/damiansirbu-stalker/JitProfiler
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
 Report at https://github.com/damiansirbu-stalker/JitProfiler/issues/new/choose or the EFP, Anomaly, and Zona Discord. Include repro steps, engine build, modlist, load order, xray.log, and the debug log.
 
@@ -9,19 +8,13 @@ The third, jit.util.gcstat, is not in an official release yet, so the GC-health 
 https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 On a stock exe it loads and stays inert.
 
-Alife Collection:
-AlifeAmbience: https://github.com/damiansirbu-stalker/AlifeAmbience
-AlifeBalance: https://www.moddb.com/mods/stalker-anomaly/addons/alifebalance
-AlifeCompanions: https://github.com/damiansirbu-stalker/AlifeCompanions
-AlifeDiegetic: https://www.moddb.com/mods/stalker-anomaly/addons/diegetic-audio-control-100
-AlifeGuard: https://www.moddb.com/mods/stalker-anomaly/addons/alifeguard-1001
-AlifePlus: https://www.moddb.com/mods/stalker-anomaly/addons/alifeplus-v1-0-01
-AlifeSpooks: https://github.com/damiansirbu-stalker/AlifeSpooks
-AlifeTactics: https://www.moddb.com/mods/stalker-anomaly/addons/alifetactics
-FurnitureFuel: https://github.com/damiansirbu-stalker/FurnitureFuel
-JitProfiler: https://github.com/damiansirbu-stalker/JitProfiler
-TestZone: https://github.com/damiansirbu-stalker/TestZone
-xlibs: https://www.moddb.com/mods/stalker-anomaly/addons/xlibs-1001
+My work:
+GitHub: https://github.com/orgs/damiansirbu-stalker/repositories
+ModDB: https://www.moddb.com/members/damian-sirbu/addons
+Nexus: https://www.nexusmods.com/profile/damiansirbu/mods
+
+My contributions:
+X-Ray Monolith: https://github.com/themrdemonized/xray-monolith
 
 JitProfiler finds which of your mods eats performance, and it finds it for you.
 It samples the running Lua stack on the engine's own timer, so the overhead is near-zero, the JIT stays on, and one capture covers the whole modpack at once.
@@ -135,6 +128,22 @@ Drag a .folded file onto the page to explore the stacks.
 Nothing is uploaded, and the file never leaves your machine.
 
 On a stock exe without the primitives, the commands print which build is needed and do nothing else.
+
+How It's Built:
+
+The C core lives in xray-monolith, a backport of LuaJIT's jit.profile timer sampler into the 2.0.4 exe without GC64, so saves stay compatible.
+The jit.allocprof allocation counter runs on top, both native in the exe beneath the script layer.
+It samples on the engine's own timer with the JIT on, so overhead stays near-zero. One capture covers the whole modpack, with nothing to select in advance.
+The sampler jitters its interval on an exponential draw, so a scheduled mod cannot phase-lock and dodge it.
+It reads what a script profiler cannot: the VM-state split, and the exact allocation bytes at the allocator seam that are the real source of GC stutter.
+Per-mod attribution runs through the MO2 virtual filesystem, resolving each merged script to the load-order winner that ran, verified on real conflicts.
+The design follows the best in class: SpeedScope flamegraphs, an in-game ImGui panel, and the engine-C entry points mapped for a native profiler like Optick.
+Every commit runs the full pipeline locally and in CI: luacheck, a Selene build compiled for STALKER with flags the public build lacks, and a load test that runs every script against engine stubs.
+Rule layers then check crash safety, hotpath cost, engine correctness, complexity, architecture contracts, security, and the docs.
+It depends on no other mod, not even my own. The only shared layers are X-Ray and xlibs.
+
+[Screenshot: JitProfiler under a live CPU and allocation capture]
+Project Health: https://damiansirbu-stalker.github.io/JitProfiler/
 
 Credits:
 The engine core is my own contribution to xray-monolith, the jit.profile sampler backported from LuaJIT into the modded exe plus the jit.allocprof allocation profiler on top of it.
