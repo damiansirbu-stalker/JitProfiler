@@ -1,7 +1,6 @@
 JitProfiler: engine-native LuaJIT sampling profiler for STALKER Anomaly, by Damian
 Version: next (xlibs 1.8.3, demonized 20250908)
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
-Report at https://github.com/damiansirbu-stalker/JitProfiler/issues/new/choose or the EFP, Anomaly, and Zona Discord. Include repro steps, engine build, modlist, load order, xray.log, and the debug log.
 
 Preview release. Two of the engine primitives it needs, jit.profile and jit.allocprof, shipped in the official 2026.9.12 modded exes.
 The third, jit.util.gcstat, is not in an official release yet, so the GC-health readout needs the preview exes from my fork:
@@ -151,7 +150,10 @@ LuaJIT and jit.profile are by Mike Pall.
 Built for the themrdemonized modded exes (themrdemonized/xray-monolith).
 
 Usage and License:
-- Modpacks: allowed and encouraged. Keep the readme and license files.
-- Addons, patches, integrations: allowed. Credit "JitProfiler by Damian Sirbu" visibly on your mod page.
-- Reproducing the implementation in other software: not allowed, even with credit.
-- Full license in LICENSE file and on GitHub.
+  Modpacks: allowed and encouraged. Keep the readme and license files.
+  Addons, patches, integrations: allowed. Credit "JitProfiler by Damian Sirbu" visibly on your mod page.
+  Reproducing the implementation in other software: not allowed, even with credit.
+  Full license in LICENSE file and on GitHub.
+
+Diagnostics and reporting:
+Report at https://github.com/damiansirbu-stalker/JitProfiler/issues/new/choose or the EFP, Anomaly, and Zona Discord. Include repro steps, engine build, modlist, load order, xray.log, and the debug log.
