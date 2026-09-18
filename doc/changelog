@@ -1,4 +1,4 @@
-next
+1.0.0-snapshot
   Summary: first release, CPU and allocation sampling profiler, in-game panel, MCM
 
   - CPU profile via jit.profile: VM-state split (JIT / interpreter / C / GC / compiler) and ranked views by leaf, script, root, and framework-vs-handlers, plus a SpeedScope flamegraph.

@@ -1,5 +1,5 @@
 JitProfiler: engine-native LuaJIT sampling profiler for STALKER Anomaly, by Damian
-Version: next (xlibs 1.8.3, demonized 20250908)
+Version: 1.0.0-snapshot (xlibs 1.8.3, demonized 20250908)
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
 
 Preview release. Two of the engine primitives it needs, jit.profile and jit.allocprof, shipped in the official 2026.9.12 modded exes.
