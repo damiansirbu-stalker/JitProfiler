@@ -70,7 +70,7 @@ The report ranks every handler by own ms with its callback and owning mod, plus 
 It is opt-in, mutually exclusive with the other captures, and goes inert on a build where the intercepts upvalue is not reachable.
 
 ## Per-mod attribution
-GAMMA merges every mod into one `gamedata/scripts`, so the script path never names the mod.
+Mods are merged into one `gamedata/scripts`, so the script path never names the mod.
 The resolver reads each script's real backing path through MO2/USVFS, over `GetFinalPathNameByHandle` on a LuaJIT FFI handle. A `mods\<X>` path takes X as the owner.
 A path the open cannot reach is packed in a db, classified by name against two baked sets regenerated from the unpacked Anomaly tree and the demonized overlay.
 The match is case-insensitive because the VFS lowercases names.
