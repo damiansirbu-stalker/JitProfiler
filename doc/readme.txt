@@ -12,6 +12,8 @@ X-Ray Monolith: https://github.com/themrdemonized/xray-monolith
 
 [ HERO IMAGE: jitprofiler-hero.gif — the profiler in action ]
 
+Stop guessing, measure.
+
 JitProfiler finds which of your mods eats performance, and it finds it for you.
 It samples the running Lua stack on the engine's own timer, so the overhead is near-zero, the JIT stays on, and one capture covers the whole modpack at once.
 There is nothing to select and nothing to suspect in advance.
@@ -154,3 +156,5 @@ Usage and License:
 
 Diagnostics and reporting:
 Report at https://github.com/damiansirbu-stalker/JitProfiler/issues/new/choose or the EFP, Anomaly, and Zona Discord. Include repro steps, engine build, modlist, load order, xray.log, and the debug log.
+
+Tags: engine-native, performance, save-safe, profiler, luajit, sampling-profiler, cpu-profiling, memory-profiling, gc, flamegraph, callbacks, instrumentation, mod-attribution, low-overhead, optick

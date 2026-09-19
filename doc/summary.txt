@@ -1,0 +1,1 @@
+Stop guessing, measure. JitProfiler is an engine-native LuaJIT sampling profiler for STALKER Anomaly: one capture covers the whole modpack and names the mod behind each hot script. CPU, memory, GC, instrumentation, and callbacks profiling; SpeedScope flamegraphs; engine-C entry points mapped for Optick. Low-overhead, performant, save-safe.
