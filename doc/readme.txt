@@ -10,6 +10,8 @@ Nexus: https://www.nexusmods.com/profile/damiansirbu/mods
 My contributions:
 X-Ray Monolith: https://github.com/themrdemonized/xray-monolith
 
+[ HERO IMAGE: jitprofiler-hero.gif — the profiler in action ]
+
 JitProfiler finds which of your mods eats performance, and it finds it for you.
 It samples the running Lua stack on the engine's own timer, so the overhead is near-zero, the JIT stays on, and one capture covers the whole modpack at once.
 There is nothing to select and nothing to suspect in advance.
