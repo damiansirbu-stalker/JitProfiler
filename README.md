@@ -5,7 +5,7 @@ One capture covers a whole modpack with no wrapping and no module selection, and
 
 [Releases](https://github.com/damiansirbu-stalker/JitProfiler/releases) | [Bugs, suggestions](https://github.com/damiansirbu-stalker/JitProfiler/issues)
 
-[![validate](https://github.com/damiansirbu-stalker/JitProfiler/actions/workflows/validate.yml/badge.svg)](https://github.com/damiansirbu-stalker/JitProfiler/actions/workflows/validate.yml) [![Project Health](https://img.shields.io/badge/project_health-dashboard-00ced1)](https://damiansirbu-stalker.github.io/JitProfiler/)
+[![ci](https://github.com/damiansirbu-stalker/JitProfiler/actions/workflows/ci.yml/badge.svg)](https://github.com/damiansirbu-stalker/JitProfiler/actions/workflows/ci.yml) [![Project Health](https://img.shields.io/badge/project_health-dashboard-00ced1)](https://damiansirbu-stalker.github.io/JitProfiler/)
 
 Requires: Anomaly 1.5.3, a demonized modded-exes build carrying the profiler primitives, launched with -dbg. Exact versions in [readme.txt](doc/readme.txt).
 
