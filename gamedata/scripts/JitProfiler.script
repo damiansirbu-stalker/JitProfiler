@@ -860,7 +860,14 @@ local function get_keep_path()
     return (xfs.resolve_path("$app_data_root$", "") or "") .. KEEP_FILE
 end
 
--- Load the keep-set from disk once; CRLF-tolerant, one owner name or script prefix per line, blank lines skipped.
+--- Whether string.find accepts a keep entry as a Lua pattern, validated at add and load so is_kept needs no per-call guard.
+--- @safety SAFE - pcall contains a malformed pattern, so a bad entry returns false instead of raising.
+local function is_valid_pattern(pat)
+    local ok = pcall(string.find, "", pat)
+    return ok
+end
+
+-- Load the keep-set from disk once; CRLF-tolerant, one Lua pattern per line, blank or malformed lines skipped.
 --- @safety SAFE - a missing file yields an empty set (xfs.read_file returns nil).
 local function load_keep()
     keep_loaded = true
@@ -868,7 +875,7 @@ local function load_keep()
     if not data then return end
     for line in data:gmatch("[^\n]+") do
         local entry = line:gsub("\r", ""):gsub("^%s+", ""):gsub("%s+$", "")
-        if entry ~= "" then keep_set[entry] = true end
+        if entry ~= "" and is_valid_pattern(entry) then keep_set[entry] = true end
     end
 end
 
@@ -880,8 +887,8 @@ local function save_keep()
     xfs.write_file(get_keep_path(), table.concat(lines, "\n") .. "\n")
 end
 
---- @return boolean whether a name is exempt from masking: a keep entry is a substring of its owner, or a prefix of its script file.
---- @novalidate(code.find_in_loop, reason:"substring containment over a small user keep-set, not an equality lookup")
+--- @return boolean whether a name is exempt from masking: a keep entry is a Lua pattern matched case-insensitively against the owner name or script file.
+--- @novalidate(code.find_in_loop, reason:"pattern match over a small user keep-set, not an equality lookup")
 function is_kept(name)
     if not keep_loaded then load_keep() end
     if not next(keep_set) then return false end
@@ -892,17 +899,17 @@ function is_kept(name)
     local script_lower = script_file and script_file:lower() or nil
     for entry in pairs(keep_set) do
         local needle = entry:lower()
-        if owner_lower:find(needle, 1, true) then return true end
-        if script_lower and script_lower:sub(1, #needle) == needle then return true end
+        if owner_lower:find(needle) then return true end
+        if script_lower and script_lower:find(needle) then return true end
     end
     return false
 end
 
---- Add an owner name or script prefix to the keep-set and persist it; blanks and duplicates are ignored.
+--- Add a keep pattern (matched against the owner name or script file) and persist it; blanks, duplicates, and malformed patterns are ignored.
 --- @novalidate(conventions.unused_export, reason:"panel control surface")
 function add_keep(entry)
     entry = tostring(entry or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    if entry == "" then return end
+    if entry == "" or not is_valid_pattern(entry) then return end
     if not keep_loaded then load_keep() end
     keep_set[entry] = true
     mask_cache = {}

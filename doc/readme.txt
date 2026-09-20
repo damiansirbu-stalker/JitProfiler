@@ -101,7 +101,7 @@ A small corner banner shows while a capture runs.
 Share a capture without naming other people's mods:
 The panel footer carries an Anonymize toggle.
 It masks every third-party mod and script name in the panel and in every export, so a screenshot, a report, or the json never shows another author's mod beside a cost.
-A keep-list edited in the same footer exempts the names you want readable, matched by owner or script prefix. It persists across sessions and defaults to empty, so each author keeps only their own.
+A keep-list edited in the same footer exempts the names you want readable, each entry a pattern matched against the owner or script name. It persists across sessions and defaults to empty, so each author keeps only their own.
 
 Publish to the web:
 Turn a capture into a live web page on your own GitHub in one click. Set your repo and a GitHub token in the MCM page, then press Publish in the panel footer.

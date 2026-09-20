@@ -113,7 +113,7 @@ It is print-only. The real name still drives owner resolution, the sort, the col
 Only the rendered string changes, so nothing downstream reads a masked key.
 Only mod-owned names obfuscate.
 Baseline owners, the `[C]` `[GC]` `[JIT]` markers, separators, digits, the extension, and a line suffix stay literal, so the report stays readable and the code locations stay honest.
-The keep-set exempts the names an author keeps readable, matched as an owner substring or a script-name prefix.
+The keep-set exempts the names an author keeps readable, each entry a Lua pattern matched against the owner name or the script file.
 It is the one persisted piece of panel state, a newline file at the writable appdata root edited from the Anonymize footer, empty by default.
 The toggle rewrites the live panel and every export together, so a screenshot, a text report, and the json are safe at the source.
 
