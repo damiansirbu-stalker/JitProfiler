@@ -860,9 +860,10 @@ local function get_keep_path()
     return (xfs.resolve_path("$app_data_root$", "") or "") .. KEEP_FILE
 end
 
---- Whether string.find accepts a keep entry as a Lua pattern, validated at add and load so is_kept needs no per-call guard.
+--- Whether a keep entry is a usable Lua pattern: it names at least one literal character and string.find can compile it.
 --- @safety SAFE - pcall contains a malformed pattern, so a bad entry returns false instead of raising.
 local function is_valid_pattern(pat)
+    if not pat:gsub("%%.", ""):find("%w") then return false end
     local ok = pcall(string.find, "", pat)
     return ok
 end
