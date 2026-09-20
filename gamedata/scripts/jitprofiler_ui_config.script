@@ -1,0 +1,92 @@
+--- jitprofiler_ui_config: the JitProfiler panel footer -- capture Settings, the Anonymize keep-set editor, and Publish to the web.
+
+local ImGui, ImGuiCol = ImGui, ImGuiCol
+local floor, tostring = math.floor, tostring
+local vector2, fcolor = vector2, fcolor
+
+local COLOR_DIM = fcolor():set(0.22, 0.24, 0.28, 1.0)
+local FILTER_W  = 180
+local VZERO     = vector2(0, 0)
+local BTN_SIZE  = vector2(96, 0)
+
+local keep_input = ""
+local publish_status = ""
+
+-- One line of text in a pushed colour, popped after: the panel's most repeated idiom.
+local function render_colored_text(color, text)
+    ImGui.PushStyleColor(ImGuiCol.Text, color)
+    ImGui.Text(text)
+    ImGui.PopStyleColor(1)
+end
+
+-- One integer capture setting as a whole-number slider, written back to the session state on change.
+local function render_int_setting(key, label, min, max)
+    local changed, value = ImGui.SliderFloat(label, JitProfiler.get_setting(key), min, max, "%.0f")
+    if changed then JitProfiler.set_setting(key, floor(value + 0.5)) end
+end
+
+local function render_settings()
+    if not ImGui.CollapsingHeader("Settings") then return end
+    render_int_setting("interval", "CPU interval (ms)", 1, 20)
+    render_int_setting("depth", "Stack depth", 4, 64)
+    render_int_setting("auto_snap", "Auto-snapshot at (%)", 50, 99)
+    render_int_setting("duration", "Auto-stop after (s)", 0, 600)
+end
+
+-- Each kept entry as a row: an x that removes it, then the entry text.
+local function render_keep_list(list)
+    for i = 1, #list do
+        local entry = list[i]
+        if ImGui.Button("x##keep" .. entry, VZERO) then JitProfiler.remove_keep(entry) end
+        ImGui.SameLine()
+        ImGui.Text(entry)
+    end
+end
+
+-- Anonymize: the session toggle plus the persisted keep-set editor; masking is global, so it sits in the footer, not the sampling controls.
+local function render_anonymize()
+    if not ImGui.CollapsingHeader("Anonymize") then return end
+    local anon = JitProfiler.get_setting("anon") and true or false
+    local _, new_anon = ImGui.Checkbox("Anonymize names", anon)
+    if new_anon ~= anon then JitProfiler.set_setting("anon", new_anon) end
+    render_colored_text(COLOR_DIM, "Masks mod and mod-owned script names in the panel and every export; kept names stay readable.")
+    ImGui.SetNextItemWidth(FILTER_W)
+    local new_input = ImGui.InputText("##keep", keep_input, 64)
+    if new_input then keep_input = new_input end
+    ImGui.SameLine()
+    if ImGui.Button("Keep##add", VZERO) then
+        JitProfiler.add_keep(keep_input)
+        keep_input = ""
+    end
+    local list = JitProfiler.get_keep_list()
+    if #list == 0 then
+        render_colored_text(COLOR_DIM, "nothing kept; every mod name masks when Anonymize is on")
+    else
+        render_keep_list(list)
+    end
+end
+
+-- Publish the retained captures as one masked web page to the GitHub repo set in MCM; disabled until repo and token exist.
+local function render_publish()
+    ImGui.Separator()
+    local cfg = jf_mcm and jf_mcm.cfg
+    local ready = cfg and cfg.publish_repo ~= "" and cfg.publish_token ~= ""
+    if ready and ImGui.Button("Publish to web##pub", BTN_SIZE) then
+        local res = JitProfiler.publish()
+        publish_status = res.ok and "published to your GitHub page" or ("failed: " .. tostring(res.reason or res.code or "?"))
+    elseif not ready then
+        ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
+        ImGui.Button("Publish to web##pub", BTN_SIZE)
+        ImGui.PopStyleColor(1)
+    end
+    ImGui.SameLine()
+    local hint = ready and (publish_status ~= "" and publish_status or "pushes a masked page to your GitHub") or "set repo and token in MCM"
+    render_colored_text(COLOR_DIM, hint)
+end
+
+--- Draw the panel footer: Settings, the Anonymize keep-set editor, then the always-visible Publish button.
+function render_footer()
+    render_settings()
+    render_anonymize()
+    render_publish()
+end

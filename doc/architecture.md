@@ -117,6 +117,17 @@ The keep-set exempts the names an author keeps readable, matched as an owner sub
 It is the one persisted piece of panel state, a newline file at the writable appdata root edited from the Anonymize footer, empty by default.
 The toggle rewrites the live panel and every export together, so a screenshot, a text report, and the json are safe at the source.
 
+## Publish
+A capture becomes a live web page on your own GitHub, in one click from the panel footer.
+JitProfiler writes the retained captures as one JSON and injects it into a shipped viewer page.
+It hands the result to xlibs `xnet`, which commits it to the configured repo over HTTPS.
+The viewer is a static page that draws the in-game panel from the JSON in the browser, so the shared page reads exactly like the tool.
+JitProfiler forces the mask on the published copy regardless of the live toggle. A third-party mod name can never reach a public page, and the keep-list still exempts your own names.
+The token, repo, and branch live in MCM. The Publish button stays disabled until the repo and token are set.
+`xnet` is xlibs's native companion, a zero-dependency Go exe launched over a LuaJIT FFI CreateProcess, because the script VM has no HTTP of its own.
+It ships with xlibs, and the token travels in a file, never on the command line.
+No other Anomaly profiler puts its results on the web from inside the game.
+
 ## Output
 `appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
 The instrumentation and callbacks modes write `jitprofiler_inst_<timestamp>.txt` and `jitprofiler_callbacks_<timestamp>.txt`.

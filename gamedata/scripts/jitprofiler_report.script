@@ -138,6 +138,43 @@ local function build_engine_rows(list)
     return rows
 end
 
+-- One capture's masked, ranked doc: views/rows plus meta. Names honour the anon setting at build time.
+local function build_capture_doc(capture)
+    local doc = { kind = capture.kind, stamp = capture.meta.stamp,
+                  modded_exes = tostring(_G.MODDED_EXES_VERSION or "?"), meta = capture.meta }
+    if capture.kind == KIND_CPU or capture.kind == KIND_MEM then
+        local v = capture.views
+        doc.total = capture.total
+        doc.views = {
+            by_mod    = build_dual_rows(v.by_mod, v.by_mod_total, false),
+            by_script = build_dual_rows(v.by_script, v.by_script_total, true),
+            leaf      = build_frame_rows(v.leaf, true),
+            root      = build_frame_rows(v.root, true),
+        }
+        if capture.engine_entry then doc.engine_entry = build_engine_rows(capture.engine_entry) end
+    elseif capture.kind == KIND_SCAN then
+        local rows = {}
+        for i = 1, #capture.rows do
+            local row = capture.rows[i]
+            rows[i] = { name = JitProfiler.compute_masked_name(row.key), owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(row.key)),
+                        calls = row.calls, self_us = row.self_us, total_us = row.total_us, min_us = row.min_us, max_us = row.max_us }
+        end
+        doc.total_us = capture.total_us
+        doc.rows = rows
+    elseif capture.kind == KIND_CALLBACKS then
+        local rows = {}
+        for i = 1, #capture.rows do
+            local rec = capture.rows[i]
+            rows[i] = { callback = rec.callback, handler = JitProfiler.compute_masked_name(rec.handler),
+                        owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(rec.handler)),
+                        calls = rec.calls, self_us = rec.self_us, total_us = rec.total_us, min_us = rec.min_us, max_us = rec.max_us }
+        end
+        doc.total_us = capture.total_us
+        doc.rows = rows
+    end
+    return doc
+end
+
 local function write_folded(kind, by_stack)
     local folded = {}
     for stack, weight in pairs(by_stack) do folded[#folded + 1] = build_folded_stack(stack) .. " " .. format("%.0f", weight) end
@@ -439,50 +476,26 @@ function write_callbacks(records, wrapped, duration_sec)
     }
 end
 
--- The machine-readable capture: the masked, ranked views plus meta, the source the perf-page pipeline renders. Names honour the live anon setting.
+-- The machine-readable per-kind capture written to $logs$; names honour the live anon setting.
 function write_json(capture)
     if not capture then return end
-    local doc = {
-        schema_version = 1,
-        tool = "JitProfiler",
-        mod_version = _jitprofiler_manifest.MANIFEST.version,
-        modded_exes = tostring(_G.MODDED_EXES_VERSION or "?"),
-        kind = capture.kind,
-        stamp = capture.meta.stamp,
-        meta = capture.meta,
-    }
-    if capture.kind == KIND_CPU or capture.kind == KIND_MEM then
-        local v = capture.views
-        doc.total = capture.total
-        doc.views = {
-            by_mod    = build_dual_rows(v.by_mod, v.by_mod_total, false),
-            by_script = build_dual_rows(v.by_script, v.by_script_total, true),
-            leaf      = build_frame_rows(v.leaf, true),
-            root      = build_frame_rows(v.root, true),
-        }
-        if capture.engine_entry then doc.engine_entry = build_engine_rows(capture.engine_entry) end
-    elseif capture.kind == KIND_SCAN then
-        local rows = {}
-        for i = 1, #capture.rows do
-            local row = capture.rows[i]
-            rows[i] = { name = JitProfiler.compute_masked_name(row.key), owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(row.key)),
-                        calls = row.calls, self_us = row.self_us, total_us = row.total_us, min_us = row.min_us, max_us = row.max_us }
-        end
-        doc.total_us = capture.total_us
-        doc.rows = rows
-    elseif capture.kind == KIND_CALLBACKS then
-        local rows = {}
-        for i = 1, #capture.rows do
-            local rec = capture.rows[i]
-            rows[i] = { callback = rec.callback, handler = JitProfiler.compute_masked_name(rec.handler),
-                        owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(rec.handler)),
-                        calls = rec.calls, self_us = rec.self_us, total_us = rec.total_us, min_us = rec.min_us, max_us = rec.max_us }
-        end
-        doc.total_us = capture.total_us
-        doc.rows = rows
-    end
+    local doc = build_capture_doc(capture)
+    doc.schema_version = 1
+    doc.tool = "JitProfiler"
+    doc.mod_version = _jitprofiler_manifest.MANIFEST.version
     local path = build_log_path("jitprofiler_" .. capture.kind .. "_" .. capture.meta.stamp .. ".json")
     if not xfs.write_file(path, format_json(doc)) then log("!JitProfiler: cannot write %s", tostring(path)) end
+end
+
+-- The combined publish payload: every retained capture under one doc, masked, for the shipped viewer page.
+--- @param captures table retained captures keyed by kind (any subset of cpu/mem/scan/callbacks)
+--- @param stamp string the generation timestamp
+--- @return string the JSON the viewer template embeds
+function build_publish_json(captures, stamp)
+    local combined = { tool = "JitProfiler", mod_version = _jitprofiler_manifest.MANIFEST.version,
+                       generated = stamp, captures = {} }
+    for kind, cap in pairs(captures) do combined.captures[kind] = build_capture_doc(cap) end
+    return format_json(combined)
 end
 
 -- Callers (toward root) and callees (toward leaf) of a frame, summed across a retained sampling capture's leaf-first stacks.

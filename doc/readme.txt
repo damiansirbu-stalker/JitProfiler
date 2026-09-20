@@ -103,6 +103,14 @@ The panel footer carries an Anonymize toggle.
 It masks every third-party mod and script name in the panel and in every export, so a screenshot, a report, or the json never shows another author's mod beside a cost.
 A keep-list edited in the same footer exempts the names you want readable, matched by owner or script prefix. It persists across sessions and defaults to empty, so each author keeps only their own.
 
+Publish to the web:
+Turn a capture into a live web page on your own GitHub in one click. Set your repo and a GitHub token in the MCM page, then press Publish in the panel footer.
+The page shows the profiler view exactly as in game, hosted on your github.io and shareable by a link.
+Nothing renders on my side, and no server sits in the middle. Your page is your own files on your own GitHub.
+Third-party mod names are always obfuscated on a published page. Your keep-list stays readable, and everything else is masked.
+Scope the token to that one repo. It is stored locally and travels only to GitHub over HTTPS.
+No other Anomaly profiler publishes its results to the web from inside the game.
+
 Configuration (MCM):
 The JitProfiler MCM page holds the capture defaults. These are the sample interval and stack depth, plus the auto-snapshot threshold and the report fold.
 The panel and the console commands use these defaults, and a console argument to start_cpu or start_alloc overrides the matching value for that capture.

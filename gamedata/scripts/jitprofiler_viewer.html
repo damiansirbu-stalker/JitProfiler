@@ -1,0 +1,123 @@
+<!doctype html>
+<!-- JitProfiler viewer: the shipped page template. JitProfiler injects one capture's JSON at the
+     __JF_DATA__ marker and pushes the result to your GitHub Pages repo, so a share is one self-contained
+     file. It draws the in-game panel from that data: the tabs, the VM-state strip, and the BY SCRIPT view. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JitProfiler capture</title>
+<style>
+  :root{--bg:#171a1f;--panel:#1e222a;--text:#dbe3f0;--dim:#8f958f;--accent:#4285d9;--amber:#b8944f;--track:#2b303a}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:13px/1.5 ui-monospace,"JetBrains Mono","Cascadia Mono",Consolas,monospace;padding:0}
+  .wrap{max-width:960px;margin:0 auto;padding:18px 20px 40px}
+  .tabs{display:flex;gap:2px;margin-bottom:14px}
+  .tabs button{padding:6px 18px;background:var(--panel);color:var(--dim);border:0;cursor:pointer;
+    font:inherit;font-weight:700;letter-spacing:.5px}
+  .tabs button.on{background:var(--accent);color:#fff}
+  .meta{color:var(--dim);font-size:12px;margin:2px 0 16px}
+  .vh{color:var(--dim);font-weight:700;letter-spacing:.5px;margin:18px 0 5px}
+  table{width:100%;border-collapse:collapse}
+  td{padding:2px 8px 2px 0;white-space:nowrap;vertical-align:middle}
+  td.nm{width:40%;overflow:hidden;text-overflow:ellipsis;max-width:0}
+  td.ow{width:22%;color:var(--dim)} td.v{text-align:right;width:96px}
+  tr.hd td{color:var(--amber);font-weight:700;border-bottom:1px solid var(--track)}
+  tr:hover td{background:#20252e}
+  .bar{display:inline-block;position:relative;width:120px;height:14px;background:var(--track);vertical-align:middle}
+  .fill{position:absolute;left:0;top:0;height:100%}
+  .pc{padding-left:5px;font-size:11px}
+  .vm{display:flex;align-items:center;gap:8px;margin:3px 0}.vm .lb{width:96px}
+  .foot{color:var(--dim);font-size:11px;margin-top:26px}
+  .empty{color:var(--dim);padding:40px 0}
+</style>
+</head>
+<body>
+<div class="wrap" id="wrap"></div>
+<script>
+"use strict";
+// JitProfiler injects the capture here. Raw template = null, which renders the empty state.
+const DATA = /*__JF_DATA__*/ null;
+
+const TABS = [["cpu","CPU"],["mem","MEM"],["scan","INSTRUMENT"],["callbacks","CALLBACKS"]];
+const wrap = document.getElementById("wrap");
+
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+
+// Blue heat colour by share, matching the panel's get_heat_color.
+function heat(pct){
+  const f=Math.max(0,Math.min(1,pct/100));
+  const r=Math.round((0.20+0.20*f)*255), g=Math.round((0.34+0.34*f)*255), b=Math.round((0.50+0.45*f)*255);
+  return "#"+[r,g,b].map(x=>x.toString(16).padStart(2,"0")).join("");
+}
+function bar(pct){
+  const w=Math.max(0,Math.min(100,pct));
+  return `<span class="bar"><span class="fill" style="width:${w.toFixed(1)}%;background:${heat(pct)}"></span></span><span class="pc">${pct.toFixed(1)}%</span>`;
+}
+function fmtValue(kind,v){
+  if(kind!=="mem") return String(Math.round(v));
+  if(v>=1048576) return (v/1048576).toFixed(1)+" MB";
+  if(v>=1024) return (v/1024).toFixed(1)+" KB";
+  return Math.round(v)+" B";
+}
+
+function renderSampling(cap){
+  const total=cap.total||0, h=[];
+  if(cap.kind==="cpu" && cap.meta && cap.meta.vmstate){
+    h.push(`<div class="vh">VM state at each sample</div>`);
+    for(const [c,lb] of [["N","native"],["I","interpreter"],["C","C / engine"],["G","GC"],["J","JIT compile"]]){
+      const w=cap.meta.vmstate[c]||0; if(w<=0) continue;
+      h.push(`<div class="vm"><span class="lb">${lb}</span>${bar(total?100*w/total:0)}</div>`);
+    }
+    if(cap.engine_entry && cap.engine_entry.length){
+      h.push(`<div class="vh">engine-C entry points</div><table>`);
+      for(const r of cap.engine_entry)
+        h.push(`<tr><td class="nm">${esc(r.name)}</td><td class="ow">${esc(r.owner||"")}</td><td>${bar(total?100*r.value/total:0)}</td><td class="v">${Math.round(r.value)}</td></tr>`);
+      h.push(`</table>`);
+    }
+  }
+  h.push(`<div class="vh">BY SCRIPT</div><table><tr class="hd"><td class="nm">Function</td><td class="ow">Mod</td><td>Own %</td><td>Total %</td><td class="v">Value</td></tr>`);
+  for(const r of ((cap.views&&cap.views.by_script)||[]))
+    h.push(`<tr><td class="nm">${esc(r.name)}</td><td class="ow">${esc(r.owner||"")}</td><td>${bar(total?100*r.own/total:0)}</td><td>${bar(total?100*r.total/total:0)}</td><td class="v">${fmtValue(cap.kind,r.total)}</td></tr>`);
+  h.push(`</table>`);
+  return h.join("");
+}
+
+function renderRows(cap){
+  const span=cap.total_us||0, isScan=cap.kind==="scan", h=[];
+  h.push(`<div class="vh">${isScan?"BY FUNCTION":"BY HANDLER"}</div><table><tr class="hd"><td class="nm">${isScan?"Function":"Handler"}</td><td class="ow">Mod</td><td>Own %</td><td class="v">Own ms</td><td class="v">Total ms</td><td class="v">Calls</td></tr>`);
+  for(const r of (cap.rows||[])){
+    const name=isScan?r.name:r.handler;
+    h.push(`<tr><td class="nm">${esc(name)}</td><td class="ow">${esc(r.owner||"")}</td><td>${bar(span?100*r.self_us/span:0)}</td><td class="v">${(r.self_us/1000).toFixed(2)} ms</td><td class="v">${(r.total_us/1000).toFixed(2)} ms</td><td class="v">${r.calls}</td></tr>`);
+  }
+  h.push(`</table>`);
+  return h.join("");
+}
+
+function renderCapture(cap){
+  const m=cap.meta||{}, exes=esc(cap.modded_exes||"?");
+  let meta;
+  if(cap.kind==="cpu") meta=`${m.samples||0} samples @ ${m.interval||0} ms · ~${Math.round(m.duration||0)}s · modded_exes ${exes} · ${esc(m.stamp||"?")}`;
+  else if(cap.kind==="mem") meta=`${fmtValue("mem",cap.total||0)} allocated · ~${Math.round(m.duration||0)}s · modded_exes ${exes} · ${esc(m.stamp||"?")}`;
+  else meta=`~${Math.round(m.duration||0)}s · modded_exes ${exes} · ${esc(m.stamp||"?")}`;
+  const body=(cap.kind==="cpu"||cap.kind==="mem")?renderSampling(cap):renderRows(cap);
+  return `<div class="meta">${meta}</div>${body}`;
+}
+
+function render(){
+  if(!DATA||!DATA.captures){wrap.innerHTML=`<div class="empty">No capture data.</div>`;return;}
+  const caps=DATA.captures, present=TABS.filter(([k])=>caps[k]);
+  if(!present.length){wrap.innerHTML=`<div class="empty">No capture data.</div>`;return;}
+  let active=present[0][0];
+  function draw(){
+    const tabs=present.map(([k,lbl])=>`<button class="${k===active?"on":""}" data-k="${k}">${lbl}</button>`).join("");
+    wrap.innerHTML=`<div class="tabs">${tabs}</div>${renderCapture(caps[active])}<p class="foot">JitProfiler · ${esc((DATA.mod_version||""))} · ${esc(DATA.generated||"")}</p>`;
+    for(const b of wrap.querySelectorAll(".tabs button")) b.onclick=()=>{active=b.dataset.k;draw();};
+  }
+  draw();
+}
+render();
+</script>
+</body>
+</html>

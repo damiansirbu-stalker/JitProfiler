@@ -114,7 +114,6 @@ local CB_RESULTS = "results"
 local CB_BROWSE = "browse"
 local cb_view = CB_RESULTS
 local cb_search = ""
-local keep_input = ""
 local tree_cache
 local mono_ok = false
 local mono_checked = false
@@ -577,47 +576,6 @@ local function render_controls()
     end
 end
 
--- One integer capture setting as a whole-number slider, written back to the session state on change.
-local function render_int_setting(key, label, min, max)
-    local changed, value = ImGui.SliderFloat(label, JitProfiler.get_setting(key), min, max, "%.0f")
-    if changed then JitProfiler.set_setting(key, floor(value + 0.5)) end
-end
-
-local function render_settings()
-    if not ImGui.CollapsingHeader("Settings") then return end
-    render_int_setting("interval", "CPU interval (ms)", 1, 20)
-    render_int_setting("depth", "Stack depth", 4, 64)
-    render_int_setting("auto_snap", "Auto-snapshot at (%)", 50, 99)
-    render_int_setting("duration", "Auto-stop after (s)", 0, 600)
-end
-
--- Anonymize: the session toggle plus the persisted keep-set editor; masking is global, so it sits in the footer, not the sampling controls.
-local function render_anonymize()
-    if not ImGui.CollapsingHeader("Anonymize") then return end
-    local anon = JitProfiler.get_setting("anon") and true or false
-    local _, new_anon = ImGui.Checkbox("Anonymize names", anon)
-    if new_anon ~= anon then JitProfiler.set_setting("anon", new_anon) end
-    render_colored_text(COLOR_DIM, "Masks mod and mod-owned script names in the panel and every export; kept names stay readable.")
-    ImGui.SetNextItemWidth(FILTER_W)
-    local new_input = ImGui.InputText("##keep", keep_input, 64)
-    if new_input then keep_input = new_input end
-    ImGui.SameLine()
-    if ImGui.Button("Keep##add", VZERO) then
-        JitProfiler.add_keep(keep_input)
-        keep_input = ""
-    end
-    local list = JitProfiler.get_keep_list()
-    if #list == 0 then
-        render_colored_text(COLOR_DIM, "nothing kept; every mod name masks when Anonymize is on")
-        return
-    end
-    for i = 1, #list do
-        local entry = list[i]
-        if ImGui.Button("x##keep" .. entry, VZERO) then JitProfiler.remove_keep(entry) end
-        ImGui.SameLine()
-        ImGui.Text(entry)
-    end
-end
 
 -- Depth, drop, and resolver warnings for a retained capture.
 local function render_tab_health(cap)
@@ -1072,8 +1030,7 @@ local function render_panel()
         end
         ImGui.Spacing()
         ImGui.Separator()
-        render_settings()
-        render_anonymize()
+        jitprofiler_ui_config.render_footer()
         pop_mono()
     end
     ImGui.End()

@@ -23,7 +23,7 @@ local SETTING_ANON = "anon"
 -- The persisted keep-set lives at the writable appdata root, so clearing appdata/logs never wipes it. @src Layers/xrRenderPC_R4/r4.cpp:2027
 local KEEP_FILE   = "jitprofiler_keep.txt"
 
-local string, table, math, pairs = string, table, math, pairs
+local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
 local pcall, tostring, tonumber, require, type = pcall, tostring, tonumber, require, type
 local format = string.format
 local time_global, jit = time_global, jit
@@ -81,6 +81,7 @@ if not (profile and allocprof) then
     add_keep = function() end
     remove_keep = function() end
     is_kept = function() return false end
+    publish = function() return { ok = false } end
     is_scan_active = function() return false end
     is_target = function() return false end
     get_targets = function() return {} end
@@ -801,6 +802,46 @@ end
 --- @return table|nil the retained aggregate for kind "cpu" or "mem", or nil when nothing was captured yet.
 function get_last_capture(kind)
     return last_capture[kind]
+end
+
+-- Gather every retained capture keyed by kind, for the publish payload; empty when nothing was captured.
+local function collect_captures()
+    local captures, any = {}, false
+    for _, kind in ipairs({ "cpu", "mem", "scan", "callbacks" }) do
+        if last_capture[kind] then captures[kind] = last_capture[kind]; any = true end
+    end
+    return captures, any
+end
+
+--- Publish the retained captures as one masked web page to the configured GitHub repo through xlibs xnet.
+--- Masking is forced for the published copy, independent of the live toggle, so a third-party name never leaks.
+--- @safety SAFE - the token is staged to a temp file only for the push, then blanked; it never reaches the argv or a log.
+--- @return table { ok = boolean, code = number|nil, reason = string|nil } - reason names why a publish was refused
+function publish()
+    local cfg = jf_mcm and jf_mcm.cfg
+    if not (cfg and cfg.publish_repo ~= "" and cfg.publish_token ~= "") then return { ok = false, reason = "set repo and token in MCM" } end
+    if type(xnet) ~= "table" or not xnet.push_github then return { ok = false, reason = "xnet unavailable" } end
+    local captures, any = collect_captures()
+    if not any then return { ok = false, reason = "no capture yet" } end
+    local template = xfs.read_file(xfs.resolve_path("$game_scripts$", "jitprofiler_viewer.html"))
+    if not template then return { ok = false, reason = "viewer template missing" } end
+
+    local saved = settings.anon
+    settings.anon = true; mask_cache = {}
+    local json = jitprofiler_report.build_publish_json(captures, os.date("%Y-%m-%d %H:%M"))
+    settings.anon = saved; mask_cache = {}
+
+    local page = template:gsub("/%*__JF_DATA__%*/ null", (json:gsub("%%", "%%%%")), 1)
+    local base = xfs.resolve_path("$logs$", "") or ""
+    local page_path, token_path = base .. "jitprofiler_page.html", base .. "jitprofiler_token.tmp"
+    if not (xfs.write_file(page_path, page) and xfs.write_file(token_path, cfg.publish_token)) then
+        return { ok = false, reason = "cannot stage the page" }
+    end
+    local result = xnet.push_github({ repo = cfg.publish_repo,
+        branch = (cfg.publish_branch ~= "" and cfg.publish_branch) or nil,
+        path = "jitprofiler.html", file = page_path, token_file = token_path, message = "JitProfiler capture" })
+    xfs.write_file(token_path, "")
+    return { ok = result.ok, code = result.code }
 end
 
 --- @return number|boolean the current session value for a capture setting.
