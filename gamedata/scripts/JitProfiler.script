@@ -860,15 +860,12 @@ local function get_keep_path()
     return (xfs.resolve_path("$app_data_root$", "") or "") .. KEEP_FILE
 end
 
---- Whether a keep entry is a usable Lua pattern: it names at least one literal character and string.find can compile it.
---- @safety SAFE - pcall contains a malformed pattern, so a bad entry returns false instead of raising.
+--- Whether a keep entry is specific enough to keep: it names at least one literal character, so a degenerate pattern (".", "%a") cannot exempt every name.
 local function is_valid_pattern(pat)
-    if not pat:gsub("%%.", ""):find("%w") then return false end
-    local ok = pcall(string.find, "", pat)
-    return ok
+    return pat:gsub("%%.", ""):find("%w") ~= nil
 end
 
--- Load the keep-set from disk once; CRLF-tolerant, one Lua pattern per line, blank or malformed lines skipped.
+-- Load the keep-set from disk once; CRLF-tolerant, one Lua pattern per line, blank or degenerate lines skipped.
 --- @safety SAFE - a missing file yields an empty set (xfs.read_file returns nil).
 local function load_keep()
     keep_loaded = true
@@ -889,7 +886,9 @@ local function save_keep()
 end
 
 --- @return boolean whether a name is exempt from masking: a keep entry is a Lua pattern matched case-insensitively against the owner name or script file.
+--- @safety SAFE - pcall contains a malformed keep pattern at the match, so a bad entry skips instead of raising.
 --- @novalidate(code.find_in_loop, reason:"pattern match over a small user keep-set, not an equality lookup")
+--- @novalidate(code.pcall_in_loop, reason:"per-entry match-safety; a malformed pattern must skip without aborting the sibling entries")
 function is_kept(name)
     if not keep_loaded then load_keep() end
     if not next(keep_set) then return false end
@@ -900,13 +899,17 @@ function is_kept(name)
     local script_lower = script_file and script_file:lower() or nil
     for entry in pairs(keep_set) do
         local needle = entry:lower()
-        if owner_lower:find(needle) then return true end
-        if script_lower and script_lower:find(needle) then return true end
+        local ok, found = pcall(string.find, owner_lower, needle)
+        if ok and found then return true end
+        if script_lower then
+            ok, found = pcall(string.find, script_lower, needle)
+            if ok and found then return true end
+        end
     end
     return false
 end
 
---- Add a keep pattern (matched against the owner name or script file) and persist it; blanks, duplicates, and malformed patterns are ignored.
+--- Add a keep pattern (matched against the owner name or script file) and persist it; blanks, duplicates, and degenerate patterns are ignored.
 --- @novalidate(conventions.unused_export, reason:"panel control surface")
 function add_keep(entry)
     entry = tostring(entry or ""):gsub("^%s+", ""):gsub("%s+$", "")
