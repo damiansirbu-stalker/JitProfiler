@@ -123,6 +123,7 @@ The instrumentation and callbacks modes write `jitprofiler_inst_<timestamp>.txt`
 `jitprofiler_{cpu,mem}[_snapN]_<timestamp>.folded` is the SpeedScope collapsed-stacks flamegraph.
 `jitprofiler_<kind>_<timestamp>.json` is the machine-readable capture, the ranked views plus meta.
 A minimal in-module writer encodes it, because Anomaly ships no JSON library. It honours the Anonymize toggle at write time.
+The json carries the same ranked views the panel shows, so any HTML site can render it into a page that matches the in-game view.
 Every text report is self-contained.
 The sampling reports close with a call graph (each top leaf with its callers toward root and callees toward leaf).
 The instrumentation and callbacks reports carry per-call avg, min, and max, so nothing the panel shows lives only in the panel.

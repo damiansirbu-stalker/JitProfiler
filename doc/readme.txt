@@ -120,6 +120,7 @@ jitprofiler_callbacks_<timestamp>.txt  callbacks report (per handler: callback, 
 jitprofiler_<kind>_<timestamp>.json    machine-readable capture (ranked views and meta)
 ```
 Every export honours the Anonymize toggle at the moment it is written, so a masked capture is safe to share as is.
+Any HTML site can render the json into a page that matches the in-game panel, so you or anyone can host a capture on the web in the exact view the profiler shows.
 
 The report opens with a VM-state split, how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.
 A GC line follows with the heap, the live estimate, the debt, and the collections per second.
