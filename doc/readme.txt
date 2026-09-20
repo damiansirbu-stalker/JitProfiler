@@ -156,7 +156,7 @@ Rule layers then check crash safety, hotpath cost, engine correctness, complexit
 It depends on no other mod, not even my own. The only shared layers are X-Ray and xlibs.
 
 [Screenshot: JitProfiler under a live CPU and allocation capture]
-Project Health: https://damiansirbu-stalker.github.io/JitProfiler/
+Project Health: https://damiansirbu-stalker.github.io/JitProfiler/health/
 
 Credits:
 The engine core is my own contribution to xray-monolith, the jit.profile sampler backported from LuaJIT into the modded exe plus the jit.allocprof allocation profiler on top of it.

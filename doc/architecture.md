@@ -120,7 +120,7 @@ The toggle rewrites the live panel and every export together, so a screenshot, a
 ## Publish
 A capture becomes a live web page on your own GitHub, in one click from the panel footer.
 JitProfiler writes the retained captures as one JSON and injects it into a shipped viewer page.
-It hands the result to xlibs `xnet`, which commits it to the configured repo over HTTPS.
+It hands the result to xlibs `xnet`, which commits it to the configured repo as pages/jitprofiler.html over HTTPS.
 The viewer is a static page that draws the in-game panel from the JSON in the browser, so the shared page reads exactly like the tool.
 JitProfiler forces the mask on the published copy regardless of the live toggle. A third-party mod name can never reach a public page, and the keep-list still exempts your own names.
 The token, repo, and branch live in MCM. The Publish button stays disabled until the repo and token are set.

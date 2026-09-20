@@ -839,7 +839,7 @@ function publish()
     end
     local result = xnet.push_github({ repo = cfg.publish_repo,
         branch = (cfg.publish_branch ~= "" and cfg.publish_branch) or nil,
-        path = "jitprofiler.html", file = page_path, token_file = token_path, message = "JitProfiler capture" })
+        path = "pages/jitprofiler.html", file = page_path, token_file = token_path, message = "JitProfiler capture" })
     xfs.write_file(token_path, "")
     return { ok = result.ok, code = result.code }
 end
