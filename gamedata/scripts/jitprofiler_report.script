@@ -2,6 +2,8 @@
 
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
 local tostring, os, format = tostring, os, string.format
+local type, next = type, next
+local KIND_CPU, KIND_MEM, KIND_SCAN, KIND_CALLBACKS = "cpu", "mem", "scan", "callbacks"
 
 local RULE = "================================================================================"
 local BAR_WIDTH    = 20
@@ -59,7 +61,7 @@ end
 -- Reverse a leaf-first stack into the root-first order SpeedScope .folded expects.
 local function build_folded_stack(stack)
     local parts, count = {}, 0
-    for frame in string.gmatch(stack, "[^;]+") do count = count + 1; parts[count] = JitProfiler.get_short_frame(frame) end
+    for frame in string.gmatch(stack, "[^;]+") do count = count + 1; parts[count] = JitProfiler.compute_masked_name(JitProfiler.get_short_frame(frame)) end
     local out = {}
     for i = count, 1, -1 do out[#out + 1] = parts[i] end
     return table.concat(out, ";")
@@ -78,6 +80,62 @@ local function get_key_count(map)
     local count = 0
     for _ in pairs(map) do count = count + 1 end
     return count
+end
+
+-- Minimal JSON encoder over the known capture value set (string / number / boolean / array / object); no library ships with Anomaly.
+local JSON_ESCAPE = { ['"'] = '\\"', ['\\'] = '\\\\', ["\n"] = '\\n', ["\r"] = '\\r', ["\t"] = '\\t' }
+local function format_json(value)
+    local kind = type(value)
+    if kind == "string" then
+        return '"' .. value:gsub('[%z\1-\31\\"]', function(char) return JSON_ESCAPE[char] or format("\\u%04x", char:byte()) end) .. '"'
+    end
+    if kind == "number" then return format("%.14g", value) end
+    if kind == "boolean" then return value and "true" or "false" end
+    if kind ~= "table" then return "null" end
+    local count = #value
+    if count > 0 or next(value) == nil then
+        local parts = {}
+        for i = 1, count do parts[i] = format_json(value[i]) end
+        return "[" .. table.concat(parts, ",") .. "]"
+    end
+    local parts = {}
+    for key, val in pairs(value) do parts[#parts + 1] = format_json(tostring(key)) .. ":" .. format_json(val) end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- Rank a dual (own + total) view into masked, total-sorted rows for the json export.
+local function build_dual_rows(own_map, total_map, with_owner)
+    local rows = {}
+    for name, total in pairs(total_map) do
+        local row = { name = JitProfiler.compute_masked_name(name), own = own_map[name] or 0, total = total }
+        if with_owner then row.owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(name)) end
+        rows[#rows + 1] = row
+    end
+    table.sort(rows, function(left, right) return left.total > right.total end)
+    return rows
+end
+
+-- Rank a single-weight view (leaf / root) into masked, value-sorted rows.
+local function build_frame_rows(map, with_owner)
+    local rows = {}
+    for name, value in pairs(map) do
+        local row = { name = JitProfiler.compute_masked_name(name), value = value }
+        if with_owner then row.owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(name)) end
+        rows[#rows + 1] = row
+    end
+    table.sort(rows, function(left, right) return left.value > right.value end)
+    return rows
+end
+
+-- Masked rows for the pre-sorted engine-C entry list of a CPU capture.
+local function build_engine_rows(list)
+    local rows = {}
+    for i = 1, #list do
+        local frame = list[i][1]
+        rows[i] = { name = JitProfiler.compute_masked_name(frame),
+                    owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(frame)), value = list[i][2] }
+    end
+    return rows
 end
 
 local function write_folded(kind, by_stack)
@@ -100,7 +158,8 @@ local function build_view(lines, title, map, total, fmt, opts)
             skipped = skipped + 1
         else
             local percent = compute_pct(weight, total)
-            local label = owner and format("%-30s [%s] %s", JitProfiler.get_owner_label(key), JitProfiler.get_owner_method(key), key) or key
+            local display_key = JitProfiler.compute_masked_name(key)
+            local label = owner and format("%-30s [%s] %s", JitProfiler.get_masked_label(key), JitProfiler.get_owner_method(key), display_key) or display_key
             lines[#lines + 1] = format("  %6.2f%% %s %12s  %s", percent, build_bar(percent), fmt(weight), label)
         end
     end
@@ -144,10 +203,10 @@ local function build_call_graph(lines, by_stack, v, total)
         local frame = leaves[i][1]
         local out = { callers = {}, callees = {} }
         for stack, weight in pairs(by_stack) do collect_neighbors({ stack = stack, weight = weight }, frame, out) end
-        lines[#lines + 1] = format("  %-58s %5.1f%%", frame, compute_pct(leaves[i][2], total))
+        lines[#lines + 1] = format("  %-58s %5.1f%%", JitProfiler.compute_masked_name(frame), compute_pct(leaves[i][2], total))
         local callers, callees = sort_entries(out.callers), sort_entries(out.callees)
-        for j = 1, math.min(#callers, 3) do lines[#lines + 1] = format("      <- %5.1f%%  %s", compute_pct(callers[j][2], total), callers[j][1]) end
-        for j = 1, math.min(#callees, 3) do lines[#lines + 1] = format("      -> %5.1f%%  %s", compute_pct(callees[j][2], total), callees[j][1]) end
+        for j = 1, math.min(#callers, 3) do lines[#lines + 1] = format("      <- %5.1f%%  %s", compute_pct(callers[j][2], total), JitProfiler.compute_masked_name(callers[j][1])) end
+        for j = 1, math.min(#callees, 3) do lines[#lines + 1] = format("      -> %5.1f%%  %s", compute_pct(callees[j][2], total), JitProfiler.compute_masked_name(callees[j][1])) end
     end
 end
 
@@ -202,7 +261,7 @@ function write_cpu(cpu, v, opts)
     local folded_path = write_folded("cpu_" .. stamp, cpu.stacks)
     log("JitProfiler/cpu: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     return {
-        kind = "cpu", by_stack = cpu.stacks, views = v, total = total, engine_entry = sort_entries(v.engine_entry),
+        kind = KIND_CPU, by_stack = cpu.stacks, views = v, total = total, engine_entry = sort_entries(v.engine_entry),
         meta = { samples = total, interval = cpu.iv, duration = duration_sec, stamp = stamp,
                  vmstate = cpu.state, dropped = cpu.dropped, depth = cpu.depth, max_depth = v.max_depth, clipped = v.clipped },
     }
@@ -255,7 +314,7 @@ function write_alloc(v, opts)
     log("JitProfiler/alloc: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     if suffix ~= "" then return end
     return {
-        kind = "mem", by_stack = by_stack, views = v, total = total,
+        kind = KIND_MEM, by_stack = by_stack, views = v, total = total,
         meta = { bytes = total, duration = duration_sec, stamp = stamp, stacks = get_key_count(by_stack),
                  dropped = diag.dropped, depth = depth, max_depth = v.max_depth, clipped = v.clipped },
     }
@@ -293,7 +352,8 @@ function write_scan(records, opts)
     for i = 1, #rows do
         local row = rows[i]
         lines[#lines + 1] = format("  %-46s %-22s %8d   %10.2f   %10.2f   %8.1f   %8.1f   %8.1f",
-            row.key, JitProfiler.get_owner(row.key), row.calls, row.self_us / 1000.0, row.total_us / 1000.0,
+            JitProfiler.compute_masked_name(row.key), JitProfiler.compute_masked_name(JitProfiler.get_owner(row.key)),
+            row.calls, row.self_us / 1000.0, row.total_us / 1000.0,
             row.self_us / row.calls, row.min_us, row.max_us)
     end
     local RULE_DASH = string.rep("-", 60)
@@ -313,27 +373,27 @@ function write_scan(records, opts)
         local owner = mod_rows[i]
         local per_frame = frames > 0 and (mod_self[owner] / 1000.0 / frames) or 0
         lines[#lines + 1] = format("  %-40s %8.2f ms own   %8.2f ms total   %6.3f ms/frame   %3d fns",
-            owner, mod_self[owner] / 1000.0, mod_total[owner] / 1000.0, per_frame, mod_count[owner])
+            JitProfiler.compute_masked_name(owner), mod_self[owner] / 1000.0, mod_total[owner] / 1000.0, per_frame, mod_count[owner])
     end
     lines[#lines + 1] = ""
     lines[#lines + 1] = "-- CALL GRAPH   top functions: <- callers, -> callees (ms, calls) " .. RULE_DASH
     for i = 1, math.min(#rows, 10) do
         local row = rows[i]
         lines[#lines + 1] = format("  %s   own %.2f ms   total %.2f ms",
-            row.key, row.self_us / 1000.0, row.total_us / 1000.0)
+            JitProfiler.compute_masked_name(row.key), row.self_us / 1000.0, row.total_us / 1000.0)
         local callers, callees = collect_edge_neighbors(edges, row.key)
         for j = 1, math.min(#callers, 3) do
-            lines[#lines + 1] = format("      <- %-52s %8.2f ms  (%d)", callers[j][1], callers[j][2] / 1000.0, callers[j][3])
+            lines[#lines + 1] = format("      <- %-52s %8.2f ms  (%d)", JitProfiler.compute_masked_name(callers[j][1]), callers[j][2] / 1000.0, callers[j][3])
         end
         for j = 1, math.min(#callees, 3) do
-            lines[#lines + 1] = format("      -> %-52s %8.2f ms  (%d)", callees[j][1], callees[j][2] / 1000.0, callees[j][3])
+            lines[#lines + 1] = format("      -> %-52s %8.2f ms  (%d)", JitProfiler.compute_masked_name(callees[j][1]), callees[j][2] / 1000.0, callees[j][3])
         end
     end
     local stamp = get_timestamp()
     local report_path = write_lines(build_log_path("jitprofiler_inst_" .. stamp .. ".txt"), lines)
     log("JitProfiler/inst: report -> %s", tostring(report_path))
     return {
-        kind = "scan", rows = rows, edges = edges, frames = frames, total_us = total_self,
+        kind = KIND_SCAN, rows = rows, edges = edges, frames = frames, total_us = total_self,
         meta = { targets = targets, wrapped = wrapped, frames = frames,
                  duration = duration_sec, stamp = stamp, per_frame_ms = per_frame_ms },
     }
@@ -359,7 +419,7 @@ function write_callbacks(records, wrapped, duration_sec)
     for i = 1, #rows do
         local rec = rows[i]
         lines[#lines + 1] = format("  %-34s %-30s %-22s %8d   %10.2f   %10.2f   %8.1f   %8.1f   %8.1f",
-            rec.callback, rec.handler, JitProfiler.get_owner(rec.handler), rec.calls,
+            rec.callback, JitProfiler.compute_masked_name(rec.handler), JitProfiler.compute_masked_name(JitProfiler.get_owner(rec.handler)), rec.calls,
             rec.self_us / 1000.0, rec.total_us / 1000.0, rec.self_us / rec.calls, rec.min_us, rec.max_us)
     end
     local by_cb = {}
@@ -374,9 +434,55 @@ function write_callbacks(records, wrapped, duration_sec)
     local report_path = write_lines(build_log_path("jitprofiler_callbacks_" .. stamp .. ".txt"), lines)
     log("JitProfiler/callbacks: report -> %s", tostring(report_path))
     return {
-        kind = "callbacks", rows = rows, total_us = total_self,
+        kind = KIND_CALLBACKS, rows = rows, total_us = total_self,
         meta = { wrapped = wrapped, duration = duration_sec, stamp = stamp },
     }
+end
+
+-- The machine-readable capture: the masked, ranked views plus meta, the source the perf-page pipeline renders. Names honour the live anon setting.
+function write_json(capture)
+    if not capture then return end
+    local doc = {
+        schema_version = 1,
+        tool = "JitProfiler",
+        mod_version = _jitprofiler_manifest.MANIFEST.version,
+        modded_exes = tostring(_G.MODDED_EXES_VERSION or "?"),
+        kind = capture.kind,
+        stamp = capture.meta.stamp,
+        meta = capture.meta,
+    }
+    if capture.kind == KIND_CPU or capture.kind == KIND_MEM then
+        local v = capture.views
+        doc.total = capture.total
+        doc.views = {
+            by_mod    = build_dual_rows(v.by_mod, v.by_mod_total, false),
+            by_script = build_dual_rows(v.by_script, v.by_script_total, true),
+            leaf      = build_frame_rows(v.leaf, true),
+            root      = build_frame_rows(v.root, true),
+        }
+        if capture.engine_entry then doc.engine_entry = build_engine_rows(capture.engine_entry) end
+    elseif capture.kind == KIND_SCAN then
+        local rows = {}
+        for i = 1, #capture.rows do
+            local row = capture.rows[i]
+            rows[i] = { name = JitProfiler.compute_masked_name(row.key), owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(row.key)),
+                        calls = row.calls, self_us = row.self_us, total_us = row.total_us, min_us = row.min_us, max_us = row.max_us }
+        end
+        doc.total_us = capture.total_us
+        doc.rows = rows
+    elseif capture.kind == KIND_CALLBACKS then
+        local rows = {}
+        for i = 1, #capture.rows do
+            local rec = capture.rows[i]
+            rows[i] = { callback = rec.callback, handler = JitProfiler.compute_masked_name(rec.handler),
+                        owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(rec.handler)),
+                        calls = rec.calls, self_us = rec.self_us, total_us = rec.total_us, min_us = rec.min_us, max_us = rec.max_us }
+        end
+        doc.total_us = capture.total_us
+        doc.rows = rows
+    end
+    local path = build_log_path("jitprofiler_" .. capture.kind .. "_" .. capture.meta.stamp .. ".json")
+    if not xfs.write_file(path, format_json(doc)) then log("!JitProfiler: cannot write %s", tostring(path)) end
 end
 
 -- Callers (toward root) and callees (toward leaf) of a frame, summed across a retained sampling capture's leaf-first stacks.

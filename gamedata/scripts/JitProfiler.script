@@ -14,6 +14,15 @@ local OWNER_MOD           = "mod: "
 local OWNER_LOOSE         = "loose: "
 local OWNER_STRING        = "loadstring"
 
+-- Anonymize substitution alphabets: a masked letter stays in its family so the shape reads pronounceable.
+local VOWELS      = "aeiou"
+local CONSONANTS  = "bcdfghjklmnpqrstvwxyz"
+local VOWEL_SET   = { a = true, e = true, i = true, o = true, u = true }
+local ASCII_MAX   = 127
+local SETTING_ANON = "anon"
+-- The persisted keep-set lives at the writable appdata root, so clearing appdata/logs never wipes it. @src Layers/xrRenderPC_R4/r4.cpp:2027
+local KEEP_FILE   = "jitprofiler_keep.txt"
+
 local string, table, math, pairs = string, table, math, pairs
 local pcall, tostring, tonumber, require, type = pcall, tostring, tonumber, require, type
 local format = string.format
@@ -66,6 +75,12 @@ if not (profile and allocprof) then
     get_alloc_usage = function() return nil end
     get_setting = function() return 0 end
     set_setting = function() end
+    compute_masked_name = function(name) return name end
+    get_masked_label = function(key) return key end
+    get_keep_list = function() return {} end
+    add_keep = function() end
+    remove_keep = function() end
+    is_kept = function() return false end
     is_scan_active = function() return false end
     is_target = function() return false end
     get_targets = function() return {} end
@@ -113,11 +128,16 @@ local resolve_ready = false
 local fold_override
 local ffi, k32
 
+-- Anonymize state: the print-only mask cache (real name -> masked, cleared on an anon toggle or keep edit) and the persisted keep-set.
+local mask_cache = {}
+local keep_set = {}
+local keep_loaded = false
+
 -- Session capture settings, anchored to _G so the two chunk generations share one table. Edited from the panel, never persisted.
 local settings = rawget(_G, "__jitprofiler_settings")
 if not settings then
     settings = { interval = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH,
-                 auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false }
+                 auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false, anon = false }
     rawset(_G, "__jitprofiler_settings", settings)
 end
 
@@ -321,6 +341,7 @@ function stop_cpu()
     local gc_line = build_gc_line(cpu.gc0, duration_sec)
     last_capture.cpu = jitprofiler_report.write_cpu(cpu, v,
         { total = cpu.total, duration = duration_sec, gc_line = gc_line, fold = get_fold() })
+    jitprofiler_report.write_json(last_capture.cpu)
     show_tip("JitProfiler CPU report written")
 end
 
@@ -340,7 +361,7 @@ local function write_alloc_report(stacks, duration_sec, suffix, title)
     local gc_line = build_gc_line(alloc.gc0, duration_sec)
     local capture = jitprofiler_report.write_alloc(v, { by_stack = by_stack, total = total, duration = duration_sec,
         suffix = suffix, title = title, depth = alloc.depth, peak = alloc.peak or 0, gc_line = gc_line, fold = get_fold(), diag = diag })
-    if suffix == "" then last_capture.mem = capture end
+    if suffix == "" then last_capture.mem = capture; jitprofiler_report.write_json(capture) end
     return total
 end
 
@@ -571,6 +592,7 @@ function stop_scan()
     local duration_sec = (get_time_ms() - scan.t0) / 1000.0
     last_capture.scan = jitprofiler_report.write_scan(scan.records,
         { frames = scan.frames, duration = duration_sec, targets = scan.count, wrapped = scan.wrapped, edges = scan.edges })
+    jitprofiler_report.write_json(last_capture.scan)
     show_tip("JitProfiler INSTRUMENTATION report written")
 end
 
@@ -706,6 +728,7 @@ function stop_callbacks()
     reset_callbacks()
     callbacks.sp = 0
     last_capture.callbacks = jitprofiler_report.write_callbacks(callbacks.records, callbacks.wrapped, (get_time_ms() - callbacks.t0) / 1000.0)
+    jitprofiler_report.write_json(last_capture.callbacks)
     show_tip("JitProfiler CALLBACKS report written")
 end
 
@@ -785,9 +808,129 @@ function get_setting(key)
     return settings[key]
 end
 
---- Store a session capture setting edited from the panel; never persisted.
+--- Store a session capture setting edited from the panel; never persisted. Toggling anon drops the print-only mask cache.
 function set_setting(key, value)
     settings[key] = value
+    if key == SETTING_ANON then mask_cache = {} end
+end
+
+-- Full path of the keep-set file on the writable appdata root.
+local function get_keep_path()
+    return (xfs.resolve_path("$app_data_root$", "") or "") .. KEEP_FILE
+end
+
+-- Load the keep-set from disk once; CRLF-tolerant, one owner name or script prefix per line, blank lines skipped.
+--- @safety SAFE - a missing file yields an empty set (xfs.read_file returns nil).
+local function load_keep()
+    keep_loaded = true
+    local data = xfs.read_file(get_keep_path())
+    if not data then return end
+    for line in data:gmatch("[^\n]+") do
+        local entry = line:gsub("\r", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if entry ~= "" then keep_set[entry] = true end
+    end
+end
+
+-- Persist the keep-set, one entry per line, sorted for a stable diff.
+local function save_keep()
+    local lines = {}
+    for entry in pairs(keep_set) do lines[#lines + 1] = entry end
+    table.sort(lines)
+    xfs.write_file(get_keep_path(), table.concat(lines, "\n") .. "\n")
+end
+
+--- @return boolean whether a name is exempt from masking: a keep entry is a substring of its owner, or a prefix of its script file.
+--- @novalidate(code.find_in_loop, reason:"substring containment over a small user keep-set, not an equality lookup")
+function is_kept(name)
+    if not keep_loaded then load_keep() end
+    if not next(keep_set) then return false end
+    local owner = (name:sub(1, #OWNER_MOD) == OWNER_MOD or name:sub(1, #OWNER_LOOSE) == OWNER_LOOSE)
+        and name or get_owner(name)
+    local owner_lower = owner:lower()
+    local script_file = get_script_id(name)
+    local script_lower = script_file and script_file:lower() or nil
+    for entry in pairs(keep_set) do
+        local needle = entry:lower()
+        if owner_lower:find(needle, 1, true) then return true end
+        if script_lower and script_lower:sub(1, #needle) == needle then return true end
+    end
+    return false
+end
+
+--- Add an owner name or script prefix to the keep-set and persist it; blanks and duplicates are ignored.
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
+function add_keep(entry)
+    entry = tostring(entry or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if entry == "" then return end
+    if not keep_loaded then load_keep() end
+    keep_set[entry] = true
+    mask_cache = {}
+    save_keep()
+end
+
+--- Remove an entry from the keep-set and persist it.
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
+function remove_keep(entry)
+    if not keep_loaded then load_keep() end
+    keep_set[tostring(entry or "")] = nil
+    mask_cache = {}
+    save_keep()
+end
+
+--- @return table the sorted keep-set entries.
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
+function get_keep_list()
+    if not keep_loaded then load_keep() end
+    local list = {}
+    for entry in pairs(keep_set) do list[#list + 1] = entry end
+    table.sort(list)
+    return list
+end
+
+--- @return string the print name for a view key: real when anon is off, baseline, or kept; else a mod-family letter substitution.
+--- Only mod-owned names (mod:/loose:) obfuscate. Separators, digits, the extension, the mod:/loose: prefix, a :line suffix, and non-ASCII bytes stay literal.
+function compute_masked_name(name)
+    if not settings.anon then return name end
+    local prefix, body = "", name
+    if name:sub(1, #OWNER_MOD) == OWNER_MOD then prefix, body = OWNER_MOD, name:sub(#OWNER_MOD + 1)
+    elseif name:sub(1, #OWNER_LOOSE) == OWNER_LOOSE then prefix, body = OWNER_LOOSE, name:sub(#OWNER_LOOSE + 1)
+    else
+        local owner = get_owner(name)
+        if owner:sub(1, #OWNER_MOD) ~= OWNER_MOD and owner:sub(1, #OWNER_LOOSE) ~= OWNER_LOOSE then return name end
+    end
+    if is_kept(name) then return name end
+    local cached = mask_cache[name]
+    if cached then return cached end
+    local suffix = ""
+    local ext_at = body:find("%.script:?%-?%d*$") or body:find("%.lua:?%-?%d*$")
+    if ext_at then suffix = body:sub(ext_at); body = body:sub(1, ext_at - 1) end
+    local seed = 5381
+    for i = 1, #name do seed = (seed * 33 + name:byte(i)) % 2147483648 end
+    local out = {}
+    for i = 1, #body do
+        local char = body:sub(i, i)
+        local byte = body:byte(i)
+        if byte > ASCII_MAX or not char:match("%a") then
+            out[i] = char
+        else
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            local lower = char:lower()
+            local family = VOWEL_SET[lower] and VOWELS or CONSONANTS
+            local pick = family:sub((seed % #family) + 1, (seed % #family) + 1)
+            out[i] = char:match("%u") and pick:upper() or pick
+        end
+    end
+    local result = prefix .. table.concat(out) .. suffix
+    mask_cache[name] = result
+    return result
+end
+
+--- @return string the owner label (from get_owner_label) with only the owner segment masked; the "(override: file)" annotation stays literal.
+function get_masked_label(key)
+    local label = get_owner_label(key)
+    if not settings.anon then return label end
+    local owner = get_owner(key)
+    return compute_masked_name(owner) .. label:sub(#owner + 1)
 end
 
 -- Reduce a frame to name@<scripts-relative path>:line; a frame with no file token returns unchanged. Global so jitprofiler_report can normalise frames.

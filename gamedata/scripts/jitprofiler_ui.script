@@ -114,6 +114,7 @@ local CB_RESULTS = "results"
 local CB_BROWSE = "browse"
 local cb_view = CB_RESULTS
 local cb_search = ""
+local keep_input = ""
 local tree_cache
 local mono_ok = false
 local mono_checked = false
@@ -129,14 +130,19 @@ end
 local function push_mono() if mono_ok then ImGui.PushFont("jf_mono") end end
 local function pop_mono() if mono_ok then ImGui.PopFont() end end
 
+-- One line of text in a pushed colour, popped after: the panel's most repeated idiom.
+local function render_colored_text(color, text)
+    ImGui.PushStyleColor(ImGuiCol.Text, color)
+    ImGui.Text(text)
+    ImGui.PopStyleColor(1)
+end
+
 -- A right-aligned white number cell: push the cursor to the cell's right edge minus the text width so magnitude lines up as a column.
 local function render_num(text)
     ImGui.TableNextColumn()
     local pad = ImGui.GetContentRegionAvail().x - ImGui.CalcTextSize(text).x
     if pad > 0 then ImGui.SetCursorPosX(ImGui.GetCursorPosX() + pad) end
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)
-    ImGui.Text(text)
-    ImGui.PopStyleColor(1)
+    render_colored_text(COLOR_TEXT, text)
 end
 
 -- Stable per-mod colour from a name hash, bright enough to read on the dark background.
@@ -253,7 +259,7 @@ local function render_sort_header(label, col, right) render_header(samp_sort, "h
 
 local function render_tooltip(cap, key, owner, weight)
     if not ImGui.IsItemHovered() then return end
-    ImGui.SetTooltip(format("%s\n%s\nresolve: %s\n%s", key, owner,
+    ImGui.SetTooltip(format("%s\n%s\nresolve: %s\n%s", JitProfiler.compute_masked_name(key), JitProfiler.compute_masked_name(owner),
         JitProfiler.get_owner_method(key), format_weight(cap.kind, weight)))
 end
 
@@ -329,10 +335,8 @@ local function render_bymod_row(cap, entry)
     local total_pct = total > 0 and 100 * total_weight / total or 0
     ImGui.TableNextRow()
     ImGui.TableNextColumn()
-    ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
-    ImGui.Text(owner)
-    ImGui.PopStyleColor(1)
-    if ImGui.IsItemHovered() then ImGui.SetTooltip(format("%s\n%s", owner, format_weight(cap.kind, total_weight))) end
+    render_colored_text(get_mod_color(owner), JitProfiler.compute_masked_name(owner))
+    if ImGui.IsItemHovered() then ImGui.SetTooltip(format("%s\n%s", JitProfiler.compute_masked_name(owner), format_weight(cap.kind, total_weight))) end
     ImGui.TableNextColumn()
     render_bar(own_pct)
     ImGui.TableNextColumn()
@@ -365,17 +369,15 @@ local function render_view_row(cap, view, entry)
     ImGui.TableNextColumn()
     if view.frame_keyed then
         local is_sel = (selected_frame == key)
-        if ImGui.Selectable(key .. "##row", is_sel, SPAN_ALL, VZERO) then
+        if ImGui.Selectable(JitProfiler.compute_masked_name(key) .. "##" .. key, is_sel, SPAN_ALL, VZERO) then
             select_frame(cap, is_sel and nil or key)
         end
     else
-        ImGui.Text(key)
+        ImGui.Text(JitProfiler.compute_masked_name(key))
     end
     render_tooltip(cap, key, owner, weight)
     ImGui.TableNextColumn()
-    ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
-    ImGui.Text(JitProfiler.get_owner_label(key))
-    ImGui.PopStyleColor(1)
+    render_colored_text(get_mod_color(owner), JitProfiler.get_masked_label(key))
     ImGui.TableNextColumn()
     render_bar(pct)
     render_num(format("%10s", format_weight(cap.kind, weight)))
@@ -386,9 +388,7 @@ local function render_view_table(cap, view)
     local hint = (view.pct_label == PCT_OWN)
         and "Own % = innermost frame only, sums to ~100%"
         or "Total % = on the stack anywhere; rows overlap, so it exceeds 100%"
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
-    ImGui.Text(hint)
-    ImGui.PopStyleColor(1)
+    render_colored_text(COLOR_DIM, hint)
     if not ImGui.BeginTable("jf_view", 4, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Frame", 0, 260, 0)
     ImGui.TableSetupColumn("Mod", 0, 150, 0)
@@ -418,12 +418,10 @@ local function render_byscript_row(cap, entry)
         if on then JitProfiler.remove_target(key) else JitProfiler.add_target(key) end
     end
     ImGui.SameLine()
-    ImGui.Text(key)
+    ImGui.Text(JitProfiler.compute_masked_name(key))
     render_tooltip(cap, key, owner, total_weight)
     ImGui.TableNextColumn()
-    ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
-    ImGui.Text(JitProfiler.get_owner_label(key))
-    ImGui.PopStyleColor(1)
+    render_colored_text(get_mod_color(owner), JitProfiler.get_masked_label(key))
     ImGui.TableNextColumn()
     render_bar(own_pct)
     ImGui.TableNextColumn()
@@ -434,9 +432,7 @@ end
 -- BY SCRIPT: Own and Total side by side like BY MOD, each column sortable, with the per-row instrument button kept.
 local function render_byscript_table(cap)
     local entries = get_rows(cap)
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
-    ImGui.Text("Own % = innermost frame (sums ~100%);  Total % = on the stack anywhere (exceeds 100%)")
-    ImGui.PopStyleColor(1)
+    render_colored_text(COLOR_DIM, "Own % = innermost frame (sums ~100%);  Total % = on the stack anywhere (exceeds 100%)")
     if not ImGui.BeginTable("jf_byscript", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Function", 0, 210, 0)
     ImGui.TableSetupColumn("Mod", 0, 110, 0)
@@ -461,14 +457,12 @@ local function render_table(cap)
 end
 
 local function render_ranked(title, list, total)
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
-    ImGui.Text(title)
-    ImGui.PopStyleColor(1)
+    render_colored_text(COLOR_DIM, title)
     if #list == 0 then ImGui.Text("  (none)"); return end
     local shown = math.min(#list, TOP_NEIGHBORS)
     for i = 1, shown do
         local pct = total > 0 and 100 * list[i][2] / total or 0
-        ImGui.Text(format("  %5.1f%%  %s", pct, list[i][1]))
+        ImGui.Text(format("  %5.1f%%  %s", pct, JitProfiler.compute_masked_name(list[i][1])))
     end
 end
 
@@ -476,7 +470,7 @@ end
 local function render_neighbors(cap)
     if not (selected_frame and selected_neighbors) then return end
     ImGui.Separator()
-    ImGui.Text("SELECTED  " .. selected_frame)
+    ImGui.Text("SELECTED  " .. JitProfiler.compute_masked_name(selected_frame))
     render_ranked("CALLERS (toward root)", selected_neighbors.callers, cap.total)
     render_ranked("CALLEES (toward leaf)", selected_neighbors.callees, cap.total)
 end
@@ -484,9 +478,8 @@ end
 local function render_vmstate_bar(state, weight, total)
     if weight <= 0 then return end
     local frac = weight / total
-    ImGui.PushStyleColor(ImGuiCol.Text, state.color)
-    ImGui.Text(format("%-12s", state.label))
-    ImGui.PopStyleColor(1)
+    local label_text = format("%-12s", state.label)
+    render_colored_text(state.color, label_text)
     ImGui.SameLine(120)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, state.color)
     ImGui.ProgressBar(frac, VMBAR_SIZE, "")
@@ -509,16 +502,13 @@ end
 local function render_engine_entry(cap)
     local list = cap.engine_entry
     if not list or #list == 0 then return end
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
-    ImGui.Text("ENGINE-C ENTRY POINTS  (Lua call sites driving engine time; Optick targets)")
-    ImGui.PopStyleColor(1)
+    render_colored_text(COLOR_DIM, "ENGINE-C ENTRY POINTS  (Lua call sites driving engine time; Optick targets)")
     local total = cap.total
     for i = 1, math.min(#list, TOP_NEIGHBORS) do
         local key, weight = list[i][1], list[i][2]
         local pct = total > 0 and 100 * weight / total or 0
-        ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(JitProfiler.get_owner(key)))
-        ImGui.Text(format("  %5.1f%%  %s", pct, key))
-        ImGui.PopStyleColor(1)
+        local entry_text = format("  %5.1f%%  %s", pct, JitProfiler.compute_masked_name(key))
+        render_colored_text(get_mod_color(JitProfiler.get_owner(key)), entry_text)
     end
 end
 
@@ -601,6 +591,34 @@ local function render_settings()
     render_int_setting("duration", "Auto-stop after (s)", 0, 600)
 end
 
+-- Anonymize: the session toggle plus the persisted keep-set editor; masking is global, so it sits in the footer, not the sampling controls.
+local function render_anonymize()
+    if not ImGui.CollapsingHeader("Anonymize") then return end
+    local anon = JitProfiler.get_setting("anon") and true or false
+    local _, new_anon = ImGui.Checkbox("Anonymize names", anon)
+    if new_anon ~= anon then JitProfiler.set_setting("anon", new_anon) end
+    render_colored_text(COLOR_DIM, "Masks mod and mod-owned script names in the panel and every export; kept names stay readable.")
+    ImGui.SetNextItemWidth(FILTER_W)
+    local new_input = ImGui.InputText("##keep", keep_input, 64)
+    if new_input then keep_input = new_input end
+    ImGui.SameLine()
+    if ImGui.Button("Keep##add", VZERO) then
+        JitProfiler.add_keep(keep_input)
+        keep_input = ""
+    end
+    local list = JitProfiler.get_keep_list()
+    if #list == 0 then
+        render_colored_text(COLOR_DIM, "nothing kept; every mod name masks when Anonymize is on")
+        return
+    end
+    for i = 1, #list do
+        local entry = list[i]
+        if ImGui.Button("x##keep" .. entry, VZERO) then JitProfiler.remove_keep(entry) end
+        ImGui.SameLine()
+        ImGui.Text(entry)
+    end
+end
+
 -- Depth, drop, and resolver warnings for a retained capture.
 local function render_tab_health(cap)
     local at_cap = (cap.total > 0) and 100 * (cap.meta.clipped or 0) / cap.total or 0
@@ -676,7 +694,7 @@ local function render_tree_item(name)
         if on then JitProfiler.remove_target(name) else JitProfiler.add_target(name) end
     end
     ImGui.SameLine()
-    ImGui.Text(name)
+    ImGui.Text(JitProfiler.compute_masked_name(name))
 end
 
 -- Substring match of a script name against the search needle; an empty needle matches all.
@@ -686,7 +704,7 @@ end
 
 -- One mod group: the header carries a +all that instruments the whole mod, and each script row keeps its own +/-.
 local function render_tree_group(group, needle)
-    local open = ImGui.CollapsingHeader(group.owner .. "##g")
+    local open = ImGui.CollapsingHeader(JitProfiler.compute_masked_name(group.owner) .. "##g" .. group.owner)
     ImGui.SameLine()
     if ImGui.Button("+all##m" .. group.owner, VZERO) then JitProfiler.add_mod_targets(group.owner) end
     if not open then return end
@@ -716,14 +734,14 @@ local function render_scan_row(cap, row)
     ImGui.TableNextColumn()
     ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
     local is_sel = (scan_selected == row.key)
-    if ImGui.Selectable(row.key .. "##s", is_sel, 0, VZERO) then
+    if ImGui.Selectable(JitProfiler.compute_masked_name(row.key) .. "##" .. row.key, is_sel, 0, VZERO) then
         scan_selected = is_sel and nil or row.key
         scan_neighbors_data = scan_selected and jitprofiler_report.compute_scan_neighbors(cap, scan_selected) or nil
     end
     ImGui.PopStyleColor(1)
     if ImGui.IsItemHovered() then
         ImGui.SetTooltip(format("%s\navg %.1f us   min %.1f us   max %.1f us",
-            owner, row.calls > 0 and row.self_us / row.calls or 0, row.min_us or 0, row.max_us or 0))
+            JitProfiler.compute_masked_name(owner), row.calls > 0 and row.self_us / row.calls or 0, row.min_us or 0, row.max_us or 0))
     end
     ImGui.TableNextColumn()
     render_bar(own_pct)
@@ -768,12 +786,10 @@ end
 
 -- One ranked list for the scan drill-down: time in ms and call count per neighbor.
 local function render_scan_ranked(title, list)
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
-    ImGui.Text(title)
-    ImGui.PopStyleColor(1)
+    render_colored_text(COLOR_DIM, title)
     if not list or #list == 0 then ImGui.Text("  (none)"); return end
     for i = 1, math.min(#list, TOP_NEIGHBORS) do
-        ImGui.Text(format("  %8.2f ms  (%d)  %s", list[i][2] / 1000, list[i][3], list[i][1]))
+        ImGui.Text(format("  %8.2f ms  (%d)  %s", list[i][2] / 1000, list[i][3], JitProfiler.compute_masked_name(list[i][1])))
     end
 end
 
@@ -781,7 +797,7 @@ end
 local function render_scan_neighbors()
     if not (scan_selected and scan_neighbors_data) then return end
     ImGui.Separator()
-    ImGui.Text("SELECTED  " .. scan_selected)
+    ImGui.Text("SELECTED  " .. JitProfiler.compute_masked_name(scan_selected))
     render_scan_ranked("CALLERS (who called it)", scan_neighbors_data.callers)
     render_scan_ranked("CALLEES (where its time went)", scan_neighbors_data.callees)
 end
@@ -819,23 +835,16 @@ local function render_status_line()
             or (JitProfiler.is_scan_active() and "INSTRUMENT" or "CALLBACKS"))
         local line = "REC  " .. mode .. "  " .. format_clock(prog.elapsed)
         if prog.limit > 0 then line = line .. " / " .. format_clock(prog.limit) end
-        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_RUN)
-        ImGui.Text(line)
-        ImGui.PopStyleColor(1)
+        render_colored_text(COLOR_RUN, line)
     end
     if active_tab == KIND_CPU and is_pgc_on() then
-        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_WARN)
-        ImGui.Text("Parallel GC on: CPU GC% inflated. Uncheck Parallel GC below for a clean read.")
-        ImGui.PopStyleColor(1)
+        render_colored_text(COLOR_WARN, "Parallel GC on: CPU GC% inflated. Uncheck Parallel GC below for a clean read.")
     end
     if JitProfiler.is_mem_active() then
-        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_WARN)
-        ImGui.Text("JIT off for exact bytes: FPS drops HARD on a heavy modpack. Accuracy stays 100%; capture short.")
-        ImGui.PopStyleColor(1)
+        render_colored_text(COLOR_WARN, "JIT off for exact bytes: FPS drops HARD on a heavy modpack. Accuracy stays 100%; capture short.")
     elseif JitProfiler.is_scan_active() or JitProfiler.is_callbacks_active() then
-        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
-        ImGui.Text("Wrapping adds per-call cost: FPS drops while capturing, accuracy stays 100%.")
-        ImGui.PopStyleColor(1)
+        local note = "Wrapping adds per-call cost: FPS drops while capturing, accuracy stays 100%."
+        render_colored_text(COLOR_DIM, note)
     end
 end
 
@@ -880,7 +889,7 @@ local function render_selected()
         local name = targets[i]
         if ImGui.Button("x##sel" .. name, VZERO) then JitProfiler.remove_target(name) end
         ImGui.SameLine()
-        ImGui.Text(name)
+        ImGui.Text(JitProfiler.compute_masked_name(name))
     end
 end
 
@@ -914,9 +923,8 @@ local function render_instrument()
     end
     if wrapped > OVERHEAD_WARN then
         ImGui.SameLine()
-        ImGui.PushStyleColor(ImGuiCol.Text, VMSTATE[4].color)
-        ImGui.Text("large set, expect frame cost")
-        ImGui.PopStyleColor(1)
+        local note = "large set, expect frame cost"
+        render_colored_text(VMSTATE[4].color, note)
     end
     ImGui.Separator()
     inst_view = render_view_tab(inst_view, INST_SELECTED, "SELECTED", "##iv")
@@ -940,12 +948,10 @@ local function render_callbacks_row(cap, row)
     ImGui.TableNextColumn()
     ImGui.Text(row.callback)
     ImGui.TableNextColumn()
-    ImGui.PushStyleColor(ImGuiCol.Text, get_mod_color(owner))
-    ImGui.Text(row.handler)
-    ImGui.PopStyleColor(1)
+    render_colored_text(get_mod_color(owner), JitProfiler.compute_masked_name(row.handler))
     if ImGui.IsItemHovered() then
         ImGui.SetTooltip(format("%s\navg %.1f us   min %.1f us   max %.1f us",
-            owner, row.calls > 0 and row.self_us / row.calls or 0, row.min_us or 0, row.max_us or 0))
+            JitProfiler.compute_masked_name(owner), row.calls > 0 and row.self_us / row.calls or 0, row.min_us or 0, row.max_us or 0))
     end
     render_num(format("%8.2f", row.self_us / 1000))
     render_num(format("%8.2f", row.total_us / 1000))
@@ -1067,6 +1073,7 @@ local function render_panel()
         ImGui.Spacing()
         ImGui.Separator()
         render_settings()
+        render_anonymize()
         pop_mono()
     end
     ImGui.End()

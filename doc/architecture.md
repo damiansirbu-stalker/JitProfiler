@@ -104,10 +104,25 @@ CPU adds the VM-state split and the engine-C entry points, the Lua call sites th
 Each capture also reports the deepest stack it saw and how often a stack reached the depth cap, so an under-counted Total is visible.
 The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) from the owned views, leaving only mods.
 
+## Anonymize
+A shared capture would print every third-party mod name beside its cost, which no author can be asked to publish.
+The Anonymize toggle masks them at the display.
+`compute_masked_name` substitutes each letter for another of its own family, seeded by a hash of the whole name.
+The shape stays pronounceable, and the mapping is stable across the panel, the flamegraph, and the json.
+It is print-only. The real name still drives owner resolution, the sort, the colour, and the instrumentation set.
+Only the rendered string changes, so nothing downstream reads a masked key.
+Only mod-owned names obfuscate.
+Baseline owners, the `[C]` `[GC]` `[JIT]` markers, separators, digits, the extension, and a line suffix stay literal, so the report stays readable and the code locations stay honest.
+The keep-set exempts the names an author keeps readable, matched as an owner substring or a script-name prefix.
+It is the one persisted piece of panel state, a newline file at the writable appdata root edited from the Anonymize footer, empty by default.
+The toggle rewrites the live panel and every export together, so a screenshot, a text report, and the json are safe at the source.
+
 ## Output
 `appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
 The instrumentation and callbacks modes write `jitprofiler_inst_<timestamp>.txt` and `jitprofiler_callbacks_<timestamp>.txt`.
 `jitprofiler_{cpu,mem}[_snapN]_<timestamp>.folded` is the SpeedScope collapsed-stacks flamegraph.
+`jitprofiler_<kind>_<timestamp>.json` is the machine-readable capture, the ranked views plus meta.
+A minimal in-module writer encodes it, because Anomaly ships no JSON library. It honours the Anonymize toggle at write time.
 Every text report is self-contained.
 The sampling reports close with a call graph (each top leaf with its callers toward root and callees toward leaf).
 The instrumentation and callbacks reports carry per-call avg, min, and max, so nothing the panel shows lives only in the panel.
@@ -146,8 +161,8 @@ Measured: unanchored, the `actor_on_update` heartbeat and the console entry poin
 ## Settings and MCM
 Capture settings live in the panel, not in MCM.
 `JitProfiler.script` keeps them as session state anchored to `_G`, edited from the panel through `get_setting` and `set_setting`.
-They cover interval, depth, the auto-snapshot threshold, auto-stop, and fold.
-A console argument to `start_cpu` or `start_alloc` overrides one capture, and nothing is persisted.
+They cover interval, depth, the auto-snapshot threshold, auto-stop, fold, and the Anonymize toggle.
+A console argument to `start_cpu` or `start_alloc` overrides one capture. Only the Anonymize keep-set persists (see Anonymize). The rest is session state.
 An auto-stop duration above 0 ends a running capture from the `update_capture` heartbeat and writes its report, so a forgotten allocation capture never holds the JIT off past the limit.
 
 `jf_mcm.script` is an about page through `xmcm.create_config`.

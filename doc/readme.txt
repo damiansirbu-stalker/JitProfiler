@@ -99,6 +99,11 @@ Its BROWSE subtab lists every registered callback with a picker toggle. Picked c
 On the multi-thread exe a Parallel GC toggle gives a clean CPU garbage-collector read.
 A small corner banner shows while a capture runs.
 
+Share a capture without naming other people's mods:
+The panel footer carries an Anonymize toggle.
+It masks every third-party mod and script name in the panel and in every export, so a screenshot, a report, or the json never shows another author's mod beside a cost.
+A keep-list edited in the same footer exempts the names you want readable, matched by owner or script prefix. It persists across sessions and defaults to empty, so each author keeps only their own.
+
 Configuration (MCM):
 The JitProfiler MCM page holds the capture defaults. These are the sample interval and stack depth, plus the auto-snapshot threshold and the report fold.
 The panel and the console commands use these defaults, and a console argument to start_cpu or start_alloc overrides the matching value for that capture.
@@ -112,7 +117,9 @@ jitprofiler_mem_<timestamp>.txt     ranked text report
 jitprofiler_mem_<timestamp>.folded  flamegraph
 jitprofiler_inst_<timestamp>.txt    instrumentation report (own, total, avg, min, max, per-mod subtotals, call graph)
 jitprofiler_callbacks_<timestamp>.txt  callbacks report (per handler: callback, owner, own, total; per-callback rollup)
+jitprofiler_<kind>_<timestamp>.json    machine-readable capture (ranked views and meta)
 ```
+Every export honours the Anonymize toggle at the moment it is written, so a masked capture is safe to share as is.
 
 The report opens with a VM-state split, how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.
 A GC line follows with the heap, the live estimate, the debt, and the collections per second.
