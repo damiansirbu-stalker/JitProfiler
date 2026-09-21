@@ -2,9 +2,6 @@
 
 defaults = {
     show_imgui = true,
-    publish_repo = "",
-    publish_branch = "",
-    publish_token = "",
 }
 
 local RegisterScriptCallback = RegisterScriptCallback
@@ -27,12 +24,6 @@ function on_mcm_load()
             { id = "speedscope", type = "desc", text = "ui_mcm_jf_speedscope" },
             { id = "div_toggle", type = "line" },
             { id = "show_imgui", type = "check", val = 1, def = true },
-            { id = "div_publish", type = "line" },
-            { id = "publish_title", type = "title", text = "ui_mcm_jf_publish" },
-            { id = "publish_info", type = "desc", text = "ui_mcm_jf_publish_desc" },
-            { id = "publish_repo", type = "input", val = 0, def = "" },
-            { id = "publish_branch", type = "input", val = 0, def = "" },
-            { id = "publish_token", type = "input", val = 0, def = "" },
             { id = "div_footer", type = "line" },
             { id = "platform", type = "desc", text = "ui_mcm_xmcm_footer",
                 ui_hook_functor = { _jitprofiler_init.get_platform_functor() }, clr = {255, 212, 201, 168} },

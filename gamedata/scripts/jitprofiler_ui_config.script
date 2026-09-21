@@ -1,4 +1,4 @@
---- jitprofiler_ui_config: the JitProfiler panel footer -- capture Settings, the Anonymize keep-set editor, and Publish to the web.
+--- jitprofiler_ui_config: the JitProfiler footer Settings and the Publish tab -- the Anonymize keep-set editor and the session publish config.
 
 local ImGui, ImGuiCol = ImGui, ImGuiCol
 local floor, tostring = math.floor, tostring
@@ -66,11 +66,22 @@ local function render_anonymize()
     end
 end
 
--- Publish the retained captures as one masked web page to the GitHub repo set in MCM; disabled until repo and token exist.
-local function render_publish()
-    ImGui.Separator()
-    local cfg = jf_mcm and jf_mcm.cfg
-    local ready = cfg and cfg.publish_repo ~= "" and cfg.publish_token ~= ""
+-- The session publish config: repo, branch, and token as text fields, held for the session only and never persisted.
+local function render_publish_config()
+    ImGui.SetNextItemWidth(FILTER_W)
+    local repo = ImGui.InputText("repo (owner/name)##pubrepo", JitProfiler.get_setting("publish_repo"), 128)
+    if repo then JitProfiler.set_setting("publish_repo", repo) end
+    ImGui.SetNextItemWidth(FILTER_W)
+    local branch = ImGui.InputText("branch (blank = default)##pubbranch", JitProfiler.get_setting("publish_branch"), 64)
+    if branch then JitProfiler.set_setting("publish_branch", branch) end
+    ImGui.SetNextItemWidth(FILTER_W)
+    local token = ImGui.InputText("token##pubtoken", JitProfiler.get_setting("publish_token"), 128)
+    if token then JitProfiler.set_setting("publish_token", token) end
+end
+
+-- Push the retained captures as one masked page to the configured repo; the button greys out until repo and token are set.
+local function render_publish_button()
+    local ready = JitProfiler.get_setting("publish_repo") ~= "" and JitProfiler.get_setting("publish_token") ~= ""
     if ready and ImGui.Button("Publish to web##pub", BTN_SIZE) then
         local res = JitProfiler.publish()
         publish_status = res.ok and "published to your GitHub page" or ("failed: " .. tostring(res.reason or res.code or "?"))
@@ -80,13 +91,20 @@ local function render_publish()
         ImGui.PopStyleColor(1)
     end
     ImGui.SameLine()
-    local hint = ready and (publish_status ~= "" and publish_status or "pushes a masked page to your GitHub") or "set repo and token in MCM"
+    local hint = ready and (publish_status ~= "" and publish_status or "pushes a masked page to your GitHub") or "set repo and token above"
     render_colored_text(COLOR_DIM, hint)
 end
 
---- Draw the panel footer: Settings, the Anonymize keep-set editor, then the always-visible Publish button.
+--- The Publish tab: the Anonymize mask and keep-set, the session repo/branch/token, then the Publish button.
+function render_publish_tab()
+    render_anonymize()
+    ImGui.Separator()
+    render_publish_config()
+    ImGui.Separator()
+    render_publish_button()
+end
+
+--- Draw the panel footer under the profiling tabs: the capture Settings.
 function render_footer()
     render_settings()
-    render_anonymize()
-    render_publish()
 end

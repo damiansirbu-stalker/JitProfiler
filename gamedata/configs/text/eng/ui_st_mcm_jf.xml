@@ -23,29 +23,4 @@
     <string id="ui_mcm_jf_show_imgui_desc">
         <text>Adds JitProfiler to the F11 ImGui menu bar. Off hides its panel and banner. The console commands still work.</text>
     </string>
-
-    <string id="ui_mcm_jf_publish">
-        <text>Publish to the web</text>
-    </string>
-    <string id="ui_mcm_jf_publish_desc">
-        <text>Turn a capture into a live web page on your own GitHub, in one click from the panel. The page shows the profiler view exactly as in game, hosted on your github.io, shareable by link. Set your repo and token here; the panel's Publish button does the rest. Every mod name on the published page is masked except the ones your keep-list matches, so your mods stay readable and other authors' names do not.</text>
-    </string>
-    <string id="ui_mcm_jf_publish_repo">
-        <text>GitHub repo (owner/name)</text>
-    </string>
-    <string id="ui_mcm_jf_publish_repo_desc">
-        <text>The GitHub Pages repo the page publishes to, written as owner/name.</text>
-    </string>
-    <string id="ui_mcm_jf_publish_branch">
-        <text>Branch</text>
-    </string>
-    <string id="ui_mcm_jf_publish_branch_desc">
-        <text>The branch to publish to. Blank uses the repo default.</text>
-    </string>
-    <string id="ui_mcm_jf_publish_token">
-        <text>GitHub token</text>
-    </string>
-    <string id="ui_mcm_jf_publish_token_desc">
-        <text>A personal access token scoped to contents write on that one repo. It is stored locally in your config and travels only to GitHub over HTTPS, never anywhere else.</text>
-    </string>
 </string_table>

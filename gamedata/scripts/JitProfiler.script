@@ -138,7 +138,8 @@ local keep_loaded = false
 local settings = rawget(_G, "__jitprofiler_settings")
 if not settings then
     settings = { interval = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH,
-                 auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false, anon = false }
+                 auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false, anon = false,
+                 publish_repo = "", publish_branch = "", publish_token = "" }
     rawset(_G, "__jitprofiler_settings", settings)
 end
 
@@ -818,8 +819,8 @@ end
 --- @safety SAFE - the token is staged to a temp file only for the push, then blanked; it never reaches the argv or a log.
 --- @return table { ok = boolean, code = number|nil, reason = string|nil } - reason names why a publish was refused
 function publish()
-    local cfg = jf_mcm and jf_mcm.cfg
-    if not (cfg and cfg.publish_repo ~= "" and cfg.publish_token ~= "") then return { ok = false, reason = "set repo and token in MCM" } end
+    local repo, branch, token = settings.publish_repo, settings.publish_branch, settings.publish_token
+    if not (repo ~= "" and token ~= "") then return { ok = false, reason = "set repo and token in the Publish tab" } end
     if type(xnet) ~= "table" or not xnet.push_github then return { ok = false, reason = "xnet unavailable" } end
     local captures, any = collect_captures()
     if not any then return { ok = false, reason = "no capture yet" } end
@@ -834,11 +835,11 @@ function publish()
     local page = template:gsub("/%*__JF_DATA__%*/ null", (json:gsub("%%", "%%%%")), 1)
     local base = xfs.resolve_path("$logs$", "") or ""
     local page_path, token_path = base .. "jitprofiler_page.html", base .. "jitprofiler_token.tmp"
-    if not (xfs.write_file(page_path, page) and xfs.write_file(token_path, cfg.publish_token)) then
+    if not (xfs.write_file(page_path, page) and xfs.write_file(token_path, token)) then
         return { ok = false, reason = "cannot stage the page" }
     end
-    local result = xnet.push_github({ repo = cfg.publish_repo,
-        branch = (cfg.publish_branch ~= "" and cfg.publish_branch) or nil,
+    local result = xnet.push_github({ repo = repo,
+        branch = (branch ~= "" and branch) or nil,
         path = "pages/jitprofiler.html", file = page_path, token_file = token_path, message = "JitProfiler capture" })
     xfs.write_file(token_path, "")
     return { ok = result.ok, code = result.code }

@@ -99,22 +99,23 @@ On the multi-thread exe a Parallel GC toggle gives a clean CPU garbage-collector
 A small corner banner shows while a capture runs.
 
 Share a capture without naming other people's mods:
-The panel footer carries an Anonymize toggle.
+The panel's Publish tab carries an Anonymize toggle.
 It masks every third-party mod and script name in the panel and in every export, so a screenshot, a report, or the json never shows another author's mod beside a cost.
-A keep-list edited in the same footer exempts the names you want readable, each entry a pattern matched against the owner or script name. It persists across sessions and defaults to empty, so each author keeps only their own.
+A keep-list edited in the same tab exempts the names you want readable, each entry a pattern matched against the owner or script name. It persists across sessions and defaults to empty, so each author keeps only their own.
 
 Publish to the web:
-Turn a capture into a live web page on your own GitHub in one click. Set your repo and a GitHub token in the MCM page, then press Publish in the panel footer.
+Turn a capture into a live web page on your own GitHub in one click. Set your repo and a GitHub token in the panel's Publish tab, then press Publish there.
 The page shows the profiler view exactly as in game, hosted on your github.io and shareable by a link.
 Nothing renders on my side, and no server sits in the middle. Your page is your own files on your own GitHub.
 On a published page, every mod name is masked except the ones your keep-list matches, so your own mods stay readable and other authors' names do not.
-Scope the token to that one repo. It is stored locally and travels only to GitHub over HTTPS.
+Scope the token to that one repo. It is held for the session only, never saved, and travels only to GitHub over HTTPS.
 No other Anomaly profiler publishes its results to the web from inside the game.
 
-Configuration (MCM):
-The JitProfiler MCM page holds the capture defaults. These are the sample interval and stack depth, plus the auto-snapshot threshold and the report fold.
-The panel and the console commands use these defaults, and a console argument to start_cpu or start_alloc overrides the matching value for that capture.
-The MCM also has an auto-stop duration. Set it above 0 and a running capture stops itself after that many seconds, a safety limit for the allocation profile.
+Configuration:
+The panel's Settings section holds the sample interval, stack depth, the auto-snapshot threshold, and an auto-stop duration.
+The panel and the console commands use these, and a console argument to start_cpu or start_alloc overrides the matching value for that capture.
+Set the auto-stop above 0 and a running capture stops itself after that many seconds, a safety limit for the allocation profile.
+The MCM page carries only the ImGui overlay toggle.
 
 The reports go to appdata/logs/:
 ```

@@ -114,16 +114,16 @@ Only the rendered string changes, so nothing downstream reads a masked key.
 Only mod-owned names obfuscate.
 Baseline owners, the `[C]` `[GC]` `[JIT]` markers, separators, digits, the extension, and a line suffix stay literal, so the report stays readable and the code locations stay honest.
 The keep-set exempts the names an author keeps readable, each entry a Lua pattern matched against the owner name or the script file.
-It is the one persisted piece of panel state, a newline file at the writable appdata root edited from the Anonymize footer, empty by default.
+It is the one persisted piece of panel state, a newline file at the writable appdata root edited from the Publish tab, empty by default.
 The toggle rewrites the live panel and every export together, so a screenshot, a text report, and the json are safe at the source.
 
 ## Publish
-A capture becomes a live web page on your own GitHub, in one click from the panel footer.
+A capture becomes a live web page on your own GitHub, in one click from the panel's Publish tab.
 JitProfiler writes the retained captures as one JSON and injects it into a shipped viewer page.
 It hands the result to xlibs `xnet`, which commits it to the configured repo as pages/jitprofiler.html over HTTPS.
 The viewer is a static page that draws the in-game panel from the JSON in the browser, so the shared page reads exactly like the tool.
 JitProfiler forces the mask on the published copy regardless of the live toggle. Every mod name is masked except the ones the keep-list matches, so keeping only your own names leaves every other author's name masked.
-The token, repo, and branch live in MCM. The Publish button stays disabled until the repo and token are set.
+The token, repo, and branch are session fields in the Publish tab, never persisted. The Publish button stays disabled until the repo and token are set.
 `xnet` is xlibs's native companion, a zero-dependency Go exe launched over a LuaJIT FFI CreateProcess, because the script VM has no HTTP of its own.
 It ships with xlibs, and the token travels in a file, never on the command line.
 No other Anomaly profiler puts its results on the web from inside the game.

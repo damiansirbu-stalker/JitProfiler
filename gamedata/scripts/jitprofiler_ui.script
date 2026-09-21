@@ -31,6 +31,7 @@ local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
 local KIND_SCAN = "scan"
 local KIND_CALLBACKS = "callbacks"
+local KIND_PUBLISH = "publish"
 local VIEW_BY_MOD = "by_mod"
 local VIEW_BY_SCRIPT = "by_script"
 local SORT_NAME = "name"
@@ -1001,6 +1002,22 @@ local function render_callbacks()
     end
 end
 
+-- The profiling view under a capture tab: status line, the active kind's body, then the Settings footer.
+local function render_active_view()
+    render_status_line()
+    ImGui.Separator()
+    if active_tab == KIND_SCAN then
+        render_instrument()
+    elseif active_tab == KIND_CALLBACKS then
+        render_callbacks()
+    else
+        render_sampling_body()
+    end
+    ImGui.Spacing()
+    ImGui.Separator()
+    jitprofiler_ui_config.render_footer()
+end
+
 local function render_panel()
     if not (panel_open and is_overlay_enabled()) then return end
     ImGui.SetNextWindowSize(WINDOW_SIZE, ImGuiCond.FirstUseEver)
@@ -1019,18 +1036,13 @@ local function render_panel()
         render_tab_button(KIND_SCAN, "INSTRUMENT")
         ImGui.SameLine()
         render_tab_button(KIND_CALLBACKS, "CALLBACKS")
-        render_status_line()
-        ImGui.Separator()
-        if active_tab == KIND_SCAN then
-            render_instrument()
-        elseif active_tab == KIND_CALLBACKS then
-            render_callbacks()
+        ImGui.SameLine()
+        render_tab_button(KIND_PUBLISH, "PUBLISH")
+        if active_tab == KIND_PUBLISH then
+            jitprofiler_ui_config.render_publish_tab()
         else
-            render_sampling_body()
+            render_active_view()
         end
-        ImGui.Spacing()
-        ImGui.Separator()
-        jitprofiler_ui_config.render_footer()
         pop_mono()
     end
     ImGui.End()
