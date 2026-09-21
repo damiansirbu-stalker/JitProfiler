@@ -52,6 +52,13 @@ local function render_anonymize()
     render_colored_text(COLOR_DIM, "Masks mod and mod-owned script names in the panel and every export; kept names stay readable.")
     ImGui.SetNextItemWidth(FILTER_W)
     local new_input = ImGui.InputText("##keep", keep_input, 64)
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip(
+            "Keep pattern: a Lua pattern matched on the owner or script name, case-insensitive.\n" ..
+            "A match stays readable; every other mod name masks.\n" ..
+            "^ap_ keeps AlifePlus scripts.   alife keeps every Alife mod.\n" ..
+            "Not a glob -- * is not a wildcard.")
+    end
     if new_input then keep_input = new_input end
     ImGui.SameLine()
     if ImGui.Button("Keep##add", VZERO) then
