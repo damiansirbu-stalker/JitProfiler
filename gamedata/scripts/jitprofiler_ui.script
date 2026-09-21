@@ -98,10 +98,10 @@ local view_index = 2
 local fold_baseline = false
 local filter_text = ""
 local samp_sort = { field = SORT_TOTAL, asc = false }
-local scan_srt = { field = "self_us", asc = false }
+local scan_sort = { field = "self_us", asc = false }
 local scan_selected
 local scan_neighbors_data
-local cb_srt = { field = "self_us", asc = false }
+local cb_sort = { field = "self_us", asc = false }
 local selected_frame = nil
 local selected_neighbors = nil
 local rows_sig, rows_cache
@@ -271,7 +271,7 @@ end
 -- The Start/Stop button inside the open CPU or MEM tab; grays out while another capture runs, since the three are mutually exclusive.
 local function render_capture_button(kind)
     local this_on = (kind == KIND_CPU) and JitProfiler.is_cpu_active() or JitProfiler.is_mem_active()
-    local other_on = ((kind == KIND_CPU) and JitProfiler.is_mem_active() or JitProfiler.is_cpu_active()) or JitProfiler.is_scan_active()
+    local other_on = ((kind == KIND_CPU) and JitProfiler.is_mem_active() or JitProfiler.is_cpu_active()) or JitProfiler.is_scan_active() or JitProfiler.is_callbacks_active()
     local label = this_on and "Stop" or "Start"
     if other_on and not this_on then
         ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
@@ -721,11 +721,11 @@ local function sort_capture_rows(state, rows, stamp)
     end)
 end
 
-local function render_scan_header(label, field, right) render_header(scan_srt, "sh", label, field, right) end
+local function render_scan_header(label, field, right) render_header(scan_sort, "sh", label, field, right) end
 
 -- The scan results: each wrapped function with an own-share bar, sortable by any column header.
 local function render_scan_table(cap)
-    sort_capture_rows(scan_srt, cap.rows or {}, cap.meta.stamp)
+    sort_capture_rows(scan_sort, cap.rows or {}, cap.meta.stamp)
     if not ImGui.BeginTable("jf_scan", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Function", 0, 240, 0)
     ImGui.TableSetupColumn("Own %", 0, 130, 0)
@@ -917,11 +917,11 @@ local function render_callbacks_row(cap, row)
     render_num(format("%8d", row.calls))
 end
 
-local function render_cb_header(label, field, right) render_header(cb_srt, "cbh", label, field, right) end
+local function render_cb_header(label, field, right) render_header(cb_sort, "cbh", label, field, right) end
 
 -- The callbacks results: each timed handler under its callback, sortable by any column.
 local function render_callbacks_table(cap)
-    sort_capture_rows(cb_srt, cap.rows or {}, cap.meta.stamp)
+    sort_capture_rows(cb_sort, cap.rows or {}, cap.meta.stamp)
     if not ImGui.BeginTable("jf_cb", 5, TABLE_FLAGS, TABLE_SIZE, 0) then return end
     ImGui.TableSetupColumn("Callback", 0, 170, 0)
     ImGui.TableSetupColumn("Handler", 0, 210, 0)

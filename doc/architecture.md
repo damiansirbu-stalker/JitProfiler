@@ -109,6 +109,8 @@ A shared capture would print every third-party mod name beside its cost, which n
 The Anonymize toggle masks them at the display.
 `compute_masked_name` substitutes each letter for another of its own family, seeded by a hash of the whole name.
 The shape stays pronounceable, and the mapping is stable across the panel, the flamegraph, and the json.
+The masking is obfuscation. The substitution is deterministic and ships with the mod, so a determined reader can run a known mod's names through it and match the masked forms.
+It hides names from a casual look at a shared capture. A deliberate de-anonymization still succeeds.
 It is print-only. The real name still drives owner resolution, the sort, the colour, and the instrumentation set.
 Only the rendered string changes, so nothing downstream reads a masked key.
 Only mod-owned names obfuscate.
@@ -191,6 +193,8 @@ The panel, menu, and banner read `show_imgui` through a cached flag and draw not
 - Per-mod attribution needs an MO2/USVFS install. Elsewhere it degrades to script level.
 - CPU and allocation are mutually exclusive. Each refuses to start while the other runs.
 - Instrumentation assumes strict call nesting. A wrapped function that yields a coroutine mid-call desyncs the timer stack until stop_scan restores it.
+- Instrumentation Own is exact under recursion, but Total inflates.
+  A directly recursive wrapped function re-adds each level's span, so its inclusive number double-counts the nested self-calls. Read Own for a recursive function.
 - Instrumentation wraps a script's module-table functions.
   A function reached through a saved reference (a registered callback, a stored upvalue, a local alias) still calls the original and is not timed.
   The callbacks mode covers the dispatch case.

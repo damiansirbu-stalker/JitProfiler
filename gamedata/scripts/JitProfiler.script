@@ -86,7 +86,7 @@ if not (profile and allocprof) then
     is_target = function() return false end
     get_targets = function() return {} end
     get_target_stats = function() return 0, 0 end
-    add_target, remove_target, start_scan, stop_scan = log_absent, log_absent, log_absent, log_absent
+    add_target, remove_target, add_mod_targets, start_scan, stop_scan = log_absent, log_absent, log_absent, log_absent, log_absent
     start_callbacks, stop_callbacks = log_absent, log_absent
     is_callbacks_active = function() return false end
     add_callback_target, remove_callback_target = log_absent, log_absent
@@ -439,11 +439,15 @@ callbacks.set = callbacks.set or {}
 local INTERCEPTS_UPVALUE = "intercepts"
 local intercepts_ref
 
--- Never wrap the profiler's own machinery: the wrapper builds each frame's timer with xprofiler, so wrapping xprofiler recurses without end.
-local SCAN_BLACKLIST = {
-    xprofiler = true, JitProfiler = true, jitprofiler_ui = true,
-    jitprofiler_names = true, jf_mcm = true, _jitprofiler_deps = true,
+-- Our own scripts by loader name: never instrument-wrap or callback-wrap them, or the profiler times or recurses itself.
+local OWN_SCRIPTS = {
+    JitProfiler = true, jitprofiler_ui = true, jitprofiler_ui_config = true,
+    jitprofiler_report = true, jitprofiler_names = true,
+    _jitprofiler_init = true, _jitprofiler_manifest = true, jf_mcm = true,
 }
+-- Instrument targets exclude our own scripts plus the xlibs timer the wrapper builds each frame (wrapping it recurses without end).
+local SCAN_BLACKLIST = { xprofiler = true }
+for name in pairs(OWN_SCRIPTS) do SCAN_BLACKLIST[name] = true end
 
 -- Collect a call's results with an explicit count, so a nil inside the return list survives unpack.
 local function collect_results(...)
@@ -631,8 +635,8 @@ end
 --- @safety SAFE - debug.getinfo on a function is read-only; a nil short_src just means the handler is not ours.
 local function is_own_handler(handler)
     local info = debug.getinfo(handler, "S")
-    local src = info and info.short_src
-    return src ~= nil and src:lower():find("jitprofiler", 1, true) ~= nil
+    local file = info and info.short_src and get_script_id(info.short_src)
+    return file ~= nil and OWN_SCRIPTS[(file:gsub("%.script$", ""))] == true
 end
 
 -- The function handlers of one callback that are safe to wrap, each with its priority.

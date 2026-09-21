@@ -89,7 +89,10 @@ local function format_json(value)
     if kind == "string" then
         return '"' .. value:gsub('[%z\1-\31\\"]', function(char) return JSON_ESCAPE[char] or format("\\u%04x", char:byte()) end) .. '"'
     end
-    if kind == "number" then return format("%.14g", value) end
+    if kind == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then return "null" end
+        return format("%.14g", value)
+    end
     if kind == "boolean" then return value and "true" or "false" end
     if kind ~= "table" then return "null" end
     local count = #value
@@ -159,6 +162,7 @@ local function build_capture_doc(capture)
             rows[i] = { name = JitProfiler.compute_masked_name(row.key), owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(row.key)),
                         calls = row.calls, self_us = row.self_us, total_us = row.total_us, min_us = row.min_us, max_us = row.max_us }
         end
+        table.sort(rows, function(left, right) return left.self_us > right.self_us end)
         doc.total_us = capture.total_us
         doc.rows = rows
     elseif capture.kind == KIND_CALLBACKS then
@@ -169,6 +173,7 @@ local function build_capture_doc(capture)
                         owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(rec.handler)),
                         calls = rec.calls, self_us = rec.self_us, total_us = rec.total_us, min_us = rec.min_us, max_us = rec.max_us }
         end
+        table.sort(rows, function(left, right) return left.self_us > right.self_us end)
         doc.total_us = capture.total_us
         doc.rows = rows
     end
