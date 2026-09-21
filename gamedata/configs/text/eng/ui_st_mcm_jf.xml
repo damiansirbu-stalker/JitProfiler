@@ -28,7 +28,7 @@
         <text>Publish to the web</text>
     </string>
     <string id="ui_mcm_jf_publish_desc">
-        <text>Turn a capture into a live web page on your own GitHub, in one click from the panel. The page shows the profiler view exactly as in game, hosted on your github.io, shareable by link. Set your repo and token here; the panel's Publish button does the rest. Third-party mod names are always obfuscated on the published page, so a share never exposes another author's mod.</text>
+        <text>Turn a capture into a live web page on your own GitHub, in one click from the panel. The page shows the profiler view exactly as in game, hosted on your github.io, shareable by link. Set your repo and token here; the panel's Publish button does the rest. Every mod name on the published page is masked except the ones your keep-list matches, so your mods stay readable and other authors' names do not.</text>
     </string>
     <string id="ui_mcm_jf_publish_repo">
         <text>GitHub repo (owner/name)</text>

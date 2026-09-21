@@ -107,7 +107,7 @@ Publish to the web:
 Turn a capture into a live web page on your own GitHub in one click. Set your repo and a GitHub token in the MCM page, then press Publish in the panel footer.
 The page shows the profiler view exactly as in game, hosted on your github.io and shareable by a link.
 Nothing renders on my side, and no server sits in the middle. Your page is your own files on your own GitHub.
-Third-party mod names are always obfuscated on a published page. Your keep-list stays readable, and everything else is masked.
+On a published page, every mod name is masked except the ones your keep-list matches, so your own mods stay readable and other authors' names do not.
 Scope the token to that one repo. It is stored locally and travels only to GitHub over HTTPS.
 No other Anomaly profiler publishes its results to the web from inside the game.
 
