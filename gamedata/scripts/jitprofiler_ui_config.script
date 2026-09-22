@@ -54,10 +54,9 @@ local function render_anonymize()
     local new_input = ImGui.InputText("##keep", keep_input, 64)
     if ImGui.IsItemHovered() then
         ImGui.SetTooltip(
-            "Keep pattern: a Lua pattern matched on the owner or script name, case-insensitive.\n" ..
-            "A match stays readable; every other mod name masks.\n" ..
-            "^ap_ keeps AlifePlus scripts.   alife keeps every Alife mod.\n" ..
-            "Not a glob -- * is not a wildcard.")
+            "Keep readable: type your mod's name, case-insensitive.\n" ..
+            "It keeps that mod and all its scripts; every other mod name masks.\n" ..
+            "A Lua pattern, not a glob -- * is not a wildcard.")
     end
     if new_input then keep_input = new_input end
     ImGui.SameLine()
@@ -77,12 +76,14 @@ end
 local function render_publish_config()
     ImGui.SetNextItemWidth(FILTER_W)
     local repo = ImGui.InputText("repo (owner/name)##pubrepo", JitProfiler.get_setting("publish_repo"), 128)
+    if ImGui.IsItemHovered() then ImGui.SetTooltip("owner/name of your GitHub repo, e.g. yourname/YourMod.") end
     if repo then JitProfiler.set_setting("publish_repo", repo) end
     ImGui.SetNextItemWidth(FILTER_W)
     local branch = ImGui.InputText("branch (blank = default)##pubbranch", JitProfiler.get_setting("publish_branch"), 64)
     if branch then JitProfiler.set_setting("publish_branch", branch) end
     ImGui.SetNextItemWidth(FILTER_W)
     local token = ImGui.InputText("token##pubtoken", JitProfiler.get_setting("publish_token"), 128)
+    if ImGui.IsItemHovered() then ImGui.SetTooltip("A GitHub token with Contents: write. This session only, never saved.") end
     if token then JitProfiler.set_setting("publish_token", token) end
 end
 
@@ -98,7 +99,7 @@ local function render_publish_button()
         ImGui.PopStyleColor(1)
     end
     ImGui.SameLine()
-    local hint = ready and (publish_status ~= "" and publish_status or "pushes a masked page to your GitHub") or "set repo and token above"
+    local hint = ready and (publish_status ~= "" and publish_status or "publishes your latest capture per mode, masked") or "set repo and token above"
     render_colored_text(COLOR_DIM, hint)
 end
 
