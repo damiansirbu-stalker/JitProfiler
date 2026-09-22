@@ -1,0 +1,42 @@
+direction: down
+
+style.fill: "#1f2421"
+
+**.style.fill: "#262c27"
+**.style.stroke: "#ece7d8"
+**.style.font-color: "#ece7d8"
+**.style.stroke-width: 2
+
+modpack: "YOUR MODPACK (whole pack, running Lua)"
+
+engine: "ENGINE C CORE (xray-monolith)" {
+  style: { stroke: "#e6c07a"; fill: "#2e2a1e"; stroke-width: 3 }
+  grid-columns: 3
+  grid-gap: 16
+  p: "jit.profile"
+  a: "jit.allocprof"
+  g: "jit.util.gcstat"
+}
+
+jit: "JitProfiler (Lua)" {
+  grid-columns: 5
+  grid-gap: 14
+  cpu: "CPU"
+  mem: "MEM"
+  inst: "INSTRUMENT"
+  cb: "CALLBACKS"
+  res: "resolve -> owning mod"
+}
+
+out: "OUTPUTS" {
+  grid-columns: 4
+  grid-gap: 14
+  r: "ranked reports"
+  f: "SpeedScope flamegraph"
+  u: "ImGui panel (F11)"
+  e: "engine-C entry points"
+}
+
+modpack -> engine: "sampled - JIT on - near-zero cost" { style: { stroke: "#e6c07a"; font-color: "#e6c07a" } }
+engine -> jit: "feeds samples + exact bytes" { style: { stroke: "#c9d8b6"; font-color: "#c9d8b6" } }
+jit -> out: "renders" { style: { stroke: "#c9d8b6"; font-color: "#c9d8b6" } }
