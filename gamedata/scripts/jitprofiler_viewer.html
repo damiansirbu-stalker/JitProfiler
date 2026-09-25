@@ -1,7 +1,7 @@
 <!doctype html>
 <!-- JitProfiler viewer: the shipped page template. JitProfiler injects one capture's JSON at the
      __JF_DATA__ marker and pushes the result to your GitHub Pages repo, so a share is one self-contained
-     file. It draws the in-game panel from that data: the tabs, the VM-state strip, and the BY SCRIPT view. -->
+     file. It draws the in-game panel from that data: the tabs, the VM-state strip, and the view selector. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -12,20 +12,22 @@
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
     font:13px/1.5 ui-monospace,"JetBrains Mono","Cascadia Mono",Consolas,monospace;padding:0}
-  .wrap{max-width:960px;margin:0 auto;padding:18px 20px 40px}
+  .wrap{max-width:1180px;margin:0 auto;padding:18px 20px 40px}
   .tabs{display:flex;gap:2px;margin-bottom:14px}
   .tabs button{padding:6px 18px;background:var(--panel);color:var(--dim);border:0;cursor:pointer;
     font:inherit;font-weight:700;letter-spacing:.5px}
   .tabs button.on{background:var(--accent);color:#fff}
+  .vtabs{margin:14px 0 4px}
+  .vtabs button{padding:3px 12px;font-size:11px}
   .meta{color:var(--dim);font-size:12px;margin:2px 0 16px}
   .vh{color:var(--dim);font-weight:700;letter-spacing:.5px;margin:18px 0 5px}
-  table{width:100%;border-collapse:collapse}
-  td{padding:2px 8px 2px 0;white-space:nowrap;vertical-align:middle}
-  td.nm{width:40%;overflow:hidden;text-overflow:ellipsis;max-width:0}
-  td.ow{width:22%;color:var(--dim)} td.v{text-align:right;width:96px}
+  table{width:100%;border-collapse:collapse;table-layout:fixed}
+  td{padding:2px 8px 2px 0;white-space:nowrap;vertical-align:middle;overflow:hidden;text-overflow:ellipsis}
+  td.nm{width:32%}
+  td.ow{width:16%;color:var(--dim)} td.v{text-align:right;width:64px}
   tr.hd td{color:var(--amber);font-weight:700;border-bottom:1px solid var(--track)}
   tr:hover td{background:#20252e}
-  .bar{display:inline-block;position:relative;width:120px;height:14px;background:var(--track);vertical-align:middle}
+  .bar{display:inline-block;position:relative;width:100px;height:14px;background:var(--track);vertical-align:middle}
   .fill{position:absolute;left:0;top:0;height:100%}
   .pc{padding-left:5px;font-size:11px}
   .vm{display:flex;align-items:center;gap:8px;margin:3px 0}.vm .lb{width:96px}
@@ -41,6 +43,8 @@
 const DATA = /*__JF_DATA__*/ null;
 
 const TABS = [["cpu","CPU"],["mem","MEM"],["scan","INSTRUMENT"],["callbacks","CALLBACKS"]];
+const VIEWDEFS = [["by_mod","BY MOD"],["by_script","BY SCRIPT"],["leaf","BY LEAF"],["root","BY ROOT"]];
+let vview = "by_mod";
 const wrap = document.getElementById("wrap");
 
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
@@ -73,23 +77,38 @@ function renderSampling(cap){
     if(cap.engine_entry && cap.engine_entry.length){
       h.push(`<div class="vh">engine-C entry points</div><table>`);
       for(const r of cap.engine_entry)
-        h.push(`<tr><td class="nm">${esc(r.name)}</td><td class="ow">${esc(r.owner||"")}</td><td>${bar(total?100*r.value/total:0)}</td><td class="v">${Math.round(r.value)}</td></tr>`);
+        h.push(`<tr><td class="nm" title="${esc(r.name)}">${esc(r.name)}</td><td class="ow" title="${esc(r.owner||"")}">${esc(r.owner||"")}</td><td>${bar(total?100*r.value/total:0)}</td><td class="v">${Math.round(r.value)}</td></tr>`);
       h.push(`</table>`);
     }
   }
-  h.push(`<div class="vh">BY SCRIPT</div><table><tr class="hd"><td class="nm">Function</td><td class="ow">Mod</td><td>Own %</td><td>Total %</td><td class="v">Value</td></tr>`);
-  for(const r of ((cap.views&&cap.views.by_script)||[]))
-    h.push(`<tr><td class="nm">${esc(r.name)}</td><td class="ow">${esc(r.owner||"")}</td><td>${bar(total?100*r.own/total:0)}</td><td>${bar(total?100*r.total/total:0)}</td><td class="v">${fmtValue(cap.kind,r.total)}</td></tr>`);
+  const vtabs=VIEWDEFS.map(([k,lbl])=>`<button class="${k===vview?"on":""}" data-v="${k}">${lbl}</button>`).join("");
+  h.push(`<div class="tabs vtabs">${vtabs}</div>`);
+  const rows=(cap.views&&cap.views[vview])||[];
+  if(vview==="by_mod"){
+    h.push(`<table><tr class="hd"><td class="nm">Mod</td><td>Own %</td><td>Total %</td><td class="v">Value</td></tr>`);
+    for(const r of rows)
+      h.push(`<tr><td class="nm" title="${esc(r.name)}">${esc(r.name)}</td><td>${bar(total?100*r.own/total:0)}</td><td>${bar(total?100*r.total/total:0)}</td><td class="v">${fmtValue(cap.kind,r.total)}</td></tr>`);
+  }else if(vview==="by_script"){
+    h.push(`<table><tr class="hd"><td class="nm">Function</td><td class="ow">Mod</td><td>Own %</td><td>Total %</td><td class="v">Value</td></tr>`);
+    for(const r of rows)
+      h.push(`<tr><td class="nm" title="${esc(r.name)}">${esc(r.name)}</td><td class="ow" title="${esc(r.owner||"")}">${esc(r.owner||"")}</td><td>${bar(total?100*r.own/total:0)}</td><td>${bar(total?100*r.total/total:0)}</td><td class="v">${fmtValue(cap.kind,r.total)}</td></tr>`);
+  }else{
+    const lbl=vview==="leaf"?"Own %":"Total %";
+    h.push(`<table><tr class="hd"><td class="nm">Frame</td><td class="ow">Mod</td><td>${lbl}</td><td class="v">Value</td></tr>`);
+    for(const r of rows)
+      h.push(`<tr><td class="nm" title="${esc(r.name)}">${esc(r.name)}</td><td class="ow" title="${esc(r.owner||"")}">${esc(r.owner||"")}</td><td>${bar(total?100*r.value/total:0)}</td><td class="v">${fmtValue(cap.kind,r.value)}</td></tr>`);
+  }
   h.push(`</table>`);
   return h.join("");
 }
 
 function renderRows(cap){
   const span=cap.total_us||0, isScan=cap.kind==="scan", h=[];
-  h.push(`<div class="vh">${isScan?"BY FUNCTION":"BY HANDLER"}</div><table><tr class="hd"><td class="nm">${isScan?"Function":"Handler"}</td><td class="ow">Mod</td><td>Own %</td><td class="v">Own ms</td><td class="v">Total ms</td><td class="v">Calls</td></tr>`);
+  h.push(`<div class="vh">${isScan?"BY FUNCTION":"BY HANDLER"}</div><table><tr class="hd"><td class="nm">${isScan?"Function":"Handler"}</td><td class="ow">Mod</td><td>Own %</td><td class="v">Own ms</td><td class="v">Total ms</td><td class="v">Calls</td><td class="v">Avg us</td><td class="v">Min us</td><td class="v">Max us</td></tr>`);
   for(const r of (cap.rows||[])){
     const name=isScan?r.name:r.handler;
-    h.push(`<tr><td class="nm">${esc(name)}</td><td class="ow">${esc(r.owner||"")}</td><td>${bar(span?100*r.self_us/span:0)}</td><td class="v">${(r.self_us/1000).toFixed(2)} ms</td><td class="v">${(r.total_us/1000).toFixed(2)} ms</td><td class="v">${r.calls}</td></tr>`);
+    const avg=(r.avg_us!=null)?r.avg_us:(r.calls>0?r.self_us/r.calls:0);
+    h.push(`<tr><td class="nm" title="${esc(name)}">${esc(name)}</td><td class="ow" title="${esc(r.owner||"")}">${esc(r.owner||"")}</td><td>${bar(span?100*r.self_us/span:0)}</td><td class="v">${(r.self_us/1000).toFixed(2)} ms</td><td class="v">${(r.total_us/1000).toFixed(2)} ms</td><td class="v">${r.calls}</td><td class="v">${avg.toFixed(1)}</td><td class="v">${(r.min_us||0).toFixed(1)}</td><td class="v">${(r.max_us||0).toFixed(1)}</td></tr>`);
   }
   h.push(`</table>`);
   return h.join("");
@@ -113,7 +132,10 @@ function render(){
   function draw(){
     const tabs=present.map(([k,lbl])=>`<button class="${k===active?"on":""}" data-k="${k}">${lbl}</button>`).join("");
     wrap.innerHTML=`<div class="tabs">${tabs}</div>${renderCapture(caps[active])}<p class="foot">JitProfiler · ${esc((DATA.mod_version||""))} · ${esc(DATA.generated||"")}</p>`;
-    for(const b of wrap.querySelectorAll(".tabs button")) b.onclick=()=>{active=b.dataset.k;draw();};
+    for(const b of wrap.querySelectorAll(".tabs button")) b.onclick=()=>{
+      if(b.dataset.v) vview=b.dataset.v; else active=b.dataset.k;
+      draw();
+    };
   }
   draw();
 }

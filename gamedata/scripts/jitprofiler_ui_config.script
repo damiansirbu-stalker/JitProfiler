@@ -1,13 +1,19 @@
 --- jitprofiler_ui_config: the JitProfiler footer Settings and the Publish tab -- the Anonymize keep-set editor and the session publish config.
 
 local ImGui, ImGuiCol = ImGui, ImGuiCol
-local floor, tostring = math.floor, tostring
+local floor, min, tostring = math.floor, math.min, tostring
+local sformat, concat = string.format, table.concat
 local vector2, fcolor = vector2, fcolor
 
 local COLOR_DIM = fcolor():set(0.22, 0.24, 0.28, 1.0)
 local FILTER_W  = 180
 local VZERO     = vector2(0, 0)
 local BTN_SIZE  = vector2(96, 0)
+-- ImGuiInputTextFlags Password: asterisks on screen, copy disabled, paste allowed. Probed; 1 << 10 on a build without the enum export.
+local imgui_flags = rawget(_G, "ImGuiInputTextFlags")
+local INPUT_PASSWORD = (imgui_flags and imgui_flags.Password) or 1024
+-- Readable-owners preview: names shown in full before the "+N more" tail.
+local READABLE_SHOWN = 3
 
 local keep_input = ""
 local publish_status = ""
@@ -20,8 +26,8 @@ local function render_colored_text(color, text)
 end
 
 -- One integer capture setting as a whole-number slider, written back to the session state on change.
-local function render_int_setting(key, label, min, max)
-    local changed, value = ImGui.SliderFloat(label, JitProfiler.get_setting(key), min, max, "%.0f")
+local function render_int_setting(key, label, low, high)
+    local changed, value = ImGui.SliderFloat(label, JitProfiler.get_setting(key), low, high, "%.0f")
     if changed then JitProfiler.set_setting(key, floor(value + 0.5)) end
 end
 
@@ -56,6 +62,7 @@ local function render_anonymize()
         ImGui.SetTooltip(
             "Keep readable: type your mod's name, case-insensitive.\n" ..
             "It keeps that mod and all its scripts; every other mod name masks.\n" ..
+            "At least 3 letters, matched from the start of the name.\n" ..
             "A Lua pattern, not a glob -- * is not a wildcard.")
     end
     if new_input then keep_input = new_input end
@@ -82,9 +89,27 @@ local function render_publish_config()
     local branch = ImGui.InputText("branch (blank = default)##pubbranch", JitProfiler.get_setting("publish_branch"), 64)
     if branch then JitProfiler.set_setting("publish_branch", branch) end
     ImGui.SetNextItemWidth(FILTER_W)
-    local token = ImGui.InputText("token##pubtoken", JitProfiler.get_setting("publish_token"), 128)
-    if ImGui.IsItemHovered() then ImGui.SetTooltip("A GitHub token with Contents: write. This session only, never saved.") end
+    local token = ImGui.InputText("token##pubtoken", JitProfiler.get_setting("publish_token"), 128, INPUT_PASSWORD)
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip("A GitHub token with Contents: write. This session only, never saved.\n" ..
+            "Type it in; pasting crashes on exes without the InputText fix.")
+    end
     if token then JitProfiler.set_setting("publish_token", token) end
+end
+
+-- The pre-publish blast radius: which mod names the keep-set leaves readable on the published page.
+local function render_readable_line()
+    local readable = JitProfiler.get_readable_owners()
+    if #readable == 0 then
+        render_colored_text(COLOR_DIM, "readable on the page: none; every mod name masks")
+        return
+    end
+    local names = {}
+    for i = 1, min(#readable, READABLE_SHOWN) do
+        names[i] = (readable[i]:gsub("^mod: ", ""):gsub("^loose: ", ""))
+    end
+    local extra = #readable > READABLE_SHOWN and sformat(" +%d more", #readable - READABLE_SHOWN) or ""
+    render_colored_text(COLOR_DIM, "readable on the page: " .. concat(names, ", ") .. extra)
 end
 
 -- Push the retained captures as one masked page to the configured repo; the button greys out until repo and token are set.
@@ -92,7 +117,9 @@ local function render_publish_button()
     local ready = JitProfiler.get_setting("publish_repo") ~= "" and JitProfiler.get_setting("publish_token") ~= ""
     if ready and ImGui.Button("Publish to web##pub", BTN_SIZE) then
         local res = JitProfiler.publish()
-        publish_status = res.ok and "published to your GitHub page" or ("failed: " .. tostring(res.reason or res.code or "?"))
+        if res.ok then publish_status = "published to your GitHub page"
+        elseif res.pending then publish_status = res.reason
+        else publish_status = "failed: " .. tostring(res.reason or res.code or "?") end
     elseif not ready then
         ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
         ImGui.Button("Publish to web##pub", BTN_SIZE)
@@ -101,6 +128,7 @@ local function render_publish_button()
     ImGui.SameLine()
     local hint = ready and (publish_status ~= "" and publish_status or "publishes your latest capture per mode, masked") or "set repo and token above"
     render_colored_text(COLOR_DIM, hint)
+    if ready then render_readable_line() end
 end
 
 --- The Publish tab: the Anonymize mask and keep-set, the session repo/branch/token, then the Publish button.

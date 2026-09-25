@@ -91,7 +91,7 @@ The CPU tab adds the VM-state split and the engine-C entry-points list.
 The MEM tab adds a live GC-health strip with the heap toward the next collection, the live estimate, the debt, and the collection rate.
 INSTRUMENT holds the targeted mode.
 Add scripts from the BROWSE modlist (a + per script, or +all on a mod header to instrument the whole mod) or the + on a by-script row.
-Then run and read the per-function own and total time, sortable by any column, with avg, min, and max on hover and a frame-budget bar.
+Then run and read the per-function own and total time with per-call avg, min, and max, sortable by any column, and a frame-budget bar.
 Select a function to read its callers and callees with their time.
 CALLBACKS arms the callbacks profiler and lists every registered handler ranked by own ms, with its callback and owning mod.
 Its BROWSE subtab lists every registered callback with a picker toggle. Picked callbacks arm alone, and none picked arms all.
@@ -101,14 +101,17 @@ A small corner banner shows while a capture runs.
 Share a capture without naming other people's mods:
 The panel's Publish tab carries an Anonymize toggle.
 It masks every third-party mod and script name in the panel and in every export, so a screenshot, a report, or the json never shows another author's mod beside a cost.
-A keep-list edited in the same tab exempts the names you want readable, each entry a pattern matched against the owner or script name. It persists across sessions and defaults to empty, so each author keeps only their own.
+A keep-list edited in the same tab exempts the names you want readable, each entry a pattern of at least 3 letters matched from the start of the owner or script name.
+It persists across sessions and defaults to empty, so each author keeps only their own.
 
 Publish to the web:
 Turn a capture into a live web page on your own GitHub in one click. Set your repo and a GitHub token in the panel's Publish tab, then press Publish there.
 The page shows the profiler view exactly as in game, hosted on your github.io and shareable by a link.
 Nothing renders on my side, and no server sits in the middle. Your page is your own files on your own GitHub.
 On a published page, every mod name is masked except the ones your keep-list matches, so your own mods stay readable and other authors' names do not.
-Scope the token to that one repo. It is held for the session only, never saved, and travels only to GitHub over HTTPS.
+A line under the Publish button lists which names stay readable, so you see it before anything goes on the web.
+Scope the token to that one repo. It is held for the session only, never saved, shows as asterisks on screen, and travels only to GitHub over HTTPS.
+Type the token in by hand. Pasting into a text field crashes on exes without the InputText fix.
 No other Anomaly profiler publishes its results to the web from inside the game.
 
 Configuration:
@@ -171,6 +174,11 @@ Usage and License:
   Full license in LICENSE file and on GitHub.
 
 Diagnostics and reporting:
-Report at https://github.com/damiansirbu-stalker/JitProfiler/issues/new/choose or the EFP, Anomaly, and Zona Discord. Include repro steps, engine build, modlist, load order, xray.log, and the debug log.
+Every release goes through careful engineering and testing, but bugs can still slip through.
+To report one, reproduce with debug logging on, and the world log where the mod has one.
+First rule this mod out: reproduce with it off, then on. The cleanest test is this mod alone on vanilla and xlibs.
+Send the traces on the Anomaly Discord, or file a defect on GitHub with the same information.
+Attach xray.log, the mod log, the engine build, the modlist, and the load order.
+For deep technical details and mechanisms, check the architecture docs on GitHub.
 
 Tags: engine-native, performance, save-safe, profiler, luajit, sampling-profiler, cpu-profiling, memory-profiling, gc, flamegraph, callbacks, instrumentation, mod-attribution, low-overhead, optick

@@ -13,12 +13,9 @@ local OWNER_MODDED        = "modded exes"
 local OWNER_MOD           = "mod: "
 local OWNER_LOOSE         = "loose: "
 local OWNER_STRING        = "loadstring"
+-- GetExitCodeProcess of a process still running when the xnet wait gave up; the publish is pending, not failed.
+local PROCESS_STILL_ACTIVE = 259
 
--- Anonymize substitution alphabets: a masked letter stays in its family so the shape reads pronounceable.
-local VOWELS      = "aeiou"
-local CONSONANTS  = "bcdfghjklmnpqrstvwxyz"
-local VOWEL_SET   = { a = true, e = true, i = true, o = true, u = true }
-local ASCII_MAX   = 127
 local SETTING_ANON = "anon"
 -- The persisted keep-set lives at the writable appdata root, so clearing appdata/logs never wipes it. @src Layers/xrRenderPC_R4/r4.cpp:2027
 local KEEP_FILE   = "jitprofiler_keep.txt"
@@ -81,6 +78,7 @@ if not (profile and allocprof) then
     add_keep = function() end
     remove_keep = function() end
     is_kept = function() return false end
+    get_readable_owners = function() return {} end
     publish = function() return { ok = false } end
     is_scan_active = function() return false end
     is_target = function() return false end
@@ -133,6 +131,10 @@ local ffi, k32
 local mask_cache = {}
 local keep_set = {}
 local keep_loaded = false
+-- Keep-set derivatives, invalidated on any keep edit: the sorted entry list and the readable-owners rollup.
+local keep_list_cache
+local keep_gen = 0
+local readable_cache, readable_sig
 
 -- Session capture settings, anchored to _G so the two chunk generations share one table. Edited from the panel, never persisted.
 local settings = rawget(_G, "__jitprofiler_settings")
@@ -818,13 +820,48 @@ local function collect_captures()
     return captures, any
 end
 
+--- @return table the sorted mod-owned owner names the keep-set leaves readable across the retained captures; memoized per keep edit and capture set.
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
+function get_readable_owners()
+    local parts = { tostring(keep_gen) }
+    for _, kind in ipairs({ "cpu", "mem", "scan", "callbacks" }) do
+        local cap = last_capture[kind]
+        parts[#parts + 1] = (cap and cap.meta and cap.meta.stamp) or "-"
+    end
+    local sig = table.concat(parts, ":")
+    if sig == readable_sig then return readable_cache end
+    local seen, list = {}, {}
+    local function collect(owner)
+        if not owner or seen[owner] then return end
+        seen[owner] = true
+        if owner:sub(1, #OWNER_MOD) ~= OWNER_MOD and owner:sub(1, #OWNER_LOOSE) ~= OWNER_LOOSE then return end
+        if is_kept(owner) then list[#list + 1] = owner end
+    end
+    for _, kind in ipairs({ "cpu", "mem" }) do
+        local cap = last_capture[kind]
+        local by_mod = cap and cap.views and cap.views.by_mod
+        if by_mod then for owner in pairs(by_mod) do collect(owner) end end
+    end
+    for _, kind in ipairs({ "scan", "callbacks" }) do
+        local cap = last_capture[kind]
+        if cap and cap.rows then
+            for i = 1, #cap.rows do collect(get_owner(cap.rows[i].key or cap.rows[i].handler)) end
+        end
+    end
+    table.sort(list)
+    readable_cache, readable_sig = list, sig
+    return list
+end
+
 --- Publish the retained captures as one masked web page to the configured GitHub repo through xlibs xnet.
---- Masking is forced for the published copy, independent of the live toggle, so a third-party name never leaks.
---- @safety SAFE - the token is staged to a temp file only for the push, then blanked; it never reaches the argv or a log.
---- @return table { ok = boolean, code = number|nil, reason = string|nil } - reason names why a publish was refused
+--- Masking is forced for the published copy, independent of the live toggle, so a third-party name never leaks; it restores on both pcall arms.
+--- @safety SAFE - the token is staged to a temp file only for the push, then blanked and removed; it never reaches the argv or a log.
+--- @return table { ok = boolean, code = number|nil, pending = boolean|nil, reason = string|nil } - reason names why a publish was refused
 function publish()
     local repo, branch, token = settings.publish_repo, settings.publish_branch, settings.publish_token
     if not (repo ~= "" and token ~= "") then return { ok = false, reason = "set repo and token in the Publish tab" } end
+    if not repo:match("^[%w%-%._]+/[%w%-%._]+$") then return { ok = false, reason = "repo must be owner/name" } end
+    if branch ~= "" and not branch:match("^[%w%-%._/]+$") then return { ok = false, reason = "branch has unsupported characters" } end
     if type(xnet) ~= "table" or not xnet.push_github then return { ok = false, reason = "xnet unavailable" } end
     local captures, any = collect_captures()
     if not any then return { ok = false, reason = "no capture yet" } end
@@ -833,11 +870,14 @@ function publish()
 
     local saved = settings.anon
     settings.anon = true; mask_cache = {}
-    local json = jitprofiler_report.build_publish_json(captures, os.date("%Y-%m-%d %H:%M"))
+    local built, json = pcall(jitprofiler_report.build_publish_json, captures, os.date("%Y-%m-%d %H:%M"))
     settings.anon = saved; mask_cache = {}
+    if not built then log("!JitProfiler/publish: %s", tostring(json)); return { ok = false, reason = "capture build failed (see log)" } end
 
-    local page = template:gsub("/%*__JF_DATA__%*/ null", (json:gsub("%%", "%%%%")), 1)
-    local base = xfs.resolve_path("$logs$", "") or ""
+    local page, marked = template:gsub("/%*__JF_DATA__%*/ null", (json:gsub("%%", "%%%%")), 1)
+    if marked ~= 1 then return { ok = false, reason = "viewer template marker missing" } end
+    local base = xfs.resolve_path("$logs$", "")
+    if not base or base == "" then return { ok = false, reason = "cannot resolve the logs folder" } end
     local page_path, token_path = base .. "jitprofiler_page.html", base .. "jitprofiler_token.tmp"
     if not (xfs.write_file(page_path, page) and xfs.write_file(token_path, token)) then
         return { ok = false, reason = "cannot stage the page" }
@@ -846,6 +886,10 @@ function publish()
         branch = (branch ~= "" and branch) or nil,
         path = "pages/jitprofiler.html", file = page_path, token_file = token_path, message = "JitProfiler capture" })
     xfs.write_file(token_path, "")
+    xfs.remove_file(token_path)
+    if not result.ok and result.code == PROCESS_STILL_ACTIVE then
+        return { ok = false, pending = true, reason = "still uploading; check the page in a minute" }
+    end
     return { ok = result.ok, code = result.code }
 end
 
@@ -865,9 +909,11 @@ local function get_keep_path()
     return (xfs.resolve_path("$app_data_root$", "") or "") .. KEEP_FILE
 end
 
---- Whether a keep entry is specific enough to keep: it names at least one literal character, so a degenerate pattern (".", "%a") cannot exempt every name.
+--- Whether a keep entry is specific enough to keep: at least 3 literal characters, so a broad entry ("a", "hu%a+") cannot exempt whole name families.
 local function is_valid_pattern(pat)
-    return pat:gsub("%%.", ""):find("%w") ~= nil
+    local stripped = pat:gsub("%%.", "")
+    local _, count = stripped:gsub("%w", "%0")
+    return count >= 3
 end
 
 -- Load the keep-set from disk once; CRLF-tolerant, one Lua pattern per line, blank or degenerate lines skipped.
@@ -890,7 +936,7 @@ local function save_keep()
     xfs.write_file(get_keep_path(), table.concat(lines, "\n") .. "\n")
 end
 
---- @return boolean whether a name is exempt from masking: a keep entry is a Lua pattern matched case-insensitively against the owner name or script file.
+--- @return boolean whether a name is exempt: a keep entry is a Lua pattern matched case-insensitively from the start of the owner name or script file.
 --- @safety SAFE - pcall contains a malformed keep pattern at the match, so a bad entry skips instead of raising.
 --- @novalidate(code.find_in_loop, reason:"pattern match over a small user keep-set, not an equality lookup")
 --- @novalidate(code.pcall_in_loop, reason:"per-entry match-safety; a malformed pattern must skip without aborting the sibling entries")
@@ -899,12 +945,12 @@ function is_kept(name)
     if not next(keep_set) then return false end
     local owner = (name:sub(1, #OWNER_MOD) == OWNER_MOD or name:sub(1, #OWNER_LOOSE) == OWNER_LOOSE)
         and name or get_owner(name)
-    local owner_lower = owner:lower()
+    local owner_body = owner:lower():gsub("^" .. OWNER_MOD, ""):gsub("^" .. OWNER_LOOSE, "")
     local script_file = get_script_id(name)
     local script_lower = script_file and script_file:lower() or nil
     for entry in pairs(keep_set) do
-        local needle = entry:lower()
-        local ok, found = pcall(string.find, owner_lower, needle)
+        local needle = "^" .. entry:lower():gsub("^%^+", "")
+        local ok, found = pcall(string.find, owner_body, needle)
         if ok and found then return true end
         if script_lower then
             ok, found = pcall(string.find, script_lower, needle)
@@ -914,14 +960,14 @@ function is_kept(name)
     return false
 end
 
---- Add a keep pattern (matched against the owner name or script file) and persist it; blanks, duplicates, and degenerate patterns are ignored.
+--- Add a keep pattern (matched against the start of the owner name or script file) and persist it; blanks, duplicates, and too-broad patterns are ignored.
 --- @novalidate(conventions.unused_export, reason:"panel control surface")
 function add_keep(entry)
     entry = tostring(entry or ""):gsub("^%s+", ""):gsub("%s+$", "")
     if entry == "" or not is_valid_pattern(entry) then return end
     if not keep_loaded then load_keep() end
     keep_set[entry] = true
-    mask_cache = {}
+    mask_cache, keep_list_cache, keep_gen = {}, nil, keep_gen + 1
     save_keep()
 end
 
@@ -930,22 +976,24 @@ end
 function remove_keep(entry)
     if not keep_loaded then load_keep() end
     keep_set[tostring(entry or "")] = nil
-    mask_cache = {}
+    mask_cache, keep_list_cache, keep_gen = {}, nil, keep_gen + 1
     save_keep()
 end
 
---- @return table the sorted keep-set entries.
+--- @return table the sorted keep-set entries; memoized, invalidated on any keep edit (the panel reads it every frame).
 --- @novalidate(conventions.unused_export, reason:"panel control surface")
 function get_keep_list()
     if not keep_loaded then load_keep() end
+    if keep_list_cache then return keep_list_cache end
     local list = {}
     for entry in pairs(keep_set) do list[#list + 1] = entry end
     table.sort(list)
+    keep_list_cache = list
     return list
 end
 
---- @return string the print name for a view key: real when anon is off, baseline, or kept; else a mod-family letter substitution.
---- Only mod-owned names (mod:/loose:) obfuscate. Separators, digits, the extension, the mod:/loose: prefix, a :line suffix, and non-ASCII bytes stay literal.
+--- @return string the print name for a view key: real when anon is off, baseline, or kept; else every letter and digit becomes #.
+--- Only mod-owned names (mod:/loose:) obfuscate. Spaces, separators, the extension, the prefix, a :line suffix, and non-ASCII bytes stay literal.
 function compute_masked_name(name)
     if not settings.anon then return name end
     local prefix, body = "", name
@@ -955,29 +1003,13 @@ function compute_masked_name(name)
         local owner = get_owner(name)
         if owner:sub(1, #OWNER_MOD) ~= OWNER_MOD and owner:sub(1, #OWNER_LOOSE) ~= OWNER_LOOSE then return name end
     end
-    if is_kept(name) then return name end
     local cached = mask_cache[name]
     if cached then return cached end
+    if is_kept(name) then mask_cache[name] = name; return name end
     local suffix = ""
     local ext_at = body:find("%.script:?%-?%d*$") or body:find("%.lua:?%-?%d*$")
     if ext_at then suffix = body:sub(ext_at); body = body:sub(1, ext_at - 1) end
-    local seed = 5381
-    for i = 1, #name do seed = (seed * 33 + name:byte(i)) % 2147483648 end
-    local out = {}
-    for i = 1, #body do
-        local char = body:sub(i, i)
-        local byte = body:byte(i)
-        if byte > ASCII_MAX or not char:match("%a") then
-            out[i] = char
-        else
-            seed = (seed * 1103515245 + 12345) % 2147483648
-            local lower = char:lower()
-            local family = VOWEL_SET[lower] and VOWELS or CONSONANTS
-            local pick = family:sub((seed % #family) + 1, (seed % #family) + 1)
-            out[i] = char:match("%u") and pick:upper() or pick
-        end
-    end
-    local result = prefix .. table.concat(out) .. suffix
+    local result = prefix .. (body:gsub("%w", "#")) .. suffix
     mask_cache[name] = result
     return result
 end

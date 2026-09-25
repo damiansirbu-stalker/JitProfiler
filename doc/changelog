@@ -1,17 +1,30 @@
 1.0.0-snapshot
-  Summary: first release, CPU and allocation sampling profiler, in-game panel, MCM
+  Summary: first release, CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, in-game panel, web publish, anonymize
 
-  - CPU profile via jit.profile: VM-state split (JIT / interpreter / C / GC / compiler) and ranked views by leaf, script, root, and framework-vs-handlers, plus a SpeedScope flamegraph.
+  - CPU profile via jit.profile: VM-state split (JIT / interpreter / C / GC / compiler) and ranked views by mod, script, leaf, and root, plus a SpeedScope flamegraph.
   - Allocation profile via jit.allocprof: per-function bytes with the same views.
+  - Instrumentation mode: wrap every function of a chosen script set and time each call, own and
+    total wall-clock with the engine C included, per-call avg, min, and max as sortable columns,
+    per-mod subtotals, and a call graph of callers and callees. A BROWSE modlist adds one script
+    or a whole mod, searchable by mod or script name.
+  - Callbacks mode: time every registered handler over the make_callback dispatch, ranked by own
+    time with its callback and owning mod, and a picker that narrows the capture to chosen callbacks.
+  - Anonymize: masks every third-party mod and script name in the panel and every export, letters
+    and digits to #, separators kept so the shape reads. A persisted keep-list of patterns (3+
+    letters, matched from the start of a name) keeps your own mods readable.
+  - Publish to web: one click commits the retained captures as one self-contained page to your
+    own GitHub repo, with the panel's tabs and views. Names publish masked except the keep-list,
+    a status line shows which names stay readable before the push, and the token is session-only,
+    displayed as asterisks, never on a command line or in a log.
   - Added an in-game panel, opened from the ImGui menu bar under JitProfiler. It carries
     Start and Stop buttons for the CPU and allocation captures, a ranked table for each view
-    (by mod, leaf, script, root, framework) with a bar per row, a caller and callee breakdown
+    (by mod, script, leaf, root) with a bar per row, a caller and callee breakdown
     for any selected frame, and the CPU VM-state strip. A corner banner marks a live capture.
   - Capture settings live in the in-game panel and are session-only. The panel Settings section
-    holds the sample interval, stack depth, report rows, auto-snapshot threshold, auto-stop, and
-    fold, and a console argument still overrides one capture. MCM is an about page with a toggle
-    for whether JitProfiler shows in the ImGui overlay.
-  - Added an optional capture auto-stop. A duration set in the MCM ends a running capture on
+    holds the sample interval, stack depth, auto-snapshot threshold, auto-stop, and fold, and a
+    console argument still overrides one capture. MCM is an about page with a toggle for whether
+    JitProfiler shows in the ImGui overlay.
+  - Added an optional capture auto-stop. A duration set in the panel ends a running capture on
     its own after that many seconds and writes its report. It is a safety limit for the
     allocation profile, which holds the JIT off until the capture ends.
   - Added a compatibility gate: without xlibs or a modded-exes build the mod stops at load

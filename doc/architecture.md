@@ -107,15 +107,16 @@ The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) 
 ## Anonymize
 A shared capture would print every third-party mod name beside its cost, which no author can be asked to publish.
 The Anonymize toggle masks them at the display.
-`compute_masked_name` substitutes each letter for another of its own family, seeded by a hash of the whole name.
-The shape stays pronounceable, and the mapping is stable across the panel, the flamegraph, and the json.
-The masking is obfuscation. The substitution is deterministic and ships with the mod, so a determined reader can run a known mod's names through it and match the masked forms.
+`compute_masked_name` replaces every letter and digit with #, keeping spaces, separators, and the extension, so the length and word shape still read.
+The masking is uniform across the panel, the flamegraph, and the json.
+The masking is obfuscation, not encryption. The word lengths and separators survive, so a reader can still match a known mod list against the shapes.
 It hides names from a casual look at a shared capture. A deliberate de-anonymization still succeeds.
 It is print-only. The real name still drives owner resolution, the sort, the colour, and the instrumentation set.
 Only the rendered string changes, so nothing downstream reads a masked key.
 Only mod-owned names obfuscate.
 Baseline owners, the `[C]` `[GC]` `[JIT]` markers, separators, digits, the extension, and a line suffix stay literal, so the report stays readable and the code locations stay honest.
-The keep-set exempts the names an author keeps readable, each entry a Lua pattern matched against the owner name or the script file.
+The keep-set exempts the names an author keeps readable.
+Each entry is a Lua pattern of at least 3 literal characters, matched case-insensitively from the start of the owner name or the script file, so a broad entry cannot exempt another author's name.
 It is the one persisted piece of panel state, a newline file at the writable appdata root edited from the Publish tab, empty by default.
 The toggle rewrites the live panel and every export together, so a screenshot, a text report, and the json are safe at the source.
 
@@ -124,10 +125,14 @@ A capture becomes a live web page on your own GitHub, in one click from the pane
 JitProfiler writes the retained captures as one JSON and injects it into a shipped viewer page.
 It hands the result to xlibs `xnet`, which commits it to the configured repo as pages/jitprofiler.html over HTTPS.
 The viewer is a static page that draws the in-game panel from the JSON in the browser, so the shared page reads exactly like the tool.
-JitProfiler forces the mask on the published copy regardless of the live toggle. Every mod name is masked except the ones the keep-list matches, so keeping only your own names leaves every other author's name masked.
-The token, repo, and branch are session fields in the Publish tab, never persisted. The Publish button stays disabled until the repo and token are set.
+JitProfiler forces the mask on the published copy regardless of the live toggle.
+Every mod name is masked except the ones the keep-list matches, so keeping only your own names leaves every other author's name masked.
+A status line under the Publish button lists the names the keep-set leaves readable, before anything is pushed.
+The token, repo, and branch are session fields in the Publish tab, never persisted. The token field renders as asterisks.
+The repo must read owner/name and the branch a plain ref, checked before anything is staged. The Publish button stays disabled until the repo and token are set.
 `xnet` is xlibs's native companion, a zero-dependency Go exe launched over a LuaJIT FFI CreateProcess, because the script VM has no HTTP of its own.
-It ships with xlibs, and the token travels in a file, never on the command line.
+It ships with xlibs, and the token travels in a file, never on the command line. The file is blanked and deleted right after the push.
+A push still running when the wait gives up reports as pending, not failed.
 No other Anomaly profiler puts its results on the web from inside the game.
 
 ## Output
@@ -149,13 +154,15 @@ The panel draws in the Main group, so it appears while the F11 ImGui overlay is 
 The top tabs are CPU, MEM, INSTRUMENT, and CALLBACKS. A running capture locks the others, so no two run at once.
 CPU and MEM show the retained last capture through `get_last_capture`.
 A view selector switches the table between by mod, by script, by leaf, and by root. Each column header sorts, and a filter box narrows the rows.
+Every table draws at most 200 rows per frame, with a note under a capped table. The filter searches every row, only the drawing stops at the cap.
 The by-script rows carry a per-row button that adds or removes the script from the instrumentation set.
 Under INSTRUMENTATION a start and stop control arms the whole set, and an overhead line shows the wrapped-function count.
 Two sub-views split the screen.
 SELECTED lists the working set, each target removable.
 BROWSE is a modlist grouped by mod with a search box, where a + adds a script and a +all on the mod header adds every script that mod owns through add_mod_targets.
+The search matches the mod name or the script name. A matching mod shows all its scripts, and hits render with their group open, collapse ignored.
 The results table ranks each function by own with an own-share bar, plus own ms, total ms, and calls, each column sortable on click.
-Avg, min, and max per call show on row hover and in the text report.
+Avg, min, and max per call are sortable columns, carried through the text report, the json, and the published viewer.
 A frame-budget bar reads own ms per frame against a 60fps frame.
 Number columns right-align through CalcTextSize, so magnitude scans down the column.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.

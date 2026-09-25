@@ -160,7 +160,8 @@ local function build_capture_doc(capture)
         for i = 1, #capture.rows do
             local row = capture.rows[i]
             rows[i] = { name = JitProfiler.compute_masked_name(row.key), owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(row.key)),
-                        calls = row.calls, self_us = row.self_us, total_us = row.total_us, min_us = row.min_us, max_us = row.max_us }
+                        calls = row.calls, self_us = row.self_us, total_us = row.total_us,
+                        min_us = row.min_us, max_us = row.max_us, avg_us = row.avg_us }
         end
         table.sort(rows, function(left, right) return left.self_us > right.self_us end)
         doc.total_us = capture.total_us
@@ -171,7 +172,8 @@ local function build_capture_doc(capture)
             local rec = capture.rows[i]
             rows[i] = { callback = rec.callback, handler = JitProfiler.compute_masked_name(rec.handler),
                         owner = JitProfiler.compute_masked_name(JitProfiler.get_owner(rec.handler)),
-                        calls = rec.calls, self_us = rec.self_us, total_us = rec.total_us, min_us = rec.min_us, max_us = rec.max_us }
+                        calls = rec.calls, self_us = rec.self_us, total_us = rec.total_us,
+                        min_us = rec.min_us, max_us = rec.max_us, avg_us = rec.avg_us }
         end
         table.sort(rows, function(left, right) return left.self_us > right.self_us end)
         doc.total_us = capture.total_us
@@ -369,7 +371,7 @@ function write_scan(records, opts)
     for key, rec in pairs(records) do
         if rec.calls > 0 then
             rows[#rows + 1] = { key = key, calls = rec.calls, self_us = rec.self_us, total_us = rec.total_us,
-                                min_us = rec.min_us, max_us = rec.max_us }
+                                min_us = rec.min_us, max_us = rec.max_us, avg_us = rec.self_us / rec.calls }
             total_self = total_self + rec.self_us
         end
     end
@@ -445,7 +447,7 @@ end
 function write_callbacks(records, wrapped, duration_sec)
     local rows, total_self = {}, 0
     for _, rec in pairs(records) do
-        if rec.calls > 0 then rows[#rows + 1] = rec; total_self = total_self + rec.self_us end
+        if rec.calls > 0 then rec.avg_us = rec.self_us / rec.calls; rows[#rows + 1] = rec; total_self = total_self + rec.self_us end
     end
     table.sort(rows, function(left, right) return left.self_us > right.self_us end)
     local lines = {
