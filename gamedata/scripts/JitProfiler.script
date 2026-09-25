@@ -444,7 +444,7 @@ local intercepts_ref
 
 -- Our own scripts by loader name: never instrument-wrap or callback-wrap them, or the profiler times or recurses itself.
 local OWN_SCRIPTS = {
-    JitProfiler = true, jitprofiler_ui = true, jitprofiler_ui_config = true,
+    JitProfiler = true, jitprofiler_ui = true, jitprofiler_ui_config = true, jitprofiler_ui_trace = true,
     jitprofiler_report = true, jitprofiler_names = true,
     _jitprofiler_init = true, _jitprofiler_manifest = true, jf_mcm = true,
 }

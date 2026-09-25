@@ -1,0 +1,376 @@
+--- jitprofiler_ui_trace: the INSTRUMENT and CALLBACKS tabs, split from jitprofiler_ui under the size cap; shared helpers from jitprofiler_ui.SHARED.
+
+local ImGui, ImGuiCol, fcolor = ImGui, ImGuiCol, fcolor
+local JitProfiler, jitprofiler_report = JitProfiler, jitprofiler_report
+local pairs, type, math, table = pairs, type, math, table
+local format = string.format
+
+-- jitprofiler_ui.SHARED: render helpers, filter accessor, and cross-tab constants. Bound at load, safe since this module loads only on first render.
+local shared = jitprofiler_ui.SHARED
+
+local FRAME_MS_60 = 1000 / 60
+local SET_FRAC = 0.35
+local OVERHEAD_WARN = 4000
+-- The muted purple the overhead line borrows from the CPU JIT-compile bar; re-declared here so the split never reaches jitprofiler_ui's VMSTATE table.
+local COLOR_LARGESET = fcolor():set(0.75, 0.55, 0.85, 1.0)
+local NO_TIMED_CALLS = "No timed calls: INSTRUMENT wraps module-table functions only. Try CPU sampling (catches locals) or CALLBACKS (times handlers)."
+-- The shared per-call stat columns of the scan and callbacks tables, one spec driving both setup and sortable headers.
+local STAT_COLUMNS = { { "Own ms", "self_us" }, { "Total ms", "total_us" }, { "Calls", "calls" },
+                       { "avg ms", "avg_us" }, { "min ms", "min_us" }, { "max ms", "max_us" } }
+
+local INST_SELECTED = "selected"
+local INST_BROWSE = "browse"
+local inst_view = INST_SELECTED
+local tree_search = ""
+local tree_cache
+local scan_sort = { field = "self_us", asc = false }
+local scan_selected
+local scan_neighbors_data
+
+local CB_RESULTS = "results"
+local CB_BROWSE = "browse"
+local cb_view = CB_RESULTS
+local cb_search = ""
+local cb_sort = { field = "self_us", asc = false }
+
+local function init_stat_columns()
+    for i = 1, #STAT_COLUMNS do ImGui.TableSetupColumn(STAT_COLUMNS[i][1], 0, 65, 0) end
+end
+
+local function render_stat_headers(header_fn)
+    for i = 1, #STAT_COLUMNS do header_fn(STAT_COLUMNS[i][1], STAT_COLUMNS[i][2], true) end
+end
+
+-- Sort capture rows in place once per capture or sort change; name fields sort by string, the rest by value. Sig cached on the state table.
+local function sort_capture_rows(state, rows, stamp)
+    local sig = state.field .. ":" .. (state.asc and "a" or "d") .. ":" .. (stamp or "?")
+    if sig == state.sig then return end
+    state.sig = sig
+    local field, asc = state.field, state.asc
+    table.sort(rows, function(left, right)
+        if asc then return left[field] < right[field] end
+        return left[field] > right[field]
+    end)
+end
+
+-- One sub-view tab button (INSTRUMENT and CALLBACKS subtabs); returns the active view.
+local function render_view_tab(current, view, label, id)
+    local sel = (current == view)
+    ImGui.PushStyleColor(ImGuiCol.Button, sel and shared.COLOR_ACCENT or shared.COLOR_DIM)
+    if ImGui.Button(label .. id, shared.VZERO) then current = view end
+    ImGui.PopStyleColor(1)
+    return current
+end
+
+-- Add one _G entry to the browser groups when it is a script module (a table with any function member), under its owner.
+local function add_script(name, value, groups)
+    if type(name) ~= "string" or type(value) ~= "table" then return end
+    local is_script = false
+    for _, member in pairs(value) do if type(member) == "function" then is_script = true; break end end
+    if is_script then
+        local owner = JitProfiler.get_owner(name .. ".script")
+        local bucket = groups[owner] or {}
+        groups[owner] = bucket
+        bucket[#bucket + 1] = name
+    end
+end
+
+-- Build the browser tree once: every loaded script module grouped by owning mod, sorted. Rebuilt on demand.
+local function build_tree()
+    local groups = {}
+    for name, value in pairs(_G) do add_script(name, value, groups) end
+    local list = {}
+    for owner, scripts in pairs(groups) do
+        table.sort(scripts)
+        list[#list + 1] = { owner = owner, scripts = scripts }
+    end
+    table.sort(list, function(left, right) return left.owner < right.owner end)
+    tree_cache = list
+end
+
+-- One tree row: a +/- button that adds or removes the script, the same affordance as the sampling by-script rows.
+local function render_tree_item(name)
+    local on = JitProfiler.is_target(name)
+    if ImGui.Button((on and "-##t" or "+##t") .. name, shared.VZERO) then
+        if on then JitProfiler.remove_target(name) else JitProfiler.add_target(name) end
+    end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip("Add or remove this script from the instrument set.") end
+    ImGui.SameLine()
+    ImGui.Text(name)
+end
+
+-- One mod group when idle: the collapsed header scopes the list, and the header carries a +all that instruments the whole mod.
+local function render_tree_group(group)
+    local open = ImGui.CollapsingHeader(group.owner .. "##g" .. group.owner)
+    ImGui.SameLine()
+    if ImGui.Button("+all##m" .. group.owner, shared.VZERO) then JitProfiler.add_mod_targets(group.owner) end
+    ImGui.SameLine()
+    if ImGui.Button("-all##rm" .. group.owner, shared.VZERO) then JitProfiler.remove_mod_targets(group.owner) end
+    if not open then return end
+    for j = 1, #group.scripts do render_tree_item(group.scripts[j]) end
+end
+
+-- One mod group while searching: a matching mod name shows every script, else only matching scripts; hits render open, collapse ignored.
+--- @novalidate(code.find_in_loop, reason:"substring search over the browse list on a typed needle, not an equality lookup")
+local function render_search_group(group, needle)
+    local owner_hit = group.owner:lower():find(needle, 1, true) ~= nil
+    local hits = {}
+    for j = 1, #group.scripts do
+        if owner_hit or group.scripts[j]:lower():find(needle, 1, true) then hits[#hits + 1] = group.scripts[j] end
+    end
+    if #hits == 0 then return end
+    ImGui.Text(group.owner)
+    ImGui.SameLine()
+    if ImGui.Button("+all##m" .. group.owner, shared.VZERO) then JitProfiler.add_mod_targets(group.owner) end
+    ImGui.SameLine()
+    if ImGui.Button("-all##rm" .. group.owner, shared.VZERO) then JitProfiler.remove_mod_targets(group.owner) end
+    for j = 1, #hits do render_tree_item(hits[j]) end
+end
+
+-- The BROWSE modlist: scripts grouped by mod with a search box matching the mod or the script name; a + adds each to the set.
+local function render_tree()
+    if not tree_cache then build_tree() end
+    local new_search = ImGui.InputText("Search##tree", tree_search, 64)
+    if new_search then tree_search = new_search end
+    ImGui.SameLine()
+    if ImGui.Button("Refresh##tree") then build_tree() end
+    local needle = tree_search:lower()
+    if ImGui.BeginListBox("##treelist", shared.get_fill_size(0)) then
+        for i = 1, #tree_cache do
+            if needle == "" then render_tree_group(tree_cache[i]) else render_search_group(tree_cache[i], needle) end
+        end
+        ImGui.EndListBox()
+    end
+end
+
+-- One scan row: the function, its owner colour, an Own-share bar, and the own/total ms and call count. Skipped when the filter excludes it.
+local function render_scan_row(cap, row)
+    local owner = JitProfiler.get_owner(row.key)
+    if not shared.check_filter(row.key, owner) then return end
+    local own_pct = (cap.total_us or 0) > 0 and 100 * row.self_us / cap.total_us or 0
+    ImGui.TableNextRow()
+    ImGui.TableNextColumn()
+    ImGui.PushStyleColor(ImGuiCol.Text, shared.get_mod_color(owner))
+    local is_sel = (scan_selected == row.key)
+    if ImGui.Selectable(JitProfiler.compute_masked_name(row.key) .. "##" .. row.key, is_sel, 0, shared.VZERO) then
+        scan_selected = is_sel and nil or row.key
+        scan_neighbors_data = scan_selected and jitprofiler_report.compute_scan_neighbors(cap, scan_selected) or nil
+    end
+    ImGui.PopStyleColor(1)
+    if ImGui.IsItemHovered() then ImGui.SetTooltip(JitProfiler.compute_masked_name(owner)) end
+    ImGui.TableNextColumn()
+    shared.render_bar(own_pct)
+    shared.render_num(format("%8.2f", row.self_us / 1000))
+    shared.render_num(format("%8.2f", row.total_us / 1000))
+    shared.render_num(format("%8d", row.calls))
+    shared.render_num(format("%8.3f", row.avg_us / 1000))
+    shared.render_num(format("%8.3f", row.min_us / 1000))
+    shared.render_num(format("%8.3f", row.max_us / 1000))
+    return true
+end
+
+local function render_scan_header(label, field, right) shared.render_header(scan_sort, "sh", label, field, right) end
+
+-- The scan results: each wrapped function with an own-share bar, sortable by any column header.
+local function render_scan_table(cap)
+    sort_capture_rows(scan_sort, cap.rows or {}, cap.meta.stamp)
+    if not ImGui.BeginTable("jf_scan", 8, shared.TABLE_FLAGS, shared.get_fill_size(scan_selected and shared.DETAIL_H or 0), 0) then return end
+    ImGui.TableSetupColumn("Function", 0, 240, 0)
+    ImGui.TableSetupColumn("Own %", 0, 130, 0)
+    init_stat_columns()
+    ImGui.TableNextRow()
+    render_scan_header("Function", "key")
+    render_scan_header("Own %", "self_us")
+    render_stat_headers(render_scan_header)
+    shared.render_table_rows(cap.rows or {}, function(row) return render_scan_row(cap, row) end)
+end
+
+-- One ranked list for the scan drill-down: time in ms and call count per neighbor.
+local function render_scan_ranked(title, list)
+    shared.render_colored_text(shared.COLOR_DIM, title)
+    if not list or #list == 0 then ImGui.Text("  (none)"); return end
+    for i = 1, math.min(#list, shared.TOP_NEIGHBORS) do
+        ImGui.Text(format("  %8.2f ms  (%d)  %s", list[i][2] / 1000, list[i][3], JitProfiler.compute_masked_name(list[i][1])))
+    end
+end
+
+-- Call-graph neighbors of the selected scan function: callers drove it, callees are where its time went.
+local function render_scan_neighbors()
+    if not (scan_selected and scan_neighbors_data) then return end
+    ImGui.Separator()
+    ImGui.Text("SELECTED  " .. JitProfiler.compute_masked_name(scan_selected))
+    render_scan_ranked("CALLERS (who called it)", scan_neighbors_data.callers)
+    render_scan_ranked("CALLEES (where its time went)", scan_neighbors_data.callees)
+end
+
+local function render_scan_tab(cap)
+    ImGui.Text(format("last run: %d scripts, %d functions   %d frames   %s",
+        cap.meta.targets or 0, cap.meta.wrapped or 0, cap.meta.frames or 0, cap.meta.stamp or "?"))
+    if (cap.meta.frames or 0) > 0 then
+        local pfm = cap.meta.per_frame_ms or 0
+        ImGui.Text(format("%-14s", "frame budget"))
+        ImGui.SameLine(160)
+        shared.render_bar(math.min(100, pfm / FRAME_MS_60 * 100))
+        ImGui.SameLine()
+        ImGui.Text(format("%.3f ms own / frame  (16.7 ms at 60fps)", pfm))
+    else
+        ImGui.Text(format("%.1f ms own total over ~%.0fs   (menu capture, no actor frames)", (cap.total_us or 0) / 1000, cap.meta.duration or 0))
+    end
+    ImGui.Separator()
+    render_scan_table(cap)
+    if #(cap.rows or {}) == 0 then shared.render_colored_text(shared.COLOR_DIM, NO_TIMED_CALLS) end
+    render_scan_neighbors()
+end
+
+-- The current instrumentation set: each target with a remove button, so the picked scripts are visible without hunting the tree.
+local function render_selected()
+    local targets = JitProfiler.get_targets()
+    ImGui.Text(format("SELECTED  %d", #targets))
+    if #targets == 0 then
+        ImGui.Text("  none.  use the BROWSE tab, or + on a SAMPLING by-script row")
+        return
+    end
+    if ImGui.BeginListBox("##selset", shared.get_fill_size(nil, SET_FRAC)) then
+        for i = 1, #targets do
+            local name = targets[i]
+            if ImGui.Button("x##sel" .. name, shared.VZERO) then JitProfiler.remove_target(name) end
+            ImGui.SameLine()
+            ImGui.Text(name)
+        end
+        ImGui.EndListBox()
+    end
+end
+
+-- One callbacks row: the callback name, the handler coloured by owner, then own/total ms and calls. Skipped when filtered.
+local function render_callbacks_row(cap, row)
+    local owner = JitProfiler.get_owner(row.handler)
+    if not shared.check_filter(row.callback .. " " .. row.handler, owner) then return end
+    ImGui.TableNextRow()
+    ImGui.TableNextColumn()
+    ImGui.Text(row.callback)
+    ImGui.TableNextColumn()
+    shared.render_colored_text(shared.get_mod_color(owner), JitProfiler.compute_masked_name(row.handler))
+    if ImGui.IsItemHovered() then ImGui.SetTooltip(JitProfiler.compute_masked_name(owner)) end
+    shared.render_num(format("%8.2f", row.self_us / 1000))
+    shared.render_num(format("%8.2f", row.total_us / 1000))
+    shared.render_num(format("%8d", row.calls))
+    shared.render_num(format("%8.3f", row.avg_us / 1000))
+    shared.render_num(format("%8.3f", row.min_us / 1000))
+    shared.render_num(format("%8.3f", row.max_us / 1000))
+    return true
+end
+
+local function render_cb_header(label, field, right) shared.render_header(cb_sort, "cbh", label, field, right) end
+
+-- The callbacks results: each timed handler under its callback, sortable by any column.
+local function render_callbacks_table(cap)
+    sort_capture_rows(cb_sort, cap.rows or {}, cap.meta.stamp)
+    if not ImGui.BeginTable("jf_cb", 8, shared.TABLE_FLAGS, shared.get_fill_size(0), 0) then return end
+    ImGui.TableSetupColumn("Callback", 0, 170, 0)
+    ImGui.TableSetupColumn("Handler", 0, 210, 0)
+    init_stat_columns()
+    ImGui.TableNextRow()
+    render_cb_header("Callback", "callback")
+    render_cb_header("Handler", "handler")
+    render_stat_headers(render_cb_header)
+    shared.render_table_rows(cap.rows or {}, function(row) return render_callbacks_row(cap, row) end)
+end
+
+-- One picker row: the +/- toggle that narrows the next capture, then the callback with its handler count.
+local function render_cb_item(row)
+    local on = JitProfiler.is_callback_target(row.name)
+    if ImGui.Button((on and "-##cbb" or "+##cbb") .. row.name, shared.VZERO) then
+        if on then JitProfiler.remove_callback_target(row.name) else JitProfiler.add_callback_target(row.name) end
+    end
+    ImGui.SameLine()
+    ImGui.Text(format("%s  (%d)", row.name, row.handlers))
+end
+
+-- The BROWSE picker: every registered callback with its handler count and a +/- toggle; an empty pick arms all.
+--- @novalidate(code.find_in_loop, reason:"substring search over the callback list on a typed needle, not an equality lookup")
+local function render_cb_browse()
+    local list = JitProfiler.get_registered_callbacks()
+    if #list == 0 then ImGui.Text("make_callback intercepts not reachable on this build"); return end
+    local npick = JitProfiler.get_callback_pick_count()
+    ImGui.Text(npick == 0 and "arming ALL callbacks  -  pick some to narrow the capture" or format("arming %d picked callbacks", npick))
+    local new_search = ImGui.InputText("Search##cbb", cb_search, 64)
+    if new_search then cb_search = new_search end
+    local needle = cb_search:lower()
+    if ImGui.BeginListBox("##cblist", shared.get_fill_size(0)) then
+        for i = 1, #list do
+            if needle == "" or list[i].name:lower():find(needle, 1, true) then render_cb_item(list[i]) end
+        end
+        ImGui.EndListBox()
+    end
+end
+
+--- Clear the INSTRUMENT drill-down selection; called from jitprofiler_ui on a top-tab change so a re-entered tab opens with no stale row.
+function clear_selection()
+    scan_selected = nil
+    scan_neighbors_data = nil
+end
+
+--- The INSTRUMENT tab body: the run control and overhead guard, then the SELECTED working list plus results, or the BROWSE modlist.
+function render_instrument()
+    local targets, wrapped = JitProfiler.get_target_stats()
+    local active = JitProfiler.is_scan_active()
+    local busy = JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or targets == 0
+    shared.render_run_button("inst", active, busy, JitProfiler.start_scan, JitProfiler.stop_scan)
+    ImGui.SameLine()
+    if targets == 0 then
+        ImGui.Text("no scripts selected  -  add from BROWSE or a by-script row")
+    else
+        ImGui.Text(format("%d scripts, %d functions", targets, wrapped))
+        ImGui.SameLine()
+        if ImGui.Button("Clear##set", shared.VZERO) then JitProfiler.clear_targets() end
+    end
+    if wrapped > OVERHEAD_WARN then
+        ImGui.SameLine()
+        local note = "large set, expect frame cost"
+        shared.render_colored_text(COLOR_LARGESET, note)
+    end
+    ImGui.Separator()
+    inst_view = render_view_tab(inst_view, INST_SELECTED, "SELECTED", "##iv")
+    ImGui.SameLine()
+    inst_view = render_view_tab(inst_view, INST_BROWSE, "BROWSE", "##iv")
+    ImGui.Separator()
+    if inst_view == INST_BROWSE then
+        render_tree()
+        return
+    end
+    render_selected()
+    local cap = JitProfiler.get_last_capture(shared.KIND_SCAN)
+    if cap and not active then ImGui.Separator(); render_scan_tab(cap) end
+end
+
+--- The CALLBACKS tab body: the run control and filter, the RESULTS/BROWSE subtabs, then the retained per-handler timings.
+function render_callbacks()
+    local active = JitProfiler.is_callbacks_active()
+    local busy = JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or JitProfiler.is_scan_active()
+    shared.render_run_button("cb", active, busy, JitProfiler.start_callbacks, JitProfiler.stop_callbacks)
+    ImGui.SameLine()
+    local npick = JitProfiler.get_callback_pick_count()
+    ImGui.Text(npick == 0 and "times every registered handler over the make_callback dispatch" or format("times %d picked callbacks (BROWSE to change)", npick))
+    ImGui.SameLine(0, 20)
+    ImGui.SetNextItemWidth(shared.FILTER_W)
+    local new_filter = ImGui.InputText("##cbfilter", shared.get_filter(), 64)
+    if new_filter then shared.set_filter(new_filter) end
+    ImGui.Separator()
+    cb_view = render_view_tab(cb_view, CB_RESULTS, "RESULTS", "##cbv")
+    ImGui.SameLine()
+    cb_view = render_view_tab(cb_view, CB_BROWSE, "BROWSE", "##cbv")
+    ImGui.Separator()
+    if cb_view == CB_BROWSE then
+        render_cb_browse()
+        return
+    end
+    local cap = JitProfiler.get_last_capture(shared.KIND_CALLBACKS)
+    if cap and not active then
+        ImGui.Text(format("last run: %d handlers   ~%.0fs   %s",
+            cap.meta.wrapped or 0, cap.meta.duration or 0, cap.meta.stamp or "?"))
+        ImGui.Separator()
+        render_callbacks_table(cap)
+    else
+        ImGui.Text("No capture yet.  Press Start, play, then Stop.")
+    end
+end

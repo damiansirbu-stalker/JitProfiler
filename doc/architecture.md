@@ -149,12 +149,15 @@ The timestamp is the capture's wall-clock time, so successive runs never overwri
 Both are ASCII only.
 
 ## In-game panel
-`jitprofiler_ui.script` registers a panel and a menu entry through the base ImGui Groups API.
-The panel draws in the Main group, so it appears while the F11 ImGui overlay is open.
+`jitprofiler_ui.script` registers the panel and a menu entry through the base ImGui Groups API and draws in the Main group, so it appears while the F11 ImGui overlay is open.
+The panel opens at 90% of the live screen, centered, sized on appear from the `vid_mode` cvar so it never assumes a resolution, then resizes freely.
+CPU and MEM sampling render in `jitprofiler_ui.script`. `jitprofiler_ui_trace.script` holds the INSTRUMENT and CALLBACKS tabs.
+Both reach one set of render helpers and the single panel filter through `jitprofiler_ui.SHARED`, so the split keeps one copy of the drawing code and the filter state.
 The top tabs are CPU, MEM, INSTRUMENT, and CALLBACKS. A running capture locks the others, so no two run at once.
 CPU and MEM show the retained last capture through `get_last_capture`.
 A view selector switches the table between by mod, by script, by leaf, and by root. Each column header sorts, and a filter box narrows the rows.
-The results tables scroll within a fixed height, and the SELECTED working set and the BROWSE modlist each sit in their own scroll box, so a long list scrolls instead of flooding the panel.
+Each content region fills the height left below it and scrolls within that, sized by `get_fill_size` off `GetContentRegionAvail`.
+The results table, the SELECTED working set, and the BROWSE modlist each grow with the window and scroll within their own region.
 The by-script rows carry a per-row button that adds or removes the script from the instrumentation set.
 Under INSTRUMENTATION a start and stop control arms the whole set, and an overhead line shows the wrapped-function count.
 Two sub-views split the screen.
@@ -168,7 +171,7 @@ A frame-budget bar reads own ms per frame against a 60fps frame.
 Number columns right-align through CalcTextSize, so magnitude scans down the column.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
 The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile) each explained on hover.
-Then the engine-C entry points, the Lua call sites that drive the engine bucket.
+Then the engine-C entry points, the Lua call sites that drive the engine bucket, under a collapsing header closed by default.
 The CALLBACKS tab arms `start_callbacks` and ranks every registered handler over the make_callback dispatch by own ms, with its callback and owning mod.
 A BROWSE subtab lists every registered callback with its handler count and a picker toggle.
 A dim line under a running MEM or wrapping capture notes the FPS drop and that accuracy holds.
