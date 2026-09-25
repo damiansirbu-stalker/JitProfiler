@@ -104,11 +104,11 @@ function renderSampling(cap){
 
 function renderRows(cap){
   const span=cap.total_us||0, isScan=cap.kind==="scan", h=[];
-  h.push(`<div class="vh">${isScan?"BY FUNCTION":"BY HANDLER"}</div><table><tr class="hd"><td class="nm">${isScan?"Function":"Handler"}</td><td class="ow">Mod</td><td>Own %</td><td class="v">Own ms</td><td class="v">Total ms</td><td class="v">Calls</td><td class="v">Avg us</td><td class="v">Min us</td><td class="v">Max us</td></tr>`);
+  h.push(`<div class="vh">${isScan?"BY FUNCTION":"BY HANDLER"}</div><table><tr class="hd"><td class="nm">${isScan?"Function":"Handler"}</td><td class="ow">Mod</td><td>Own %</td><td class="v">Own ms</td><td class="v">Total ms</td><td class="v">Calls</td><td class="v">Avg ms</td><td class="v">Min ms</td><td class="v">Max ms</td></tr>`);
   for(const r of (cap.rows||[])){
     const name=isScan?r.name:r.handler;
     const avg=(r.avg_us!=null)?r.avg_us:(r.calls>0?r.self_us/r.calls:0);
-    h.push(`<tr><td class="nm" title="${esc(name)}">${esc(name)}</td><td class="ow" title="${esc(r.owner||"")}">${esc(r.owner||"")}</td><td>${bar(span?100*r.self_us/span:0)}</td><td class="v">${(r.self_us/1000).toFixed(2)} ms</td><td class="v">${(r.total_us/1000).toFixed(2)} ms</td><td class="v">${r.calls}</td><td class="v">${avg.toFixed(1)}</td><td class="v">${(r.min_us||0).toFixed(1)}</td><td class="v">${(r.max_us||0).toFixed(1)}</td></tr>`);
+    h.push(`<tr><td class="nm" title="${esc(name)}">${esc(name)}</td><td class="ow" title="${esc(r.owner||"")}">${esc(r.owner||"")}</td><td>${bar(span?100*r.self_us/span:0)}</td><td class="v">${(r.self_us/1000).toFixed(2)} ms</td><td class="v">${(r.total_us/1000).toFixed(2)} ms</td><td class="v">${r.calls}</td><td class="v">${(avg/1000).toFixed(3)}</td><td class="v">${((r.min_us||0)/1000).toFixed(3)}</td><td class="v">${((r.max_us||0)/1000).toFixed(3)}</td></tr>`);
   }
   h.push(`</table>`);
   return h.join("");

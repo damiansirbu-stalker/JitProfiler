@@ -84,7 +84,8 @@ if not (profile and allocprof) then
     is_target = function() return false end
     get_targets = function() return {} end
     get_target_stats = function() return 0, 0 end
-    add_target, remove_target, add_mod_targets, start_scan, stop_scan = log_absent, log_absent, log_absent, log_absent, log_absent
+    add_target, remove_target, add_mod_targets, remove_mod_targets, clear_targets, start_scan, stop_scan =
+        log_absent, log_absent, log_absent, log_absent, log_absent, log_absent, log_absent
     start_callbacks, stop_callbacks = log_absent, log_absent
     is_callbacks_active = function() return false end
     add_callback_target, remove_callback_target = log_absent, log_absent
@@ -551,6 +552,25 @@ function add_mod_targets(owner)
         local mod = type(name) == "string" and rawget(_G, name)
         if type(mod) == "table" and get_owner(name .. ".script") == owner then add_target(name) end
     end
+end
+
+--- Remove every loaded script a mod owns from the instrumentation set.
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
+function remove_mod_targets(owner)
+    for name in pairs(_G) do
+        local mod = type(name) == "string" and rawget(_G, name)
+        if type(mod) == "table" and get_owner(name .. ".script") == owner then remove_target(name) end
+    end
+end
+
+--- Empty the instrumentation set; unwraps live when a capture is running.
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
+function clear_targets()
+    for name in pairs(scan.set) do
+        if scan.active then remove_wraps(name) end
+        scan.set[name] = nil
+    end
+    scan.count = 0
 end
 
 --- @return boolean whether a script is in the instrumentation set.

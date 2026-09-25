@@ -46,7 +46,7 @@ local GC_RATE_MS = 1000
 local ROW_CAP = 200
 -- The shared per-call stat columns of the scan and callbacks tables, one spec driving both setup and sortable headers.
 local STAT_COLUMNS = { { "Own ms", "self_us" }, { "Total ms", "total_us" }, { "Calls", "calls" },
-                       { "avg us", "avg_us" }, { "min us", "min_us" }, { "max us", "max_us" } }
+                       { "avg ms", "avg_us" }, { "min ms", "min_us" }, { "max ms", "max_us" } }
 
 local COLOR_BG     = fcolor():set(0.09, 0.10, 0.12, 0.97)
 local COLOR_TEXT   = fcolor():set(0.86, 0.89, 0.94, 1.0)
@@ -697,32 +697,31 @@ local function render_tree_item(name)
     ImGui.Text(name)
 end
 
--- Substring match of a script name against the search needle; an empty needle matches all.
-local function check_match(name, needle)
-    return needle == "" or name:lower():find(needle, 1, true) ~= nil
-end
-
 -- One mod group when idle: the collapsed header scopes the list, and the header carries a +all that instruments the whole mod.
 local function render_tree_group(group)
     local open = ImGui.CollapsingHeader(group.owner .. "##g" .. group.owner)
     ImGui.SameLine()
     if ImGui.Button("+all##m" .. group.owner, VZERO) then JitProfiler.add_mod_targets(group.owner) end
+    ImGui.SameLine()
+    if ImGui.Button("-all##rm" .. group.owner, VZERO) then JitProfiler.remove_mod_targets(group.owner) end
     if not open then return end
     for j = 1, #group.scripts do render_tree_item(group.scripts[j]) end
 end
 
 -- One mod group while searching: a matching mod name shows every script, else only matching scripts; hits render open, collapse ignored.
+--- @novalidate(code.find_in_loop, reason:"substring search over the browse list on a typed needle, not an equality lookup")
 local function render_search_group(group, needle)
     local owner_hit = group.owner:lower():find(needle, 1, true) ~= nil
     local hits = {}
     for j = 1, #group.scripts do
-        local name = group.scripts[j]
-        if owner_hit or check_match(name, needle) then hits[#hits + 1] = name end
+        if owner_hit or group.scripts[j]:lower():find(needle, 1, true) then hits[#hits + 1] = group.scripts[j] end
     end
     if #hits == 0 then return end
     ImGui.Text(group.owner)
     ImGui.SameLine()
     if ImGui.Button("+all##m" .. group.owner, VZERO) then JitProfiler.add_mod_targets(group.owner) end
+    ImGui.SameLine()
+    if ImGui.Button("-all##rm" .. group.owner, VZERO) then JitProfiler.remove_mod_targets(group.owner) end
     for j = 1, #hits do render_tree_item(hits[j]) end
 end
 
@@ -759,9 +758,9 @@ local function render_scan_row(cap, row)
     render_num(format("%8.2f", row.self_us / 1000))
     render_num(format("%8.2f", row.total_us / 1000))
     render_num(format("%8d", row.calls))
-    render_num(format("%8.1f", row.avg_us))
-    render_num(format("%8.1f", row.min_us))
-    render_num(format("%8.1f", row.max_us))
+    render_num(format("%8.3f", row.avg_us / 1000))
+    render_num(format("%8.3f", row.min_us / 1000))
+    render_num(format("%8.3f", row.max_us / 1000))
     return true
 end
 
@@ -930,6 +929,8 @@ local function render_instrument()
         ImGui.Text("no scripts selected  -  add from BROWSE or a by-script row")
     else
         ImGui.Text(format("%d scripts, %d functions", targets, wrapped))
+        ImGui.SameLine()
+        if ImGui.Button("Clear##set", VZERO) then JitProfiler.clear_targets() end
     end
     if wrapped > OVERHEAD_WARN then
         ImGui.SameLine()
@@ -963,9 +964,9 @@ local function render_callbacks_row(cap, row)
     render_num(format("%8.2f", row.self_us / 1000))
     render_num(format("%8.2f", row.total_us / 1000))
     render_num(format("%8d", row.calls))
-    render_num(format("%8.1f", row.avg_us))
-    render_num(format("%8.1f", row.min_us))
-    render_num(format("%8.1f", row.max_us))
+    render_num(format("%8.3f", row.avg_us / 1000))
+    render_num(format("%8.3f", row.min_us / 1000))
+    render_num(format("%8.3f", row.max_us / 1000))
     return true
 end
 
@@ -996,6 +997,7 @@ local function render_cb_item(row)
 end
 
 -- The BROWSE picker: every registered callback with its handler count and a +/- toggle; an empty pick arms all.
+--- @novalidate(code.find_in_loop, reason:"substring search over the callback list on a typed needle, not an equality lookup")
 local function render_cb_browse()
     local list = JitProfiler.get_registered_callbacks()
     if #list == 0 then ImGui.Text("make_callback intercepts not reachable on this build"); return end
@@ -1005,7 +1007,7 @@ local function render_cb_browse()
     if new_search then cb_search = new_search end
     local needle = cb_search:lower()
     for i = 1, #list do
-        if check_match(list[i].name, needle) then render_cb_item(list[i]) end
+        if needle == "" or list[i].name:lower():find(needle, 1, true) then render_cb_item(list[i]) end
     end
 end
 

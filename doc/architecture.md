@@ -160,6 +160,7 @@ Under INSTRUMENTATION a start and stop control arms the whole set, and an overhe
 Two sub-views split the screen.
 SELECTED lists the working set, each target removable.
 BROWSE is a modlist grouped by mod with a search box, where a + adds a script and a +all on the mod header adds every script that mod owns through add_mod_targets.
+A -all on the same header removes that mod's scripts, and a Clear button by the set count empties the whole set.
 The search matches the mod name or the script name. A matching mod shows all its scripts, and hits render with their group open, collapse ignored.
 The results table ranks each function by own with an own-share bar, plus own ms, total ms, and calls, each column sortable on click.
 Avg, min, and max per call are sortable columns, carried through the text report, the json, and the published viewer.

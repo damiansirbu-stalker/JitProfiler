@@ -91,6 +91,7 @@ The CPU tab adds the VM-state split and the engine-C entry-points list.
 The MEM tab adds a live GC-health strip with the heap toward the next collection, the live estimate, the debt, and the collection rate.
 INSTRUMENT holds the targeted mode.
 Add scripts from the BROWSE modlist (a + per script, or +all on a mod header to instrument the whole mod) or the + on a by-script row.
+A -all on the mod header takes that mod back out, and a Clear button by the set count empties the whole set.
 Then run and read the per-function own and total time with per-call avg, min, and max, sortable by any column, and a frame-budget bar.
 Select a function to read its callers and callees with their time.
 CALLBACKS arms the callbacks profiler and lists every registered handler ranked by own ms, with its callback and owning mod.
