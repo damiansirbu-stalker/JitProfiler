@@ -19,8 +19,6 @@ local TABLE_H  = 240
 local VMBAR_W  = 130
 local BAR_W    = 80
 local FILTER_W = 180
-local VIEW_W   = 160
-local HEADER_H = 20
 local TOP_NEIGHBORS = 8
 local OVERHEAD_WARN = 4000
 local FRAME_MS_60 = 1000 / 60
@@ -42,8 +40,6 @@ local SORT_VALUE = "value"
 local PCT_OWN = "Own %"
 local PCT_TOTAL = "Total %"
 local GC_RATE_MS = 1000
--- Cap on drawn table rows per frame: each row costs several bridge calls, so an uncapped full-ledger capture drags the frame.
-local ROW_CAP = 200
 -- The shared per-call stat columns of the scan and callbacks tables, one spec driving both setup and sortable headers.
 local STAT_COLUMNS = { { "Own ms", "self_us" }, { "Total ms", "total_us" }, { "Calls", "calls" },
                        { "avg ms", "avg_us" }, { "min ms", "min_us" }, { "max ms", "max_us" } }
@@ -67,6 +63,9 @@ local WINDOW_SIZE = vector2(WINDOW_W, WINDOW_H)
 local TABLE_SIZE  = vector2(0, TABLE_H)
 local BTN_SIZE    = vector2(96, 0)
 local BANNER_POS  = vector2(24, 120)
+-- Bounded scroll regions for the picker lists, so a long working set or modlist scrolls instead of flooding the panel.
+local SET_LIST_SIZE    = vector2(0, 150)
+local BROWSE_LIST_SIZE = vector2(0, 340)
 
 -- The CPU VM-state strip, one colored bar per state code in cap.meta.vmstate, explained on hover.
 local VMSTATE = {
@@ -170,19 +169,10 @@ local function check_filter(key, owner)
     return (key and key:lower():find(needle, 1, true)) or (owner and owner:lower():find(needle, 1, true)) or false
 end
 
--- Draw a table's rows through the per-frame cap, close the table, and note when capped; the filter still searches every row.
-local function render_capped_rows(entries, draw)
-    local drawn = 0
-    for i = 1, #entries do
-        if draw(entries[i]) then
-            drawn = drawn + 1
-            if drawn >= ROW_CAP then break end
-        end
-    end
+-- Draw every row of an open table, then close it. The table's own ScrollY bounds the height, so a long list scrolls instead of flooding.
+local function render_table_rows(entries, draw)
+    for i = 1, #entries do draw(entries[i]) end
     ImGui.EndTable()
-    if drawn >= ROW_CAP and #entries > drawn then
-        render_colored_text(COLOR_DIM, format("showing %d of %d rows; filter to narrow", drawn, #entries))
-    end
 end
 
 local function init_stat_columns()
@@ -270,7 +260,7 @@ local function render_header(state, prefix, label, field, right)
     local start_x = ImGui.GetCursorPosX()
     local avail = ImGui.GetContentRegionAvail().x
     if avail < 1 then avail = 1 end
-    if ImGui.InvisibleButton("##" .. prefix .. label, vector2(avail, HEADER_H)) then
+    if ImGui.InvisibleButton("##" .. prefix .. label, vector2(avail, 20)) then
         if state.field == field then state.asc = not state.asc else state.field, state.asc = field, false end
     end
     local hovered = ImGui.IsItemHovered()
@@ -346,7 +336,7 @@ end
 local function render_view_combo()
     ImGui.Text("View")
     ImGui.SameLine()
-    ImGui.SetNextItemWidth(VIEW_W)
+    ImGui.SetNextItemWidth(160)
     if not ImGui.BeginCombo("##view", VIEWS[view_index].label, 0) then return end
     for i = 1, #VIEWS do
         if ImGui.Selectable(VIEWS[i].label, i == view_index, 0, VZERO) and i ~= view_index then
@@ -395,7 +385,7 @@ local function render_bymod_table(cap)
     render_sort_header("Own %", SORT_OWN)
     render_sort_header("Total %", SORT_TOTAL)
     render_sort_header("Value", SORT_TOTAL, true)
-    render_capped_rows(entries, function(entry) return render_bymod_row(cap, entry) end)
+    render_table_rows(entries, function(entry) return render_bymod_row(cap, entry) end)
 end
 
 local function render_view_row(cap, view, entry)
@@ -438,7 +428,7 @@ local function render_view_table(cap, view)
     render_sort_header("Mod", SORT_OWNER)
     render_sort_header(view.pct_label or "%", SORT_VALUE)
     render_sort_header("Value", SORT_VALUE, true)
-    render_capped_rows(entries, function(entry) return render_view_row(cap, view, entry) end)
+    render_table_rows(entries, function(entry) return render_view_row(cap, view, entry) end)
 end
 
 -- One BY SCRIPT row: the +/- instrument button and script name, the owner colour, then Own% and Total% bars with the raw value.
@@ -485,7 +475,7 @@ local function render_byscript_table(cap)
     render_sort_header("Own %", SORT_OWN)
     render_sort_header("Total %", SORT_TOTAL)
     render_sort_header("Value", SORT_TOTAL, true)
-    render_capped_rows(entries, function(entry) return render_byscript_row(cap, entry) end)
+    render_table_rows(entries, function(entry) return render_byscript_row(cap, entry) end)
 end
 
 local function render_table(cap)
@@ -733,8 +723,11 @@ local function render_tree()
     ImGui.SameLine()
     if ImGui.Button("Refresh##tree") then build_tree() end
     local needle = tree_search:lower()
-    for i = 1, #tree_cache do
-        if needle == "" then render_tree_group(tree_cache[i]) else render_search_group(tree_cache[i], needle) end
+    if ImGui.BeginListBox("##treelist", BROWSE_LIST_SIZE) then
+        for i = 1, #tree_cache do
+            if needle == "" then render_tree_group(tree_cache[i]) else render_search_group(tree_cache[i], needle) end
+        end
+        ImGui.EndListBox()
     end
 end
 
@@ -789,7 +782,7 @@ local function render_scan_table(cap)
     render_scan_header("Function", "key")
     render_scan_header("Own %", "self_us")
     render_stat_headers(render_scan_header)
-    render_capped_rows(cap.rows or {}, function(row) return render_scan_row(cap, row) end)
+    render_table_rows(cap.rows or {}, function(row) return render_scan_row(cap, row) end)
 end
 
 -- One ranked list for the scan drill-down: time in ms and call count per neighbor.
@@ -825,6 +818,7 @@ local function render_scan_tab(cap)
     end
     ImGui.Separator()
     render_scan_table(cap)
+    if #(cap.rows or {}) == 0 then render_colored_text(COLOR_DIM, "No timed calls: INSTRUMENT wraps module-table functions only. Try CPU sampling (catches locals) or CALLBACKS (times handlers).") end
     render_scan_neighbors()
 end
 
@@ -894,11 +888,14 @@ local function render_selected()
         ImGui.Text("  none.  use the BROWSE tab, or + on a SAMPLING by-script row")
         return
     end
-    for i = 1, #targets do
-        local name = targets[i]
-        if ImGui.Button("x##sel" .. name, VZERO) then JitProfiler.remove_target(name) end
-        ImGui.SameLine()
-        ImGui.Text(name)
+    if ImGui.BeginListBox("##selset", SET_LIST_SIZE) then
+        for i = 1, #targets do
+            local name = targets[i]
+            if ImGui.Button("x##sel" .. name, VZERO) then JitProfiler.remove_target(name) end
+            ImGui.SameLine()
+            ImGui.Text(name)
+        end
+        ImGui.EndListBox()
     end
 end
 
@@ -983,7 +980,7 @@ local function render_callbacks_table(cap)
     render_cb_header("Callback", "callback")
     render_cb_header("Handler", "handler")
     render_stat_headers(render_cb_header)
-    render_capped_rows(cap.rows or {}, function(row) return render_callbacks_row(cap, row) end)
+    render_table_rows(cap.rows or {}, function(row) return render_callbacks_row(cap, row) end)
 end
 
 -- One picker row: the +/- toggle that narrows the next capture, then the callback with its handler count.
@@ -1006,8 +1003,11 @@ local function render_cb_browse()
     local new_search = ImGui.InputText("Search##cbb", cb_search, 64)
     if new_search then cb_search = new_search end
     local needle = cb_search:lower()
-    for i = 1, #list do
-        if needle == "" or list[i].name:lower():find(needle, 1, true) then render_cb_item(list[i]) end
+    if ImGui.BeginListBox("##cblist", BROWSE_LIST_SIZE) then
+        for i = 1, #list do
+            if needle == "" or list[i].name:lower():find(needle, 1, true) then render_cb_item(list[i]) end
+        end
+        ImGui.EndListBox()
     end
 end
 

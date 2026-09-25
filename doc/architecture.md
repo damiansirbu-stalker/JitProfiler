@@ -154,7 +154,7 @@ The panel draws in the Main group, so it appears while the F11 ImGui overlay is 
 The top tabs are CPU, MEM, INSTRUMENT, and CALLBACKS. A running capture locks the others, so no two run at once.
 CPU and MEM show the retained last capture through `get_last_capture`.
 A view selector switches the table between by mod, by script, by leaf, and by root. Each column header sorts, and a filter box narrows the rows.
-Every table draws at most 200 rows per frame, with a note under a capped table. The filter searches every row, only the drawing stops at the cap.
+The results tables scroll within a fixed height, and the SELECTED working set and the BROWSE modlist each sit in their own scroll box, so a long list scrolls instead of flooding the panel.
 The by-script rows carry a per-row button that adds or removes the script from the instrumentation set.
 Under INSTRUMENTATION a start and stop control arms the whole set, and an overhead line shows the wrapped-function count.
 Two sub-views split the screen.
@@ -205,6 +205,7 @@ The panel, menu, and banner read `show_imgui` through a cached flag and draw not
   A directly recursive wrapped function re-adds each level's span, so its inclusive number double-counts the nested self-calls. Read Own for a recursive function.
 - Instrumentation wraps a script's module-table functions.
   A function reached through a saved reference (a registered callback, a stored upvalue, a local alias) still calls the original and is not timed.
+  A script written mostly as local functions dispatched through callbacks or time-events exposes little on its module table, so a scan of it times almost nothing; a scan that records no called row says so in the panel and points to CPU sampling or the callbacks mode.
   The callbacks mode covers the dispatch case.
 
 ## Requires
