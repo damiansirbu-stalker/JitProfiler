@@ -1,5 +1,5 @@
 Version: 1.0.0-snapshot (xlibs 1.8.3, demonized 20250908)
-Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog | Health: https://damiansirbu-stalker.github.io/JitProfiler/health/ | JitProfiler: https://damiansirbu-stalker.github.io/JitProfiler/jitprofiler/ | Bugs: https://github.com/damiansirbu-stalker/JitProfiler/issues | Russian / На русском: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt
+Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog | Health: https://damiansirbu-stalker.github.io/JitProfiler/health/ | JitProfiler: https://damiansirbu-stalker.github.io/JitProfiler/jitprofiler/ | Bugs: https://github.com/damiansirbu-stalker/JitProfiler/issues | Recommended exe: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler | Russian / На русском: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt
 
 My work:
 GitHub: https://github.com/orgs/damiansirbu-stalker/repositories
@@ -10,6 +10,9 @@ My contributions:
 X-Ray Monolith: https://github.com/themrdemonized/xray-monolith
 
 [ HERO IMAGE: jitprofiler-hero.gif - the profiler in action ]
+
+Early release. Some of the X-Ray crash fixes and optimizations this build relies on are not yet in the latest demonized exe, so I recommend running it with the exe from my fork: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
+It is safe: the latest demonized MT build (2026.9.12) with a few X-Ray crash fixes and optimizations on top, nothing else.
 
 Stop guessing, measure.
 
