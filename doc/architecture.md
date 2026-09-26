@@ -152,9 +152,9 @@ Both are ASCII only.
 ## In-game panel
 `jitprofiler_ui.script` registers the panel and a menu entry through the base ImGui Groups API and draws in the Main group, so it appears while the F11 ImGui overlay is open.
 The panel opens at 90% of the live screen, centered, sized on appear from the `vid_mode` cvar so it never assumes a resolution, then resizes freely.
-CPU and MEM sampling render in `jitprofiler_ui.script`. `jitprofiler_ui_trace.script` holds the INSTRUMENT and CALLBACKS tabs.
+CPU and MEM sampling render in `jitprofiler_ui.script`. `jitprofiler_ui_trace.script` holds the INSTRUMENT and CALLBACKS tabs, and `jitprofiler_ui_config.script` the PUBLISH tab through `render_publish_tab`.
 Both reach one set of render helpers and the single panel filter through `jitprofiler_ui.SHARED`, so the split keeps one copy of the drawing code and the filter state.
-The top tabs are CPU, MEM, INSTRUMENT, and CALLBACKS. A running capture locks the others, so no two run at once.
+The top tabs are CPU, MEM, INSTRUMENT, CALLBACKS, and PUBLISH. A running capture locks the others, so no two run at once.
 CPU and MEM show the retained last capture through `get_last_capture`.
 A view selector switches the table between by mod, by script, by leaf, and by root. Each column header sorts, and a filter box narrows the rows.
 Each results table fills the height left below it and scrolls within that, sized by `get_fill_size` off `GetContentRegionAvail`, so the analysis grows with the window.
