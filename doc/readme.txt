@@ -1,5 +1,10 @@
 Version: 1.0.0-snapshot (xlibs 1.8.3, demonized 20250908)
-Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog | Health: https://damiansirbu-stalker.github.io/JitProfiler/health/ | JitProfiler: https://damiansirbu-stalker.github.io/JitProfiler/jitprofiler/ | Bugs: https://github.com/damiansirbu-stalker/JitProfiler/issues | Recommended exe: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler | Russian / На русском: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt
+Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
+Health: https://damiansirbu-stalker.github.io/JitProfiler/health/
+JitProfiler: https://damiansirbu-stalker.github.io/JitProfiler/jitprofiler/
+Bugs: https://github.com/damiansirbu-stalker/JitProfiler/issues
+Recommended exe: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
+Russian / На русском: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt
 
 My work:
 GitHub: https://github.com/orgs/damiansirbu-stalker/repositories
@@ -9,164 +14,88 @@ Nexus: https://www.nexusmods.com/profile/damiansirbu/mods
 My contributions:
 X-Ray Monolith: https://github.com/themrdemonized/xray-monolith
 
-[ HERO IMAGE: jitprofiler-hero.gif - the profiler in action ]
+[ Hero image: jitprofiler-hero.gif - the profiler runs a capture ]
 
-Early release. Some of the X-Ray crash fixes and optimizations this build relies on are not yet in the latest demonized exe, so I recommend running it with the exe from my fork: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
-It is safe: the latest demonized MT build (2026.9.12) with a few X-Ray crash fixes and optimizations on top, nothing else.
+Early release. Some of the X-Ray crash fixes and optimizations this build relies on are not yet in the latest demonized exe, so run it with the exe from the fork below:
+https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
+It is the latest demonized MT build (2026.9.12) with a few X-Ray crash fixes and optimizations on top, nothing else.
 
 Stop guessing, measure.
 
-JitProfiler finds which of your mods eats performance, and it finds it for you.
-It samples the running Lua stack on the engine's own timer, so the overhead is near-zero, the JIT stays on, and one capture covers the whole modpack at once.
-There is nothing to select and nothing to suspect in advance.
-Point it at the slow scene and read the ranking.
-The sampling is jittered, so a mod that runs on a schedule cannot dodge the sampler.
+JitProfiler is a Lua profiler for Anomaly. It samples the script layer while you play and names the mod behind each cost.
+Start a capture and play. Stop it and read the report, every mod and script ranked by cost, each resolved through the MO2 load order to the copy that ran.
+CPU ranks Lua time, MEM ranks allocation. Sampling keeps the JIT on and costs almost nothing, so one capture covers the whole modpack with no module to pick.
+When the ranking names a mod, instrument its scripts for exact per-call timing.
+The sampler and the allocation counter are native code in xray-monolith, this project's own contribution to the engine, so it reads the allocation bytes and the VM state a script-side profiler cannot.
 
-It offers CPU sampling, memory allocation profiling, targeted instrumentation, and a callbacks profiler.
-CPU sampling shows where the Lua time goes.
-Memory profiling shows which code generates the garbage the collector must clear, the real source of Anomaly's stutter and something script-side profilers cannot measure.
-Instrumentation wraps a chosen set of scripts and times each function for its own and total wall-clock, including the engine C beneath a call, the one axis the sampler cannot reach.
-Framerate drops while a scan runs, because each wrapped call carries a timer. That is expected, and the timings stay exact.
-It records the call graph as it runs, so each function shows its callers and its callees with their time, and a whole-mod scan totals the cost per owning mod.
-The callbacks profiler wraps the callback handlers you pick over the make_callback dispatch and ranks each by own ms with its callback and owning mod.
-So it names which mod hooks a given callback and what each handler costs, engine C included.
+Sampling - CPU and MEM. Leave it running while you play, then read the ranking.
 
-Engine C stays one bucket by nature.
-The sampler catches that Lua entered the engine, but the C++ routine underneath stays invisible to it.
-JitProfiler makes that bucket actionable anyway.
-It ranks the Lua call sites that enter engine C and the collector, the engine-C entry points, so you know which of your own calls drive the engine cost.
-Those entry points are the map for a native C++ profiler.
-Point Optick at the engine paths JitProfiler names.
-The Lua layer finds the entry, and the native profiler opens what lies beneath it.
+CPU - the ranked breakdown of Lua time, by mod and by script.
+It samples the running stack on the engine's own timer at 5 ms with the JIT on, so the overhead is near-zero.
+The interval is jittered on an exponential draw, so a mod on a schedule cannot phase-lock to it.
+It splits the time by VM state and lists the engine-C entry points, your Lua call sites that drive the engine cost and the map for a native profiler like Optick.
 
-The sampler and the allocation counter are native code in the modded exe, beneath the script layer.
-That native core is my own work in xray-monolith. I backported the timer sampler and wrote the allocation profiler, so JitProfiler runs from the C up, one author for the whole stack.
-That is why the cost stays near-zero, and why it reaches the allocator and the VM state a script tool cannot.
-Every capture names the mod that owns each hot script, so you get a mod name to act on.
-When several mods override the same script, JitProfiler names the one that wins your load order, the copy the game actually loaded and ran.
-It reads this from the MO2 virtual filesystem, so the name always matches what executed.
+MEM - the ranked breakdown of allocation, the garbage the collector must clear.
+It counts exact bytes at the allocator seam with the JIT off, the stutter source a script-side tool cannot measure.
+The framerate drops during the capture, so keep it short. The byte counts stay exact regardless.
+A live GC-health strip reads the heap toward the next collection, the live estimate, the debt, and the collection rate.
+
+Instrumentation - INSTRUMENT and CALLBACKS. Use these on the mod that sampling named.
+
+INSTRUMENT - own and total wall-clock per function over the scripts you pick, engine C included.
+It wraps every function of the set and times each call, with the call count and the average, minimum, and maximum per call.
+It records the call graph and totals the cost per owning mod, so you see where a function's time goes.
+Each call carries a timer, so the framerate drops while a scan runs. The numbers stay exact.
+Build the set from the modlist browser or straight from a CPU row.
+
+CALLBACKS - what each event handler costs and which mod hooks a callback.
+It wraps the handlers you pick over the game's make_callback dispatch and ranks each by own ms with its callback and owning mod, engine C included.
+Dispatch order and semantics stay untouched, so the reading matches what actually runs.
+
+PUBLISH - share a capture as a web page without exposing other authors' mods.
+One click turns a capture into a live page on your own GitHub, the in-game view drawn in the browser and shareable by a link.
+Every third-party mod name is masked in the panel and in every export unless your keep-list frees it, so another author's mod never stands beside a cost.
+The token stays in the session and travels only to GitHub over HTTPS, with no server in between.
+No other Anomaly profiler publishes from inside the game.
+
+The panel opens over the F11 overlay, JitProfiler in the menu bar, and holds the 5 tabs.
+Own counts the innermost frame when the sample fired, Total counts every frame on the stack.
+Every column sorts, and a fold toggle hides the baseline so only your mods remain.
+Console commands mirror every capture for scripted runs, and the Settings hold the interval, depth, and an auto-stop safety.
+Every capture also writes a ranked text report, a flamegraph for speedscope.app, and a machine-readable json to appdata/logs, so nothing the panel shows lives only in the panel.
 
 Requirements:
 Anomaly 1.5.3
 A modded-exes build with the JitProfiler primitives.
 jit.profile and jit.allocprof are in the official 2026.9.12 modded exes.
 jit.util.gcstat, which drives the GC-health readout, is not yet.
-For the full feature set, use the preview exes from my fork:
+For the full feature set, use the preview exes from the fork below:
 https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 xlibs (used for logging).
-Launch with -dbg (MO2 launch arguments) so the console accepts run_string.
-
-Usage (in-game console, ~):
-
-The CPU profile shows which code eats Lua time, with the JIT on:
-```
-run_string JitProfiler.start_cpu()
--- play the scene 30-60 seconds
-run_string JitProfiler.stop_cpu()
-```
-start_cpu(interval_ms, depth) overrides the 5 ms and depth 64 defaults. start_cpu(1) samples more often, start_cpu(5, 32) traces shallower and faster.
-
-The allocation profile shows which code generates GC garbage, with the JIT off for the whole capture.
-Expect a hard FPS drop that scales with the modpack's script load. The byte counts stay exact, so capture short at the spot you care about:
-```
-run_string JitProfiler.start_alloc()
--- play 30-60 seconds
-run_string JitProfiler.stop_alloc()
-```
-Allocation counts exact bytes, so only depth is tunable, as start_alloc(20). A long session auto-writes numbered snapshots. Call JitProfiler.write_snapshot() to force one.
-Framerate drops sharply while the allocation profile runs, because the JIT is off for the capture. That is expected, and the byte counts stay exact regardless of framerate.
-
-Fold the baseline (anomaly, modded exes, engine) to focus on your mods:
-```
-run_string JitProfiler.set_fold_baseline(true)
-```
-Then stop as usual.
-
-In-game panel:
-An ImGui panel does everything without the console. Open the ImGui overlay (default F11), then pick JitProfiler in the menu bar.
-The panel carries a CPU tab, a MEM tab, an INSTRUMENT tab, and a CALLBACKS tab, and a running capture locks the others.
-CPU and MEM hold the sampling captures with the ranked views.
-BY MOD and BY SCRIPT show Own and Total side by side, every column sortable, while BY LEAF and BY ROOT drill into frames, and selecting a row reads its callers and callees.
-The CPU tab adds the VM-state split and the engine-C entry-points list.
-The MEM tab adds a live GC-health strip with the heap toward the next collection, the live estimate, the debt, and the collection rate.
-INSTRUMENT holds the targeted mode.
-Add scripts from the BROWSE modlist (a + per script, or +Add all inside a mod's fold to instrument the whole mod) or the + on a by-script row.
-A -Remove all inside the fold takes that mod back out, and a Clear button by the set count empties the whole set.
-Then run and read the per-function own and total time with per-call avg, min, and max, sortable by any column, and a frame-budget bar.
-Select a function to read its callers and callees with their time.
-CALLBACKS arms the callbacks profiler and lists each timed handler ranked by own ms, with its callback and owning mod.
-Its BROWSE subtab lists every registered callback with a picker toggle, plus Add all and Remove all. The capture times the callbacks you pick.
-On the multi-thread exe a Parallel GC toggle gives a clean CPU garbage-collector read.
-A small corner banner shows while a capture runs.
-
-Share a capture without naming other people's mods:
-The panel's Publish tab carries an Anonymize toggle.
-It masks every third-party mod and script name in the panel and in every export, so a screenshot, a report, or the json never shows another author's mod beside a cost.
-A keep-list edited in the same tab exempts the names you want readable, each entry a pattern of at least 3 letters matched from the start of the owner or script name.
-It persists across sessions and defaults to empty, so each author keeps only their own.
-
-Publish to the web:
-Turn a capture into a live web page on your own GitHub in one click. Set your repo and a GitHub token in the panel's Publish tab, then press Publish there.
-The page shows the profiler view exactly as in game, hosted on your github.io and shareable by a link.
-Nothing renders on my side, and no server sits in the middle. Your page is your own files on your own GitHub.
-On a published page, every mod name is masked except the ones your keep-list matches, so your own mods stay readable and other authors' names do not.
-A line under the Publish button lists which names stay readable, so you see it before anything goes on the web.
-Scope the token to that one repo. It is held for the session only, never saved, shows as asterisks on screen, and travels only to GitHub over HTTPS.
-Type the token in by hand. Pasting into a text field crashes on exes without the InputText fix.
-No other Anomaly profiler publishes its results to the web from inside the game.
-
-Configuration:
-The panel's Settings section holds the sample interval, stack depth, the auto-snapshot threshold, and an auto-stop duration.
-The panel and the console commands use these, and a console argument to start_cpu or start_alloc overrides the matching value for that capture.
-Set the auto-stop above 0 and a running capture stops itself after that many seconds, a safety limit for the allocation profile.
-The MCM page carries only the ImGui overlay toggle.
-
-The reports go to appdata/logs/:
-```
-jitprofiler_cpu_<timestamp>.txt     ranked text report
-jitprofiler_cpu_<timestamp>.folded  flamegraph for speedscope.app
-jitprofiler_mem_<timestamp>.txt     ranked text report
-jitprofiler_mem_<timestamp>.folded  flamegraph
-jitprofiler_inst_<timestamp>.txt    instrumentation report (own, total, avg, min, max, per-mod subtotals, call graph)
-jitprofiler_callbacks_<timestamp>.txt  callbacks report (per handler: callback, owner, own, total; per-callback rollup)
-jitprofiler_<kind>_<timestamp>.json    machine-readable capture (ranked views and meta)
-```
-Every export honours the Anonymize toggle at the moment it is written, so a masked capture is safe to share as is.
-Any HTML site can render the json into a page that matches the in-game panel, so you or anyone can host a capture on the web in the exact view the profiler shows.
-
-The report opens with a VM-state split, how much Lua time is JIT-compiled, interpreted, in C/engine calls, in the garbage collector, and in the JIT compiler.
-A GC line follows with the heap, the live estimate, the debt, and the collections per second.
-The GC share flags allocation pressure without a separate run.
-Then the engine-C entry points name the Lua call sites that drive the engine bucket.
-The ranked views follow, each carrying Own (where the code ran) and Total (on the stack anywhere): BY MOD, BY SCRIPT, BY LEAF, BY ROOT, and framework vs handlers.
-The allocation report carries the same views by bytes.
-
-The .folded files open at speedscope.app, a flamegraph viewer that runs in your browser.
-Drag a .folded file onto the page to explore the stacks.
-Nothing is uploaded, and the file never leaves your machine.
-
-On a stock exe without the primitives, the commands print which build is needed and do nothing else.
+Launch with -dbg (MO2 launch arguments) to use the console commands.
 
 Compatibility:
-Coexists with everything. A developer profiler with no gameplay of its own; it samples only while you run a capture and stays dormant otherwise.
+Coexists with everything. A developer profiler with no gameplay of its own. It samples only while you run a capture and stays dormant otherwise.
 
 How It's Built:
 
-The C core lives in xray-monolith, a backport of LuaJIT's jit.profile timer sampler into the 2.0.4 exe without GC64, so saves stay compatible.
+The system has a C core and a Lua layer.
+
+The C core in xray-monolith is a backport and adaptation of LuaJIT's jit.profile timer sampler into the 2.0.4 exe without GC64, so saves stay compatible.
 The jit.allocprof allocation counter runs on top, both native in the exe beneath the script layer.
-It samples on the engine's own timer with the JIT on, so overhead stays near-zero. One capture covers the whole modpack, with nothing to select in advance.
-The sampler jitters its interval on an exponential draw, so a scheduled mod cannot phase-lock and dodge it.
-It reads what a script profiler cannot: the VM-state split, and the exact allocation bytes at the allocator seam that are the real source of GC stutter.
 Per-mod attribution runs through the MO2 virtual filesystem, resolving each merged script to the load-order winner that ran, verified on real conflicts.
-The design follows the best in class: SpeedScope flamegraphs, an in-game ImGui panel, and the engine-C entry points mapped for a native profiler like Optick.
+
+The Lua layer is original, learned through reverse-engineering X-Ray and custom engine changes.
+It favors the engine's own mechanisms and minimal intervention, and adds no per-frame cost while idle.
+It carries tracing and monitoring from the ground up, every flow timed off the log level.
+The mod avoids writing engine values, holding its own state in parallel, so save corruption is impossible.
 Every commit runs the full pipeline locally and in CI: luacheck, a Selene build compiled for STALKER with flags the public build lacks, and a load test that runs every script against engine stubs.
 Rule layers then check crash safety, hotpath cost, engine correctness, complexity, architecture contracts, security, and the docs.
-It depends on no other mod, not even my own. The only shared layers are X-Ray and xlibs.
+It depends on no other mod, not even the author's own. The only shared layers are X-Ray and xlibs.
 
 That pipeline runs on every commit and publishes what it finds. The header links a live health page and a JitProfiler capture of the mod's real CPU and allocation cost.
 
 Credits:
-The engine core is my own contribution to xray-monolith, the jit.profile sampler backported from LuaJIT into the modded exe plus the jit.allocprof allocation profiler on top of it.
 LuaJIT and jit.profile are by Mike Pall.
 Built for the themrdemonized modded exes (themrdemonized/xray-monolith).
 
@@ -174,7 +103,7 @@ Usage and License:
   Modpacks: allowed and encouraged. Keep the readme and license files.
   Addons, patches, integrations: allowed. Credit "JitProfiler by Damian Sirbu" visibly on your mod page.
   Reproducing the implementation in other software: not allowed, even with credit.
-  Full license in LICENSE file and on GitHub.
+  The full license is in the LICENSE file and on GitHub.
 
 Diagnostics and reporting:
 Every release goes through careful engineering and testing, but bugs can still slip through.
