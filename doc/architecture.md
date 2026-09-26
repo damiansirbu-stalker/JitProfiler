@@ -65,7 +65,8 @@ Each wrapper times its handler inclusive of the engine C it triggers, banks own 
 `stop_callbacks` swaps every original back and writes the report.
 A level change or actor destroy force-restores first, so no wrapper orphans.
 `spairs` snapshots the handler keys, so a mid-dispatch restore is safe.
-A picker set narrows the capture: picked callback names arm alone, and an empty pick arms every callback.
+A picker set holds the callbacks to time, filled by Add all or an individual pick, and cleared by Remove all.
+An empty set arms nothing, so start_callbacks refuses it, the same as an empty instrument set.
 The report ranks every handler by own ms with its callback and owning mod, plus a per-callback rollup, answering which mod hooks a callback and what each handler costs, engine C included.
 It is opt-in, mutually exclusive with the other captures, and goes inert on a build where the intercepts upvalue is not reachable.
 
@@ -156,14 +157,15 @@ Both reach one set of render helpers and the single panel filter through `jitpro
 The top tabs are CPU, MEM, INSTRUMENT, and CALLBACKS. A running capture locks the others, so no two run at once.
 CPU and MEM show the retained last capture through `get_last_capture`.
 A view selector switches the table between by mod, by script, by leaf, and by root. Each column header sorts, and a filter box narrows the rows.
-Each content region fills the height left below it and scrolls within that, sized by `get_fill_size` off `GetContentRegionAvail`.
-The results table, the SELECTED working set, and the BROWSE modlist each grow with the window and scroll within their own region.
+Each results table fills the height left below it and scrolls within that, sized by `get_fill_size` off `GetContentRegionAvail`, so the analysis grows with the window.
+The pickers above it, the SELECTED set and the BROWSE modlist and the callbacks list, fold or render inline, so the panel's own scrollbar carries them without a nested box.
 The by-script rows carry a per-row button that adds or removes the script from the instrumentation set.
 Under INSTRUMENTATION a start and stop control arms the whole set, and an overhead line shows the wrapped-function count.
 Two sub-views split the screen.
-SELECTED lists the working set, each target removable.
-BROWSE is a modlist grouped by mod with a search box, where a + adds a script and a +all on the mod header adds every script that mod owns through add_mod_targets.
-A -all on the same header removes that mod's scripts, and a Clear button by the set count empties the whole set.
+SELECTED folds the working set under a header, each target removable.
+BROWSE is a modlist grouped by mod with a search box. A + adds one script.
+Inside a mod's fold, a +Add all / -Remove all row instruments or clears that whole mod through add_mod_targets and remove_mod_targets.
+A Clear button by the set count empties the set.
 The search matches the mod name or the script name. A matching mod shows all its scripts, and hits render with their group open, collapse ignored.
 The results table ranks each function by own with an own-share bar, plus own ms, total ms, and calls, each column sortable on click.
 Avg, min, and max per call are sortable columns, carried through the text report, the json, and the published viewer.
@@ -172,7 +174,7 @@ Number columns right-align through CalcTextSize, so magnitude scans down the col
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
 The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile) each explained on hover.
 Then the engine-C entry points, the Lua call sites that drive the engine bucket, under a collapsing header closed by default.
-The CALLBACKS tab arms `start_callbacks` and ranks every registered handler over the make_callback dispatch by own ms, with its callback and owning mod.
+The CALLBACKS tab arms `start_callbacks` and ranks each timed handler over the make_callback dispatch by own ms, with its callback and owning mod.
 A BROWSE subtab lists every registered callback with its handler count and a picker toggle.
 A dim line under a running MEM or wrapping capture notes the FPS drop and that accuracy holds.
 The MEM view carries a live GC-health strip from `jit.util.gcstat`, a bar for the heap toward the next collection plus the live estimate and debt, hidden when the exe lacks the getter.

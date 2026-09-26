@@ -25,7 +25,7 @@ Memory profiling shows which code generates the garbage the collector must clear
 Instrumentation wraps a chosen set of scripts and times each function for its own and total wall-clock, including the engine C beneath a call, the one axis the sampler cannot reach.
 Framerate drops while a scan runs, because each wrapped call carries a timer. That is expected, and the timings stay exact.
 It records the call graph as it runs, so each function shows its callers and its callees with their time, and a whole-mod scan totals the cost per owning mod.
-The callbacks profiler wraps every registered handler over the make_callback dispatch and ranks each by own ms with its callback and owning mod.
+The callbacks profiler wraps the callback handlers you pick over the make_callback dispatch and ranks each by own ms with its callback and owning mod.
 So it names which mod hooks a given callback and what each handler costs, engine C included.
 
 Engine C stays one bucket by nature.
@@ -90,12 +90,12 @@ BY MOD and BY SCRIPT show Own and Total side by side, every column sortable, whi
 The CPU tab adds the VM-state split and the engine-C entry-points list.
 The MEM tab adds a live GC-health strip with the heap toward the next collection, the live estimate, the debt, and the collection rate.
 INSTRUMENT holds the targeted mode.
-Add scripts from the BROWSE modlist (a + per script, or +all on a mod header to instrument the whole mod) or the + on a by-script row.
-A -all on the mod header takes that mod back out, and a Clear button by the set count empties the whole set.
+Add scripts from the BROWSE modlist (a + per script, or +Add all inside a mod's fold to instrument the whole mod) or the + on a by-script row.
+A -Remove all inside the fold takes that mod back out, and a Clear button by the set count empties the whole set.
 Then run and read the per-function own and total time with per-call avg, min, and max, sortable by any column, and a frame-budget bar.
 Select a function to read its callers and callees with their time.
-CALLBACKS arms the callbacks profiler and lists every registered handler ranked by own ms, with its callback and owning mod.
-Its BROWSE subtab lists every registered callback with a picker toggle. Picked callbacks arm alone, and none picked arms all.
+CALLBACKS arms the callbacks profiler and lists each timed handler ranked by own ms, with its callback and owning mod.
+Its BROWSE subtab lists every registered callback with a picker toggle, plus Add all and Remove all. The capture times the callbacks you pick.
 On the multi-thread exe a Parallel GC toggle gives a clean CPU garbage-collector read.
 A small corner banner shows while a capture runs.
 

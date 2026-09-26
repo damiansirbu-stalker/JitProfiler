@@ -432,7 +432,7 @@ scan = rawget(_G, "__jitprofiler_scan") or { set = {}, count = 0, records = {}, 
        stack = {}, sp = 0, t0 = 0, limit = 0, frames = 0, active = false }
 rawset(_G, "__jitprofiler_scan", scan)
 
--- Callbacks: time every registered handler by wrapping the make_callback intercepts table in place; state anchored to _G.
+-- Callbacks: time the picked registered handlers by wrapping the make_callback intercepts table in place; state anchored to _G.
 callbacks = rawget(_G, "__jitprofiler_callbacks")
 if not callbacks then
     callbacks = { active = false, records = {}, saved = {}, stack = {}, sp = 0, wrapped = 0, t0 = 0, limit = 0, set = {} }
@@ -726,11 +726,11 @@ function start_callbacks()
     if alloc.capturing then log("JitProfiler/callbacks: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
     if scan.active then log("JitProfiler/callbacks: scanner is running -- JitProfiler.stop_scan() first."); return end
     if not resolve_intercepts() then log("!JitProfiler/callbacks: make_callback intercepts not reachable on this build; inert."); return end
+    if next(callbacks.set) == nil then log("JitProfiler/callbacks: no callbacks picked -- Add all or pick some first."); return end
     callbacks.records, callbacks.saved, callbacks.sp, callbacks.wrapped = {}, {}, 0, 0
     callbacks.t0, callbacks.active = get_time_ms(), true
-    local pick = next(callbacks.set) ~= nil
     for name, handlers in pairs(intercepts_ref) do
-        local to_wrap = (not pick or callbacks.set[name]) and collect_handlers(handlers) or {}
+        local to_wrap = callbacks.set[name] and collect_handlers(handlers) or {}
         for i = 1, #to_wrap do
             local handler, prio = to_wrap[i][1], to_wrap[i][2]
             local hframe = get_handler_frame(handler)
@@ -744,7 +744,7 @@ function start_callbacks()
             callbacks.wrapped = callbacks.wrapped + 1
         end
     end
-    log("JitProfiler/callbacks: wrapping %d handlers%s. Play, then JitProfiler.stop_callbacks().", callbacks.wrapped, pick and " (picked callbacks only)" or "")
+    log("JitProfiler/callbacks: wrapping %d handlers. Play, then JitProfiler.stop_callbacks().", callbacks.wrapped)
     show_tip(format("JitProfiler CALLBACKS %d handlers", callbacks.wrapped))
 end
 
@@ -765,7 +765,7 @@ function is_callbacks_active()
     return callbacks.active
 end
 
---- Add a callback to the picker set; the next start_callbacks arms only picked callbacks (empty set = all).
+--- Add a callback to the picker set; the next start_callbacks arms only the picked callbacks (an empty set arms nothing).
 --- @novalidate(conventions.unused_export, reason:"panel control surface")
 function add_callback_target(name)
     if tostring(name or "") ~= "" then callbacks.set[tostring(name)] = true end
@@ -783,7 +783,7 @@ function is_callback_target(name)
     return callbacks.set[tostring(name or "")] == true
 end
 
---- @return number the count of picked callbacks; 0 means every callback arms.
+--- @return number the count of picked callbacks; 0 means nothing is armed.
 --- @novalidate(conventions.unused_export, reason:"panel control surface")
 function get_callback_pick_count()
     local count = 0

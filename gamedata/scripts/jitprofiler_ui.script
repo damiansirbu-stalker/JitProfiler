@@ -338,7 +338,7 @@ local TAB_TIP = {
     [KIND_CPU]       = "CPU sampling. JIT stays on, near-zero overhead, whole modpack in one capture.",
     [KIND_MEM]       = "Allocation bytes, exact. JIT off so FPS drops; capture short. Finds the garbage.",
     [KIND_SCAN]      = "Wrap the scripts you pick and time each call, engine C included. Adds per-call cost.",
-    [KIND_CALLBACKS] = "Time each registered handler over the callback dispatch. Opt-in.",
+    [KIND_CALLBACKS] = "Time the callback handlers you pick over the dispatch. Opt-in.",
     [KIND_PUBLISH]   = "Push a masked capture to your GitHub Pages.",
 }
 
