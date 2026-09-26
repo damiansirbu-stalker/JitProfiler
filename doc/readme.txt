@@ -1,5 +1,5 @@
 Version: 1.0.0-snapshot (xlibs 1.8.3, demonized 20250908)
-Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
+Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog | Health: https://damiansirbu-stalker.github.io/JitProfiler/health/ | JitProfiler: https://damiansirbu-stalker.github.io/JitProfiler/jitprofiler/ | Bugs: https://github.com/damiansirbu-stalker/JitProfiler/issues | Russian / На русском: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt
 
 My work:
 GitHub: https://github.com/orgs/damiansirbu-stalker/repositories
@@ -9,7 +9,7 @@ Nexus: https://www.nexusmods.com/profile/damiansirbu/mods
 My contributions:
 X-Ray Monolith: https://github.com/themrdemonized/xray-monolith
 
-[ HERO IMAGE: jitprofiler-hero.gif — the profiler in action ]
+[ HERO IMAGE: jitprofiler-hero.gif - the profiler in action ]
 
 Stop guessing, measure.
 
@@ -52,9 +52,6 @@ For the full feature set, use the preview exes from my fork:
 https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 xlibs (used for logging).
 Launch with -dbg (MO2 launch arguments) so the console accepts run_string.
-
-Install (MO2):
-1. Install xlibs and JitProfiler. Load order does not matter.
 
 Usage (in-game console, ~):
 
@@ -147,6 +144,9 @@ Nothing is uploaded, and the file never leaves your machine.
 
 On a stock exe without the primitives, the commands print which build is needed and do nothing else.
 
+Compatibility:
+Coexists with everything. A developer profiler with no gameplay of its own; it samples only while you run a capture and stays dormant otherwise.
+
 How It's Built:
 
 The C core lives in xray-monolith, a backport of LuaJIT's jit.profile timer sampler into the 2.0.4 exe without GC64, so saves stay compatible.
@@ -160,8 +160,7 @@ Every commit runs the full pipeline locally and in CI: luacheck, a Selene build 
 Rule layers then check crash safety, hotpath cost, engine correctness, complexity, architecture contracts, security, and the docs.
 It depends on no other mod, not even my own. The only shared layers are X-Ray and xlibs.
 
-[Screenshot: JitProfiler under a live CPU and allocation capture]
-Project Health: https://damiansirbu-stalker.github.io/JitProfiler/health/
+That pipeline runs on every commit and publishes what it finds. The header links a live health page and a JitProfiler capture of the mod's real CPU and allocation cost.
 
 Credits:
 The engine core is my own contribution to xray-monolith, the jit.profile sampler backported from LuaJIT into the modded exe plus the jit.allocprof allocation profiler on top of it.
