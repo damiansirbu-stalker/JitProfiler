@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<string_table>
+  <string id="ui_mcm_menu_jf">
+    <text>JitProfiler</text>
+  </string>
+  <string id="ui_mcm_jf_title">
+    <text>JitProfiler</text>
+  </string>
+  <string id="ui_mcm_jf_desc">
+    <text>Нативный для движка сэмплирующий профилировщик LuaJIT. Один захват охватывает весь модпак с почти нулевыми накладными расходами. Он называет мод, стоящий за каждым горячим скриптом, и пишет ранжированный отчёт с флеймграфом SpeedScope.</text>
+  </string>
+  <string id="ui_mcm_jf_usage">
+    <text>Нажмите F11 для оверлея ImGui и выберите JitProfiler в строке меню, затем запустите захват CPU или памяти. Из консоли (запуск с -dbg): run_string JitProfiler.start_cpu(), играйте, затем stop_cpu(). Отчёты пишутся в appdata\logs.</text>
+  </string>
+  <string id="ui_mcm_jf_speedscope">
+    <text>Чтобы прочитать флеймграф, откройте speedscope.app в браузере и перетащите туда файл .folded. Он работает локально, и ничто не покидает ваш компьютер.</text>
+  </string>
+  <string id="ui_mcm_jf_show_imgui">
+    <text>Показывать в оверлее ImGui</text>
+  </string>
+  <string id="ui_mcm_jf_show_imgui_desc">
+    <text>Добавляет JitProfiler в строку меню ImGui (F11). При выключении скрывает панель и баннер. Консольные команды продолжают работать.</text>
+  </string>
+</string_table>
