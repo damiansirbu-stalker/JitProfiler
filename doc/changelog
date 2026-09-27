@@ -1,4 +1,6 @@
-1.0.0-snapshot
+1.0.1-snapshot
+
+1.0.0
   Summary: first release, CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, in-game panel, web publish, anonymize
 
   - CPU profile via jit.profile: VM-state split (JIT / interpreter / C / GC / compiler) and ranked views by mod, script, leaf, and root, plus a SpeedScope flamegraph.
