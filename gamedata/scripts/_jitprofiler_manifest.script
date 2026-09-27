@@ -3,5 +3,5 @@
 MANIFEST = {
     name    = "JitProfiler",
     version = "1.0.0-snapshot",
-    xlibs   = "1.8.3",
+    xlibs   = "1.9.0",
 }
