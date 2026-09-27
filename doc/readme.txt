@@ -113,4 +113,4 @@ Send the traces on the Anomaly Discord, or file a defect on GitHub with the same
 Attach xray.log, the mod log, the engine build, the modlist, and the load order.
 For deep technical details and mechanisms, check the architecture docs on GitHub.
 
-Tags: engine-native, performance, save-safe, profiler, luajit, sampling-profiler, cpu-profiling, memory-profiling, gc, flamegraph, callbacks, instrumentation, mod-attribution, low-overhead, optick
+Tags: engine-native, performance, save-safe, profiler, luajit, sampling-profiler, cpu-profiling, memory-profiling, gc, flamegraph, callbacks, instrumentation, mod-attribution, low-overhead, optick, reverse-engineering
