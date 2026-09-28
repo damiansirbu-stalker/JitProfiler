@@ -27,7 +27,7 @@ Start a capture and play. Stop it and read the report, every mod and script rank
 CPU ranks Lua time, MEM ranks allocation. Sampling keeps the JIT on and costs almost nothing, so one capture covers the whole modpack with no module to pick.
 CPU sampling stands on its own, and JitProfiler also profiles allocation and GC health, the whole cost of the script layer.
 You do not need to know where to look first, since the ranking names the mod and script behind each cost.
-The sampler and the allocation counter are native code in xray-monolith, this project's own contribution to the engine, so it reads the allocation bytes and the VM state a script-side profiler cannot.
+The sampler and the allocation counter are native code in xray-monolith, this project's contribution to the engine, so it reads the allocation bytes and VM state a script-side profiler cannot.
 
 In a typical session you run a CPU capture while you play, then stop it and read which mods and scripts cost the most time.
 You run a MEM capture the same way to see which ones allocate the most and load the collector.
