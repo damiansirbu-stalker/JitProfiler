@@ -1,7 +1,6 @@
 Version: 1.0.1-snapshot (xlibs 1.9.0, demonized 20250908)
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
 Health: https://damiansirbu-stalker.github.io/JitProfiler/health/
-JitProfiler: https://damiansirbu-stalker.github.io/JitProfiler/jitprofiler/
 Bugs: https://github.com/damiansirbu-stalker/JitProfiler/issues
 Recommended exe: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 Russian / На русском: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt
