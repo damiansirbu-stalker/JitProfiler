@@ -1,20 +1,11 @@
-Version: 1.0.0 (xlibs 1.9.0, demonized 20250908)
-[url=https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog]Changelog[/url]
-[url=https://damiansirbu-stalker.github.io/JitProfiler/health/]Health[/url]
-[url=https://damiansirbu-stalker.github.io/JitProfiler/jitprofiler/]JitProfiler[/url]
-[url=https://github.com/damiansirbu-stalker/JitProfiler/issues]Bugs[/url]
-[url=https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler]Recommended exe[/url]
-[url=https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt]Russian / На русском[/url]
-
-My work:
-[url=https://github.com/orgs/damiansirbu-stalker/repositories]GitHub[/url]
-[url=https://www.moddb.com/members/damian-sirbu/addons]ModDB[/url]
-[url=https://www.nexusmods.com/profile/damiansirbu/mods]Nexus[/url]
-
-My contributions:
-[url=https://github.com/themrdemonized/xray-monolith]X-Ray Monolith[/url]
-
-
+[line]
+[center]
+[size=5][b]Version 1.0.0 (xlibs 1.9.0, demonized 20250908)[/b][/size]
+[size=4][b][url=https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog]Changelog[/url] · [url=https://damiansirbu-stalker.github.io/JitProfiler/health/]Health[/url] · [url=https://damiansirbu-stalker.github.io/JitProfiler/jitprofiler/]JitProfiler[/url] · [url=https://github.com/damiansirbu-stalker/JitProfiler/issues]Bugs[/url] · [url=https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler]Recommended exe[/url] · [url=https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt]Russian / На русском[/url][/b][/size]
+[b]My work:[/b]  [url=https://github.com/orgs/damiansirbu-stalker/repositories]GitHub[/url] · [url=https://www.moddb.com/members/damian-sirbu/addons]ModDB[/url] · [url=https://www.nexusmods.com/profile/damiansirbu/mods]Nexus[/url]
+[b]My contributions:[/b]  [url=https://github.com/themrdemonized/xray-monolith]X-Ray Monolith[/url]
+[/center]
+[line]
 Early release. Some of the X-Ray crash fixes and optimizations this build relies on are not yet in the latest demonized exe, so run it with the exe from the fork below:
 https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 It is the latest demonized MT build (2026.9.12) with a few X-Ray crash fixes and optimizations on top, nothing else.
@@ -31,32 +22,32 @@ The sampler and the allocation counter are native code in xray-monolith, this pr
 In a typical session you run a CPU capture while you play, then stop it and read which mods and scripts cost the most time.
 You run a MEM capture the same way to see which ones allocate the most and load the collector.
 Then you take a named suspect to INSTRUMENT for exact per-call timing, or to CALLBACKS for which of its handlers is expensive, and PUBLISH the capture to share it.
+[line]
+[b]Sampling[/b] - CPU and MEM. Leave it running while you play, then read the ranking.
 
-Sampling - CPU and MEM. Leave it running while you play, then read the ranking.
-
-CPU - the ranked breakdown of Lua time, by mod and by script.
+[b]CPU[/b] - the ranked breakdown of Lua time, by mod and by script.
 It samples the running stack on the engine's own timer at 5 ms with the JIT on, so the overhead is near-zero.
 The interval is jittered on an exponential draw, so a mod on a schedule cannot phase-lock to it.
 It splits the time by VM state and lists the engine-C entry points, your Lua call sites that drive the engine cost, and where to point a native profiler like Optick.
 
-MEM - the ranked breakdown of allocation, the garbage the collector must clear.
+[b]MEM[/b] - the ranked breakdown of allocation, the garbage the collector must clear.
 It counts exact bytes at the allocator seam with the JIT off, the stutter source a script-side tool cannot measure.
 The framerate drops during the capture, so keep it short. The byte counts stay exact regardless.
 A live GC-health strip reads the heap toward the next collection, the live estimate, the debt, and the collection rate.
 
-Instrumentation - INSTRUMENT and CALLBACKS. Use these on the mod that sampling named.
+[b]Instrumentation[/b] - INSTRUMENT and CALLBACKS. Use these on the mod that sampling named.
 
-INSTRUMENT - own and total wall-clock per function over the scripts you pick, engine C included.
+[b]INSTRUMENT[/b] - own and total wall-clock per function over the scripts you pick, engine C included.
 It wraps every function of the set and times each call, with the call count and the average, minimum, and maximum per call.
 It records the call graph and totals the cost per owning mod, so you see where a function's time goes.
 Each call carries a timer, so the framerate drops while a scan runs. The numbers stay exact.
 Build the set from a CPU row, or from the browser, which groups scripts by mod and searches by mod or script name, so you add a whole mod or one script fast.
 
-CALLBACKS - what each event handler costs and which mod hooks a callback.
+[b]CALLBACKS[/b] - what each event handler costs and which mod hooks a callback.
 It wraps the handlers you pick over the game's make_callback dispatch and ranks each by own ms with its callback and owning mod, engine C included.
 Dispatch order and semantics stay untouched, so the reading matches what actually runs.
 
-PUBLISH - share a capture as a web page without exposing other authors' mods.
+[b]PUBLISH[/b] - share a capture as a web page without exposing other authors' mods.
 One click turns a capture into a live page on your own GitHub, the in-game view drawn in the browser and shareable by a link.
 Every third-party mod name is masked in the panel and in every export unless your keep-list frees it, so another author's mod never stands beside a cost.
 The token stays in the session and travels only to GitHub over HTTPS, with no server in between.
@@ -66,8 +57,8 @@ Own counts the innermost frame when the sample fired, Total counts every frame o
 Every column sorts, and a fold toggle hides the baseline so only your mods remain.
 Console commands mirror every capture for scripted runs, and the Settings hold the interval, depth, and an auto-stop safety.
 Every capture also writes a ranked text report, a flamegraph for speedscope.app, and a machine-readable json to appdata/logs, so nothing the panel shows lives only in the panel.
-
-Requirements:
+[line]
+[size=4][b]Requirements[/b][/size]
 Anomaly 1.5.3
 A modded-exes build with the JitProfiler primitives.
 jit.profile and jit.allocprof are in the official 2026.9.12 modded exes.
@@ -77,10 +68,10 @@ https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12
 xlibs (used for logging)
 Launch with -dbg (MO2 launch arguments) to use the console commands.
 
-Compatibility:
+[size=4][b]Compatibility[/b][/size]
 Coexists with everything. A developer profiler with no gameplay of its own. It samples only while you run a capture and stays dormant otherwise.
-
-How It's Built:
+[line]
+[b]How It's Built[/b]
 
 The system has a C core and a Lua layer.
 
@@ -96,18 +87,18 @@ Every commit runs the full pipeline locally and in CI, with luacheck, a custom S
 Rule layers then check Lua practice, engine truth, conventions, contracts, release, security, and docs.
 It depends on no other mod, not even the author's own, and needs only X-Ray and xlibs beneath it.
 See the Health and JitProfiler links up top for every test and smoke result, and the mod's real CPU and allocation cost.
-
-Credits:
+[line]
+[size=4][b]Credits[/b][/size]
 LuaJIT and jit.profile are by Mike Pall.
 Built for the themrdemonized modded exes (themrdemonized/xray-monolith).
 
-Usage and License:
+[size=4][b]Usage and License[/b][/size]
   Modpacks: allowed and encouraged. Keep the readme and license files.
   Addons, patches, integrations: allowed. Credit "JitProfiler by Damian Sirbu" visibly on your mod page.
   Reproducing the implementation in other software: not allowed, even with credit.
   The full license is in the LICENSE file and on GitHub.
 
-Diagnostics and reporting:
+[size=4][b]Diagnostics and reporting[/b][/size]
 Every release goes through careful engineering and testing, but bugs can still slip through.
 To report one, reproduce with debug logging on, and the world log where the mod has one.
 First rule this mod out: reproduce with it off, then on. The cleanest test is this mod alone on vanilla and xlibs.
