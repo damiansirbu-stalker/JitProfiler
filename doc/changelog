@@ -1,4 +1,6 @@
-1.0.1-snapshot
+1.0.2-snapshot
+
+1.0.1
   Summary: local page save
 
   - Changed the web publish to a local page save. JitProfiler makes no network request. The footer's Save page control writes the masked page to appdata/logs, and you commit and share it by hand.
