@@ -1,12 +1,7 @@
-1.0.2-snapshot
-
-1.0.1
-  Summary: local page save
-
-  - Changed the web publish to a local page save. JitProfiler makes no network request. The footer's Save page control writes the masked page to appdata/logs, and you commit and share it by hand.
+1.0.1-snapshot
 
 1.0.0
-  Summary: first release, CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, in-game panel, web publish, anonymize
+  Summary: first release, CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, in-game panel, page save, anonymize
 
   - CPU profile via jit.profile: VM-state split (JIT / interpreter / C / GC / compiler) and ranked views by mod, script, leaf, and root, plus a SpeedScope flamegraph.
   - Allocation profile via jit.allocprof: per-function bytes with the same views.
@@ -19,10 +14,9 @@
   - Anonymize: masks every third-party mod and script name in the panel and every export, letters
     and digits to #, separators kept so the shape reads. A persisted keep-list of patterns (3+
     letters, matched from the start of a name) keeps your own mods readable.
-  - Publish to web: one click commits the retained captures as one self-contained page to your
-    own GitHub repo, with the panel's tabs and views. Names publish masked except the keep-list,
-    a status line shows which names stay readable before the push, and the token is session-only,
-    displayed as asterisks, never on a command line or in a log.
+  - Save page: the footer's Save page control writes the retained captures as one self-contained page
+    to appdata/logs, masked except the keep-list, with the panel's tabs and views. A status line shows
+    which names stay readable, and JitProfiler makes no network request.
   - Added an in-game panel, opened from the ImGui menu bar under JitProfiler. It carries
     Start and Stop buttons for the CPU and allocation captures, a ranked table for each view
     (by mod, script, leaf, root) with a bar per row, a caller and callee breakdown
