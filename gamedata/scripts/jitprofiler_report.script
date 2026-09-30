@@ -494,11 +494,11 @@ function write_json(capture)
     if not xfs.write_file(path, format_json(doc)) then log("!JitProfiler: cannot write %s", tostring(path)) end
 end
 
--- The combined publish payload: every retained capture under one doc, masked, for the shipped viewer page.
+-- The combined page payload: every retained capture under one doc, masked, for the viewer page.
 --- @param captures table retained captures keyed by kind (any subset of cpu/mem/scan/callbacks)
 --- @param stamp string the generation timestamp
 --- @return string the JSON the viewer template embeds
-function build_publish_json(captures, stamp)
+function build_page_json(captures, stamp)
     local combined = { tool = "JitProfiler", mod_version = _jitprofiler_manifest.MANIFEST.version,
                        generated = stamp, captures = {} }
     for kind, cap in pairs(captures) do combined.captures[kind] = build_capture_doc(cap) end

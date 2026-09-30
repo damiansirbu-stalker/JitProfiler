@@ -30,7 +30,7 @@ The sampler and the allocation counter are native code in xray-monolith, this pr
 
 In a typical session you run a CPU capture while you play, then stop it and read which mods and scripts cost the most time.
 You run a MEM capture the same way to see which ones allocate the most and load the collector.
-Then you take a named suspect to INSTRUMENT for exact per-call timing, or to CALLBACKS for which of its handlers is expensive, and PUBLISH the capture to share it.
+Then you take a named suspect to INSTRUMENT for exact per-call timing, or to CALLBACKS for which of its handlers is expensive, and save the capture as a masked page to share it.
 
 Sampling - CPU and MEM. Leave it running while you play, then read the ranking.
 
@@ -56,10 +56,10 @@ CALLBACKS - what each event handler costs and which mod hooks a callback.
 It wraps the handlers you pick over the game's make_callback dispatch and ranks each by own ms with its callback and owning mod, engine C included.
 Dispatch order and semantics stay untouched, so the reading matches what actually runs.
 
-PUBLISH - share a capture as a web page without exposing other authors' mods.
-One click turns a capture into a live page on your own GitHub, the in-game view drawn in the browser and shareable by a link.
+SAVE PAGE - write a capture as a masked web page you can share, without exposing other authors' mods.
+The footer's Save page control turns a capture into a self-contained page written to appdata/logs, the in-game view drawn in the browser.
 Every third-party mod name is masked in the panel and in every export unless your keep-list frees it, so another author's mod never stands beside a cost.
-The token stays in the session and travels only to GitHub over HTTPS, with no server in between.
+JitProfiler makes no network request. You share the page yourself, by hand.
 
 The panel opens over the F11 overlay, JitProfiler in the menu bar, and holds the 5 tabs.
 Own counts the innermost frame when the sample fired, Total counts every frame on the stack.

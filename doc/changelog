@@ -1,4 +1,7 @@
 1.0.1-snapshot
+  Summary: local page save
+
+  - Changed the web publish to a local page save. JitProfiler makes no network request. The footer's Save page control writes the masked page to appdata/logs, and you commit and share it by hand.
 
 1.0.0
   Summary: first release, CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, in-game panel, web publish, anonymize

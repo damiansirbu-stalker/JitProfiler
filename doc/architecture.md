@@ -106,7 +106,7 @@ Each capture also reports the deepest stack it saw and how often a stack reached
 The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) from the owned views, leaving only mods.
 
 ## Anonymize
-A shared capture would print every third-party mod name beside its cost, which no author can be asked to publish.
+A shared capture would print every third-party mod name beside its cost, which no author can be asked to share.
 The Anonymize toggle masks them at the display.
 `compute_masked_name` replaces every letter and digit with #, keeping spaces, separators, and the extension, so the length and word shape still read.
 The masking is uniform across the panel, the flamegraph, and the json.
@@ -118,23 +118,18 @@ Only mod-owned names obfuscate.
 Baseline owners, the `[C]` `[GC]` `[JIT]` markers, separators, digits, the extension, and a line suffix stay literal, so the report stays readable and the code locations stay honest.
 The keep-set exempts the names an author keeps readable.
 Each entry is a Lua pattern of at least 3 literal characters, matched case-insensitively from the start of the owner name or the script file, so a broad entry cannot exempt another author's name.
-It is the one persisted piece of panel state, a newline file at the writable appdata root edited from the Publish tab, empty by default.
+It is the one persisted piece of panel state, a newline file at the writable appdata root edited from the footer, empty by default.
 The toggle rewrites the live panel and every export together, so a screenshot, a text report, and the json are safe at the source.
 
-## Publish
-A capture becomes a live web page on your own GitHub, in one click from the panel's Publish tab.
+## Save page
+A capture becomes a self-contained web page you save to disk, from the footer's Save page control.
 JitProfiler writes the retained captures as one JSON and injects it into a shipped viewer page.
-It hands the result to xlibs `xnet`, which commits it to the configured repo as pages/jitprofiler.html over HTTPS.
-The viewer is a static page that draws the in-game panel from the JSON in the browser, so the shared page reads exactly like the tool.
-JitProfiler forces the mask on the published copy regardless of the live toggle.
+It writes the result to the appdata logs folder as jitprofiler_page.html.
+The viewer is a static page that draws the in-game panel from the JSON in the browser, so the saved page reads exactly like the tool.
+JitProfiler forces the mask on the saved copy regardless of the live toggle.
 Every mod name is masked except the ones the keep-list matches, so keeping only your own names leaves every other author's name masked.
-A status line under the Publish button lists the names the keep-set leaves readable, before anything is pushed.
-The token, repo, and branch are session fields in the Publish tab, never persisted. The token field renders as asterisks.
-The repo must read owner/name and the branch a plain ref, checked before anything is staged. The Publish button stays disabled until the repo and token are set.
-`xnet` is xlibs's native companion, a zero-dependency Go exe launched over a LuaJIT FFI CreateProcess, because the script VM has no HTTP of its own.
-It ships with xlibs, and the token travels in a file, never on the command line. The file is blanked and deleted right after the push.
-A push still running when the wait gives up reports as pending, not failed.
-No other Anomaly profiler puts its results on the web from inside the game.
+A status line under the Save button lists the names the keep-set leaves readable, before anything is written.
+JitProfiler makes no network request. Sharing the page is a manual step you own: commit the saved file to your repo as pages/jitprofiler.html and push.
 
 ## Output
 `appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
@@ -152,9 +147,9 @@ Both are ASCII only.
 ## In-game panel
 `jitprofiler_ui.script` registers the panel and a menu entry through the base ImGui Groups API and draws in the Main group, so it appears while the F11 ImGui overlay is open.
 The panel opens at 90% of the live screen, centered, sized on appear from the `vid_mode` cvar so it never assumes a resolution, then resizes freely.
-CPU and MEM sampling render in `jitprofiler_ui.script`. `jitprofiler_ui_trace.script` holds the INSTRUMENT and CALLBACKS tabs, and `jitprofiler_ui_config.script` the PUBLISH tab through `render_publish_tab`.
+CPU and MEM sampling render in `jitprofiler_ui.script`. `jitprofiler_ui_trace.script` holds the INSTRUMENT and CALLBACKS tabs, and `jitprofiler_ui_config.script` the footer, with the Settings, the Anonymize keep-set, and the Save page control.
 Both reach one set of render helpers and the single panel filter through `jitprofiler_ui.SHARED`, so the split keeps one copy of the drawing code and the filter state.
-The top tabs are CPU, MEM, INSTRUMENT, CALLBACKS, and PUBLISH. A running capture locks the others, so no two run at once.
+The top tabs are CPU, MEM, INSTRUMENT, and CALLBACKS. A running capture locks the others, so no two run at once.
 CPU and MEM show the retained last capture through `get_last_capture`.
 A view selector switches the table between by mod, by script, by leaf, and by root. Each column header sorts, and a filter box narrows the rows.
 Each results table fills the height left below it and scrolls within that, sized by `get_fill_size` off `GetContentRegionAvail`, so the analysis grows with the window.
@@ -168,7 +163,7 @@ Inside a mod's fold, a +Add all / -Remove all row instruments or clears that who
 A Clear button by the set count empties the set.
 The search matches the mod name or the script name. A matching mod shows all its scripts, and hits render with their group open, collapse ignored.
 The results table ranks each function by own with an own-share bar, plus own ms, total ms, and calls, each column sortable on click.
-Avg, min, and max per call are sortable columns, carried through the text report, the json, and the published viewer.
+Avg, min, and max per call are sortable columns, carried through the text report, the json, and the saved viewer page.
 A frame-budget bar reads own ms per frame against a 60fps frame.
 Number columns right-align through CalcTextSize, so magnitude scans down the column.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.

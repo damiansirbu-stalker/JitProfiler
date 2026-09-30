@@ -13,8 +13,6 @@ local OWNER_MODDED        = "modded exes"
 local OWNER_MOD           = "mod: "
 local OWNER_LOOSE         = "loose: "
 local OWNER_STRING        = "loadstring"
--- GetExitCodeProcess of a process still running when the xnet wait gave up; the publish is pending, not failed.
-local PROCESS_STILL_ACTIVE = 259
 
 local SETTING_ANON = "anon"
 -- The persisted keep-set lives at the writable appdata root, so clearing appdata/logs never wipes it. @src Layers/xrRenderPC_R4/r4.cpp:2027
@@ -79,7 +77,7 @@ if not (profile and allocprof) then
     remove_keep = function() end
     is_kept = function() return false end
     get_readable_owners = function() return {} end
-    publish = function() return { ok = false } end
+    save_page = function() return { ok = false } end
     is_scan_active = function() return false end
     is_target = function() return false end
     get_targets = function() return {} end
@@ -141,8 +139,7 @@ local readable_cache, readable_sig
 local settings = rawget(_G, "__jitprofiler_settings")
 if not settings then
     settings = { interval = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH,
-                 auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false, anon = false,
-                 publish_repo = "", publish_branch = "", publish_token = "" }
+                 auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false, anon = false }
     rawset(_G, "__jitprofiler_settings", settings)
 end
 
@@ -831,7 +828,7 @@ function get_last_capture(kind)
     return last_capture[kind]
 end
 
--- Gather every retained capture keyed by kind, for the publish payload; empty when nothing was captured.
+-- Gather every retained capture keyed by kind, for the saved page; empty when nothing was captured.
 local function collect_captures()
     local captures, any = {}, false
     for _, kind in ipairs({ "cpu", "mem", "scan", "callbacks" }) do
@@ -873,16 +870,11 @@ function get_readable_owners()
     return list
 end
 
---- Publish the retained captures as one masked web page to the configured GitHub repo through xlibs xnet.
---- Masking is forced for the published copy, independent of the live toggle, so a third-party name never leaks; it restores on both pcall arms.
---- @safety SAFE - the token is staged to a temp file only for the push, then blanked and removed; it never reaches the argv or a log.
---- @return table { ok = boolean, code = number|nil, pending = boolean|nil, reason = string|nil } - reason names why a publish was refused
-function publish()
-    local repo, branch, token = settings.publish_repo, settings.publish_branch, settings.publish_token
-    if not (repo ~= "" and token ~= "") then return { ok = false, reason = "set repo and token in the Publish tab" } end
-    if not repo:match("^[%w%-%._]+/[%w%-%._]+$") then return { ok = false, reason = "repo must be owner/name" } end
-    if branch ~= "" and not branch:match("^[%w%-%._/]+$") then return { ok = false, reason = "branch has unsupported characters" } end
-    if type(xnet) ~= "table" or not xnet.push_github then return { ok = false, reason = "xnet unavailable" } end
+--- Save the retained captures as one masked web page to the logs folder. The user commits it to the mod's pages/jitprofiler.html by hand.
+--- Masking is forced for the saved copy, independent of the live toggle, so a third-party name never leaks; it restores on both pcall arms.
+--- @safety SAFE - a build or write failure returns { ok = false, reason = ... }, never raises.
+--- @return table { ok = boolean, path = string|nil, reason = string|nil } - path is the saved page, reason names why a save was refused
+function save_page()
     local captures, any = collect_captures()
     if not any then return { ok = false, reason = "no capture yet" } end
     local template = xfs.read_file(xfs.resolve_path("$game_scripts$", "jitprofiler_viewer.html"))
@@ -890,27 +882,19 @@ function publish()
 
     local saved = settings.anon
     settings.anon = true; mask_cache = {}
-    local built, json = pcall(jitprofiler_report.build_publish_json, captures, os.date("%Y-%m-%d %H:%M"))
+    local built, json = pcall(jitprofiler_report.build_page_json, captures, os.date("%Y-%m-%d %H:%M"))
     settings.anon = saved; mask_cache = {}
-    if not built then log("!JitProfiler/publish: %s", tostring(json)); return { ok = false, reason = "capture build failed (see log)" } end
+    if not built then log("!JitProfiler/save_page: %s", tostring(json)); return { ok = false, reason = "capture build failed (see log)" } end
 
     local page, marked = template:gsub("/%*__JF_DATA__%*/ null", (json:gsub("%%", "%%%%")), 1)
     if marked ~= 1 then return { ok = false, reason = "viewer template marker missing" } end
     local base = xfs.resolve_path("$logs$", "")
     if not base or base == "" then return { ok = false, reason = "cannot resolve the logs folder" } end
-    local page_path, token_path = base .. "jitprofiler_page.html", base .. "jitprofiler_token.tmp"
-    if not (xfs.write_file(page_path, page) and xfs.write_file(token_path, token)) then
-        return { ok = false, reason = "cannot stage the page" }
+    local page_path = base .. "jitprofiler_page.html"
+    if not xfs.write_file(page_path, page) then
+        return { ok = false, reason = "cannot write the page" }
     end
-    local result = xnet.push_github({ repo = repo,
-        branch = (branch ~= "" and branch) or nil,
-        path = "pages/jitprofiler.html", file = page_path, token_file = token_path, message = "JitProfiler capture" })
-    xfs.write_file(token_path, "")
-    xfs.remove_file(token_path)
-    if not result.ok and result.code == PROCESS_STILL_ACTIVE then
-        return { ok = false, pending = true, reason = "still uploading; check the page in a minute" }
-    end
-    return { ok = result.ok, code = result.code }
+    return { ok = true, path = page_path }
 end
 
 --- @return number|boolean the current session value for a capture setting.

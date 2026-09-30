@@ -28,7 +28,6 @@ local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
 local KIND_SCAN = "scan"
 local KIND_CALLBACKS = "callbacks"
-local KIND_PUBLISH = "publish"
 local VIEW_BY_MOD = "by_mod"
 local VIEW_BY_SCRIPT = "by_script"
 local SORT_NAME = "name"
@@ -339,7 +338,6 @@ local TAB_TIP = {
     [KIND_MEM]       = "Allocation bytes, exact. JIT off so FPS drops; capture short. Finds the garbage.",
     [KIND_SCAN]      = "Wrap the scripts you pick and time each call, engine C included. Adds per-call cost.",
     [KIND_CALLBACKS] = "Time the callback handlers you pick over the dispatch. Opt-in.",
-    [KIND_PUBLISH]   = "Push a masked capture to your GitHub Pages.",
 }
 
 -- One of the top tabs. While a capture runs, the tabs that are not the running one lock: dim and unclickable.
@@ -762,13 +760,7 @@ local function render_panel()
         render_tab_button(KIND_SCAN, "INSTRUMENT")
         ImGui.SameLine()
         render_tab_button(KIND_CALLBACKS, "CALLBACKS")
-        ImGui.SameLine()
-        render_tab_button(KIND_PUBLISH, "PUBLISH")
-        if active_tab == KIND_PUBLISH then
-            jitprofiler_ui_config.render_publish_tab()
-        else
-            render_active_view()
-        end
+        render_active_view()
         pop_mono()
     end
     ImGui.End()
