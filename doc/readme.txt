@@ -15,9 +15,9 @@ X-Ray Monolith: https://github.com/themrdemonized/xray-monolith
 
 [ Hero image: jitprofiler-hero.gif - the profiler runs a capture ]
 
-Thank you for the support, I do not need donations. Reviews, ratings, and proper bug reports help.
-An organized group plagiarizes my work, posts daily lies and mass-downvotes my mods everywhere.
-Most modpacks use my work, established projects integrate with it, and downloads near 1 million.
+Thanks for the support, but I don't need donations. Reviews, ratings, and proper reports help more.
+An organized group copies my work, spreads daily lies, and mass-downvotes my mods across platforms.
+My work is open source, works with most modpacks, and integrates with established projects.
 
 Early release. Some of the X-Ray crash fixes and optimizations this build relies on are not yet in the latest demonized exe, so run it with the exe from the fork below:
 https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
