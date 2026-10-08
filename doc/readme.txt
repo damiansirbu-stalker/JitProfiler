@@ -5,19 +5,36 @@ Bugs: https://github.com/damiansirbu-stalker/JitProfiler/issues
 Recommended exe: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 Russian / На русском: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt
 
-My work:
-GitHub: https://github.com/orgs/damiansirbu-stalker/repositories
-ModDB: https://www.moddb.com/members/damian-sirbu/addons
-Nexus: https://www.nexusmods.com/profile/damiansirbu/mods
-
-My contributions:
-X-Ray Monolith: https://github.com/themrdemonized/xray-monolith
+---
+Alife mods:
+  AlifePlus: https://www.moddb.com/mods/stalker-anomaly/addons/alifeplus-v1-0-01
+  AlifeTactics: https://www.moddb.com/mods/stalker-anomaly/addons/alifetactics
+  AlifeBalance: https://www.moddb.com/mods/stalker-anomaly/addons/alifebalance
+  AlifeGuard: https://www.moddb.com/mods/stalker-anomaly/addons/alifeguard-1001
+Diegetic mods:
+  DiegeticControl: https://www.moddb.com/mods/stalker-anomaly/addons/diegeticcontrol
+  DiegeticAmbience
+  DiegeticDread
+Tools:
+  JitProfiler: https://www.moddb.com/mods/stalker-anomaly/addons/jitprofiler
+Libraries:
+  xlibs: https://www.moddb.com/mods/stalker-anomaly/addons/xlibs-1001
+Engines:
+  X-Ray Monolith: https://github.com/themrdemonized/xray-monolith/pulls?q=is%3Apr+author%3Adamiansirbu+is%3Amerged
+  OpenXRay: https://github.com/OpenXRay/xray-16/pulls?q=is%3Apr+author%3Adamiansirbu+is%3Amerged
+Integrations:
+  Word of Mouth: https://github.com/joshcoppola/word_of_mouth
+  Warfare (erepb): https://www.moddb.com/mods/stalker-anomaly/addons/warfare-alife-overhaul-new
+  Stealth Overhaul: https://github.com/Alex-leon1594/Stealth_Overhaul_Reworked
+  COMPASS: https://github.com/Crimento/COMPASS
+Collaborations:
+  xAGNA: https://www.moddb.com/mods/stalker-anomaly/addons/xagna
 
 [ Hero image: jitprofiler-hero.gif - the profiler runs a capture ]
 
 Thanks for the support, but I don't need donations. Reviews, ratings, and proper reports help more.
 An organized group copies my work, spreads daily lies, and mass-downvotes my mods across platforms.
-My work is open source, works with most modpacks, and integrates with established projects.
+My work is open source, present in most modpacks, and integrates with established projects.
 
 Early release. Some of the X-Ray crash fixes and optimizations this build relies on are not yet in the latest demonized exe, so run it with the exe from the fork below:
 https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
