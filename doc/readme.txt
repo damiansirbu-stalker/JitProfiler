@@ -38,9 +38,9 @@ Collaborations:
 
 [ Hero image: jitprofiler-hero.gif - the profiler runs a capture ]
 
-Thanks for the support, but I don't need donations. Reviews, ratings, and proper reports help more.
-An organized group copies my work, spreads daily lies, and mass-downvotes my mods across platforms.
-My work is open source, present in most modpacks, and integrates with established projects.
+My work is free and open source, ships in most modpacks, and integrates with established projects.
+An organized group copies my work, defames, impersonates and review-bombs me across platforms.
+You can help with a review, a rating, a proper bug report, or a coffee on Ko-fi: https://ko-fi.com/damiansirbu
 
 Every release is stable and whole new systems may appear. Always understand the documentation.
 
@@ -56,6 +56,7 @@ CPU ranks Lua time, MEM ranks allocation. Sampling keeps the JIT on and costs al
 CPU sampling stands on its own, and JitProfiler also profiles allocation and GC health, the whole cost of the script layer.
 You do not need to know where to look first, since the ranking names the mod and script behind each cost.
 The sampler and the allocation counter are native code in xray-monolith, this project's contribution to the engine, so it reads the allocation bytes and VM state a script-side profiler cannot.
+JitProfiler is the only Anomaly profiler that runs inside the engine. The handlers a mod attaches to the game's callbacks are the core of its per-frame cost. A Lua profiler cannot see those handlers, so it misses that core. JitProfiler profiles them: the engine sampler catches them as they run, and CALLBACKS times each one.
 
 In a typical session you run a CPU capture while you play, then stop it and read which mods and scripts cost the most time.
 You run a MEM capture the same way to see which ones allocate the most and load the collector.
@@ -83,6 +84,7 @@ Build the set from a CPU row, or from the browser, which groups scripts by mod a
 
 CALLBACKS - what each event handler costs and which mod hooks a callback.
 It wraps the handlers you pick over the game's make_callback dispatch and ranks each by own ms with its callback and owning mod, engine C included.
+It wraps each handler where the game dispatches it, so it times even a handler registered as a local function.
 Dispatch order and semantics stay untouched, so the reading matches what actually runs.
 
 SAVE PAGE - write a capture as a masked web page you can share, without exposing other authors' mods.
