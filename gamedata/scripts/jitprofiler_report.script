@@ -3,13 +3,24 @@
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
 local tostring, os, format = tostring, os, string.format
 local type, next = type, next
-local KIND_CPU, KIND_MEM, KIND_SCAN, KIND_CALLBACKS = "cpu", "mem", "scan", "callbacks"
+local mfloor, mceil = math.floor, math.ceil
+local KIND_CPU, KIND_MEM, KIND_SCAN, KIND_CALLBACKS, KIND_FRAME = "cpu", "mem", "scan", "callbacks", "frame"
+
+-- FRAME chart series is max-preserving downsampled to this many columns, so a spike survives the reduction.
+local FRAME_CHART_COLUMNS = 600
+-- Report a rhythm only with at least this many hitches, so a handful never names a fake period.
+local FRAME_MIN_HITCHES_FOR_RHYTHM = 5
+-- The 0.1% low needs a long capture to mean anything; below this frame count, show the 1% low alone.
+local FRAME_MIN_FRAMES_FOR_P999 = 2000
+-- Distribution band edges in ms: the frame-rate each caps (60, 30, 20, 10 fps).
+local MS_60FPS, MS_30FPS, MS_20FPS, MS_10FPS = 16, 33, 50, 100
 
 local RULE = "================================================================================"
 local BAR_WIDTH    = 20
 local BYTES_PER_MB = 1048576
 local BYTES_PER_KB = 1024
 local OWNER_MOD    = "mod: "
+local GENUINE_BASELINE = "(no mod on the stack)"
 
 -- Per-sample VM state label for the CPU report header.
 local VMSTATE = {
@@ -178,6 +189,16 @@ local function build_capture_doc(capture)
         table.sort(rows, function(left, right) return left.self_us > right.self_us end)
         doc.total_us = capture.total_us
         doc.rows = rows
+    elseif capture.kind == KIND_FRAME then
+        doc.series = capture.series
+        doc.metrics = capture.metrics
+        doc.rhythm = capture.rhythm
+        local hitches = {}
+        for i = 1, #capture.hitches do
+            local hitch = capture.hitches[i]
+            hitches[i] = { index = hitch.index, dt = hitch.dt, wall = hitch.wall, at_s = hitch.at_s }
+        end
+        doc.hitches = hitches
     end
     return doc
 end
@@ -238,6 +259,52 @@ local function collect_edge_neighbors(edges, key)
     return callers, callees
 end
 
+-- A stack's anchor (Self frame) and its first mod frame walking leaf-first; nil anchor when the anchor is mod-owned, nil driver when no mod.
+local function find_stack_driver(stack, mod_prefix, get_owner)
+    local anchor = JitProfiler.get_stack_anchor(stack)
+    if get_owner(anchor):sub(1, #mod_prefix) == mod_prefix then return nil, nil end
+    for frame in string.gmatch(stack, "[^;]+") do
+        local owner = get_owner(frame)
+        if owner:sub(1, #mod_prefix) == mod_prefix then return anchor, owner end
+    end
+    return anchor, nil
+end
+
+-- ORIGIN: each stack whose anchor is not mod-owned credits the first mod up the stack; no-mod stacks are genuine baseline.
+--- @return table { rows = sorted {owner, weight}, leaves = sorted {leaf, weight, drivers = sorted {owner, weight}}, genuine = number }
+local function compute_baseline_drivers(by_stack)
+    local get_owner = JitProfiler.get_owner
+    local drivers, leaf_drivers, leaf_weight, genuine = {}, {}, {}, 0
+    for stack, weight in pairs(by_stack) do
+        local anchor, driver = find_stack_driver(stack, OWNER_MOD, get_owner)
+        if anchor then
+            local leaf_key = JitProfiler.get_short_frame(anchor)
+            local who = driver or GENUINE_BASELINE
+            if driver then drivers[driver] = (drivers[driver] or 0) + weight else genuine = genuine + weight end
+            leaf_drivers[leaf_key] = leaf_drivers[leaf_key] or {}
+            leaf_drivers[leaf_key][who] = (leaf_drivers[leaf_key][who] or 0) + weight
+            leaf_weight[leaf_key] = (leaf_weight[leaf_key] or 0) + weight
+        end
+    end
+    local leaves = sort_entries(leaf_weight)
+    for i = 1, #leaves do leaves[i].drivers = sort_entries(leaf_drivers[leaves[i][1]]) end
+    return { rows = sort_entries(drivers), leaves = leaves, genuine = genuine }
+end
+
+-- The .txt ORIGIN section: the baseline cost per calling mod, then each hot baseline row with the mods that called it.
+local function build_driver_view(lines, drivers, total)
+    local mask = JitProfiler.compute_masked_name
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- ORIGIN   the mod that called each hot anomaly/engine row " .. string.rep("-", 6)
+    for i = 1, #drivers.rows do lines[#lines + 1] = format("  %5.1f%%  %s", compute_pct(drivers.rows[i][2], total), mask(drivers.rows[i][1])) end
+    lines[#lines + 1] = format("  %5.1f%%  %s", compute_pct(drivers.genuine, total), GENUINE_BASELINE)
+    for i = 1, math.min(#drivers.leaves, 20) do
+        local leaf = drivers.leaves[i]
+        lines[#lines + 1] = format("  %-58s %5.1f%%", mask(leaf[1]), compute_pct(leaf[2], total))
+        for j = 1, math.min(#leaf.drivers, 3) do lines[#lines + 1] = format("      <- %5.1f%%  %s", compute_pct(leaf.drivers[j][2], total), mask(leaf.drivers[j][1])) end
+    end
+end
+
 -- The .txt call-graph for a sampling capture: the top leaves, each with its callers (toward root) and callees (toward leaf) from the retained stacks.
 local function build_call_graph(lines, by_stack, v, total)
     local leaves = sort_entries(v.leaf)
@@ -255,6 +322,87 @@ local function build_call_graph(lines, by_stack, v, total)
 end
 
 -- CPU report from the computed views; writes the ranked .txt plus the SpeedScope .folded and returns the retained capture entry.
+-- FRAME helpers: every statistic is computed once over the full series at stop.
+local function compute_percentile(sorted, pct)
+    local count = #sorted
+    if count == 0 then return 0 end
+    local idx = mceil(pct / 100 * count)
+    if idx < 1 then idx = 1 elseif idx > count then idx = count end
+    return sorted[idx]
+end
+
+-- Mean of the worst fraction (the largest `frac` of the ascending-sorted values), the "N% low" pacing metric.
+local function compute_low_mean(sorted, frac)
+    local count = #sorted
+    if count == 0 then return 0 end
+    local take = mfloor(count * frac)
+    if take < 1 then take = 1 end
+    local sum = 0
+    for i = count - take + 1, count do sum = sum + sorted[i] end
+    return sum / take
+end
+
+-- Max-preserving downsample to at most `columns` buckets, so a spike never averages away before the chart.
+local function compute_downsample(series, columns)
+    local count = #series
+    if count <= columns then
+        local out = {}
+        for i = 1, count do out[i] = series[i] end
+        return out
+    end
+    local out, step = {}, count / columns
+    for col = 1, columns do
+        local first = mfloor((col - 1) * step) + 1
+        local last = mfloor(col * step)
+        if last < first then last = first end
+        local peak = 0
+        for i = first, last do if series[i] > peak then peak = series[i] end end
+        out[col] = peak
+    end
+    return out
+end
+
+-- Frame-time distribution: count frames into the fps bands.
+local function compute_frame_dist(series)
+    local dist = { b16 = 0, b33 = 0, b50 = 0, b100 = 0, bover = 0 }
+    for i = 1, #series do
+        local dt = series[i]
+        if dt <= MS_60FPS then dist.b16 = dist.b16 + 1
+        elseif dt <= MS_30FPS then dist.b33 = dist.b33 + 1
+        elseif dt <= MS_20FPS then dist.b50 = dist.b50 + 1
+        elseif dt <= MS_10FPS then dist.b100 = dist.b100 + 1
+        else dist.bover = dist.bover + 1 end
+    end
+    return dist
+end
+
+-- Classify hitches over the full series: a frame clearing both the relative gate and the absolute floor, with its wall offset.
+local function compute_frame_hitches(series, t0, median, gate_k, floor_ms)
+    local hitches, cum = {}, 0
+    for i = 1, #series do
+        local dt = series[i]
+        cum = cum + dt
+        if dt > median * gate_k and dt > floor_ms then
+            hitches[#hitches + 1] = { index = i, dt = dt, wall = t0 + cum, at_s = cum / 1000 }
+        end
+    end
+    return hitches
+end
+
+-- Inter-hitch interval histogram: the seconds between consecutive hitches, top bucket first; empty below the minimum count.
+local function compute_frame_rhythm(hitches)
+    local rhythm = {}
+    if #hitches < FRAME_MIN_HITCHES_FOR_RHYTHM then return rhythm end
+    local buckets = {}
+    for i = 2, #hitches do
+        local gap_s = mfloor((hitches[i].wall - hitches[i - 1].wall) / 1000 + 0.5)
+        buckets[gap_s] = (buckets[gap_s] or 0) + 1
+    end
+    for sec, hits in pairs(buckets) do rhythm[#rhythm + 1] = { sec = sec, count = hits } end
+    table.sort(rhythm, function(left, right) return left.count > right.count end)
+    return rhythm
+end
+
 function write_cpu(cpu, v, opts)
     local total, duration_sec, gc_line = opts.total, opts.duration, opts.gc_line
     report_fold = opts.fold and true or false
@@ -298,6 +446,8 @@ function write_cpu(cpu, v, opts)
     build_view(lines, "BY LEAF   the hot function (Own)", v.leaf, total, format_count, { owned = true })
     build_view(lines, "BY ROOT   the outermost frame", v.root, total, format_count, { owned = true })
     build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", v.framework, total, format_count)
+    local drivers = compute_baseline_drivers(cpu.stacks)
+    build_driver_view(lines, drivers, total)
     build_call_graph(lines, cpu.stacks, v, total)
 
     local stamp = get_timestamp()
@@ -305,7 +455,7 @@ function write_cpu(cpu, v, opts)
     local folded_path = write_folded("cpu_" .. stamp, cpu.stacks)
     log("JitProfiler/cpu: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     return {
-        kind = KIND_CPU, by_stack = cpu.stacks, views = v, total = total, engine_entry = sort_entries(v.engine_entry),
+        kind = KIND_CPU, by_stack = cpu.stacks, views = v, total = total, engine_entry = sort_entries(v.engine_entry), drivers = drivers,
         meta = { samples = total, interval = cpu.iv, duration = duration_sec, stamp = stamp,
                  vmstate = cpu.state, dropped = cpu.dropped, depth = cpu.depth, max_depth = v.max_depth, clipped = v.clipped },
     }
@@ -350,6 +500,8 @@ function write_alloc(v, opts)
     build_view(lines, "BY LEAF   who allocates (Own)", v.leaf, total, format_bytes, { owned = true })
     build_view(lines, "BY ROOT   the outermost frame", v.root, total, format_bytes, { owned = true })
     build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", v.framework, total, format_bytes)
+    local drivers = compute_baseline_drivers(by_stack)
+    build_driver_view(lines, drivers, total)
     build_call_graph(lines, by_stack, v, total)
 
     local stamp = get_timestamp()
@@ -358,7 +510,7 @@ function write_alloc(v, opts)
     log("JitProfiler/alloc: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     if suffix ~= "" then return end
     return {
-        kind = KIND_MEM, by_stack = by_stack, views = v, total = total,
+        kind = KIND_MEM, by_stack = by_stack, views = v, total = total, drivers = drivers,
         meta = { bytes = total, duration = duration_sec, stamp = stamp, stacks = get_key_count(by_stack),
                  dropped = diag.dropped, depth = depth, max_depth = v.max_depth, clipped = v.clipped },
     }
@@ -480,6 +632,84 @@ function write_callbacks(records, wrapped, duration_sec)
     return {
         kind = KIND_CALLBACKS, rows = rows, total_us = total_self,
         meta = { wrapped = wrapped, duration = duration_sec, stamp = stamp },
+    }
+end
+
+-- FRAME report: per-render-frame timing. Metrics, the hitch list, and the inter-hitch rhythm, all over the full series.
+function write_frame(series, opts)
+    local frames = #series
+    local t0, duration_sec = opts.t0, opts.duration
+    local gate_k, floor_ms = opts.gate_k, opts.floor_ms
+
+    local sorted, sum = {}, 0
+    for i = 1, frames do sorted[i] = series[i]; sum = sum + series[i] end
+    table.sort(sorted)
+    local mean = frames > 0 and sum / frames or 0
+    local median = frames > 0 and sorted[mceil(frames / 2)] or 0
+    local min_ms = frames > 0 and sorted[1] or 0
+    local max_ms = frames > 0 and sorted[frames] or 0
+    local p95 = compute_percentile(sorted, 95)
+    local p99 = compute_percentile(sorted, 99)
+    local low1 = compute_low_mean(sorted, 0.01)
+    local low01 = frames >= FRAME_MIN_FRAMES_FOR_P999 and compute_low_mean(sorted, 0.001) or nil
+    local effective_gate = median * gate_k > floor_ms and median * gate_k or floor_ms
+
+    local hitches = compute_frame_hitches(series, t0, median, gate_k, floor_ms)
+    local hitch_time = 0
+    for i = 1, #hitches do hitch_time = hitch_time + hitches[i].dt end
+    local rhythm = compute_frame_rhythm(hitches)
+    local dist = compute_frame_dist(series)
+
+    local ranked = {}
+    for i = 1, #hitches do ranked[i] = hitches[i] end
+    table.sort(ranked, function(left, right) return left.dt > right.dt end)
+
+    local metrics = { n = frames, mean = mean, median = median, min = min_ms, max = max_ms,
+                      p95 = p95, p99 = p99, low1 = low1, low01 = low01,
+                      fps_median = median > 0 and 1000 / median or 0,
+                      hitch_count = #hitches, hitch_time = hitch_time, gate = effective_gate, dist = dist }
+
+    local lines = {
+        RULE,
+        "  JitProfiler  -  HITCHES   per-render-frame time (device().time_delta, raw and unclamped)",
+        format("  modded_exes %s   |   %d frames   |   ~%.0f s   |   median %.1f ms (%.0f fps)",
+            tostring(_G.MODDED_EXES_VERSION or "?"), frames, duration_sec, median, metrics.fps_median),
+        RULE,
+        "",
+        format("  median %.1f ms   mean %.1f ms   min %.1f ms   max %.1f ms", median, mean, min_ms, max_ms),
+        format("  p95 %.1f ms   p99 %.1f ms   1%% low %.1f ms%s", p95, p99, low1,
+            low01 and format("   0.1%% low %.1f ms", low01) or "   (0.1% low needs a longer capture)"),
+        format("  hitches %d over %.0f ms total   |   gate %.1f ms (dt > %.1fx median AND > %.0f ms)",
+            #hitches, hitch_time, effective_gate, gate_k, floor_ms),
+    }
+    if opts.truncated then lines[#lines + 1] = format("  NOTE series capped at %d frames; capture auto-stopped, the tail was not recorded", frames) end
+    if opts.dropped and opts.dropped > 0 then lines[#lines + 1] = format("  NOTE %d frame(s) the heartbeat skipped (device().frame gap)", opts.dropped) end
+    lines[#lines + 1] = ""
+    if #rhythm > 0 then
+        lines[#lines + 1] = "-- RHYTHM   seconds between consecutive hitches " .. string.rep("-", 40)
+        for i = 1, math.min(#rhythm, 3) do
+            lines[#lines + 1] = format("  a hitch every ~%d s   (%d times)", rhythm[i].sec, rhythm[i].count)
+        end
+    else
+        lines[#lines + 1] = format("-- RHYTHM   too few hitches (%d) to read a period", #hitches)
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "-- HITCHES   worst frames, ranked by frame time " .. string.rep("-", 40)
+    lines[#lines + 1] = format("  %8s   %10s   %12s", "FRAME", "dt ms", "at ~s")
+    for i = 1, math.min(#ranked, 50) do
+        local hitch = ranked[i]
+        lines[#lines + 1] = format("  %8d   %10.1f   %12.1f", hitch.index, hitch.dt, (hitch.wall - t0) / 1000)
+    end
+
+    local stamp = get_timestamp()
+    local report_path = write_lines(build_log_path("jitprofiler_frame_" .. stamp .. ".txt"), lines)
+    log("JitProfiler/frame: report -> %s", tostring(report_path))
+    return {
+        kind = KIND_FRAME,
+        series = compute_downsample(series, FRAME_CHART_COLUMNS),
+        metrics = metrics, hitches = ranked, rhythm = rhythm,
+        meta = { frames = frames, duration = duration_sec, stamp = stamp,
+                 gate = effective_gate, truncated = opts.truncated, dropped = opts.dropped },
     }
 end
 

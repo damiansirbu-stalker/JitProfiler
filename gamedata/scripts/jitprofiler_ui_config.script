@@ -5,7 +5,8 @@ local floor, min, tostring = math.floor, math.min, tostring
 local sformat, concat = string.format, table.concat
 local vector2, fcolor = vector2, fcolor
 
-local COLOR_DIM = fcolor():set(0.22, 0.24, 0.28, 1.0)
+-- Secondary text, the same value as jitprofiler_ui's COLOR_DIM so the footer hints match the tabs.
+local COLOR_DIM = fcolor():set(0.50, 0.53, 0.58, 1.0)
 local FILTER_W  = 180
 local VZERO     = vector2(0, 0)
 local BTN_SIZE  = vector2(96, 0)

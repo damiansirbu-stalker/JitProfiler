@@ -8,6 +8,7 @@ local pairs, math, table, pcall = pairs, math, table, pcall
 local floor = math.floor
 local format, RegisterScriptCallback = string.format, RegisterScriptCallback
 local time_global, get_console, tonumber = time_global, get_console, tonumber
+local device = device
 -- Rolling GC-collection rate: cycle count and time at the last 1-second sample, and the derived per-second rate.
 local gc_c0, gc_t0, gc_rate = 0, 0, 0
 -- jit.util.gcstat exists only on a profiler build; nil elsewhere, so the GC-health strip stays hidden.
@@ -28,6 +29,12 @@ local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
 local KIND_SCAN = "scan"
 local KIND_CALLBACKS = "callbacks"
+local KIND_FRAME = "frame"
+-- Panel hitch rows cap; the full ledger is in the .txt report.
+local FRAME_HITCH_ROWS = 30
+-- HITCHES verdict and GC-share colour thresholds.
+local LOW_FPS_MS = 33
+local GC_HIGH_PCT, GC_MED_PCT = 20, 10
 local VIEW_BY_MOD = "by_mod"
 local VIEW_BY_SCRIPT = "by_script"
 local SORT_NAME = "name"
@@ -41,7 +48,10 @@ local GC_RATE_MS = 1000
 
 local COLOR_BG     = fcolor():set(0.09, 0.10, 0.12, 0.97)
 local COLOR_TEXT   = fcolor():set(0.86, 0.89, 0.94, 1.0)
-local COLOR_DIM    = fcolor():set(0.22, 0.24, 0.28, 1.0)
+-- Secondary text (hints, section labels): 4.85:1 on COLOR_BG, readable yet below COLOR_TEXT. Button fills use COLOR_IDLE.
+local COLOR_DIM    = fcolor():set(0.50, 0.53, 0.58, 1.0)
+-- Unselected tab and sub-tab button fill: dark, so the button label keeps its contrast.
+local COLOR_IDLE   = fcolor():set(0.22, 0.24, 0.28, 1.0)
 local COLOR_ACCENT = fcolor():set(0.26, 0.52, 0.85, 1.0)
 local COLOR_RUN    = fcolor():set(0.90, 0.35, 0.35, 1.0)
 local COLOR_WARN   = fcolor():set(0.85, 0.70, 0.35, 1.0)
@@ -55,6 +65,10 @@ local VZERO       = vector2(0, 0)
 local BAR_SIZE    = vector2(BAR_W, 0)
 local VMBAR_SIZE  = vector2(VMBAR_W, 0)
 local BTN_SIZE    = vector2(96, 0)
+local WATERFALL_SIZE = vector2(340, 13)
+-- Timeline heat strip: a row of thin colored cells, time left to right.
+local HEAT_CELLS = 48
+local HEATCELL_SIZE = vector2(16, 12)
 local BANNER_POS  = vector2(24, 120)
 -- Scratch vectors reused every frame: the window size/pos derived from the live screen, and each scroll region's fill height.
 local WIN_SIZE  = vector2(WINDOW_W, WINDOW_H)
@@ -247,8 +261,10 @@ end
 -- Fixed-width bar with the percent as text beside it, so the number sits on the dark background at a consistent spot.
 local function render_bar(pct)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_color(pct))
-    ImGui.ProgressBar(pct / 100, BAR_SIZE, format("%.1f%%", pct))
+    ImGui.ProgressBar(pct / 100, BAR_SIZE, "")
     ImGui.PopStyleColor(1)
+    ImGui.SameLine()
+    ImGui.Text(format("%.1f%%", pct))
 end
 
 -- Clickable table header: an invisible full-cell button takes the click; the label draws over it, right-aligned, with a ^/v arrow on the active column.
@@ -288,9 +304,9 @@ end
 local function render_run_button(id, this_on, other_on, start_fn, stop_fn)
     local label = this_on and "Stop" or "Start"
     if other_on and not this_on then
-        ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
+        ImGui.BeginDisabled(true)
         ImGui.Button(label .. "##" .. id, BTN_SIZE)
-        ImGui.PopStyleColor(1)
+        ImGui.EndDisabled()
         return
     end
     if ImGui.Button(label .. "##" .. id, BTN_SIZE) then
@@ -317,6 +333,7 @@ SHARED = {
     FILTER_W = FILTER_W,
     VZERO = VZERO,
     COLOR_DIM = COLOR_DIM,
+    COLOR_IDLE = COLOR_IDLE,
     COLOR_ACCENT = COLOR_ACCENT,
     KIND_SCAN = KIND_SCAN,
     KIND_CALLBACKS = KIND_CALLBACKS,
@@ -338,19 +355,22 @@ local TAB_TIP = {
     [KIND_MEM]       = "Allocation bytes, exact. JIT off so FPS drops; capture short. Finds the garbage.",
     [KIND_SCAN]      = "Wrap the scripts you pick and time each call, engine C included. Adds per-call cost.",
     [KIND_CALLBACKS] = "Time the callback handlers you pick over the dispatch. Opt-in.",
+    [KIND_FRAME]     = "Per-frame time plus CPU attribution in one capture: the slow frames, their rhythm, and what ran.",
 }
 
 -- One of the top tabs. While a capture runs, the tabs that are not the running one lock: dim and unclickable.
 local function render_tab_button(kind, label)
     local sel = (active_tab == kind)
-    local locked = not sel and (JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or JitProfiler.is_scan_active() or JitProfiler.is_callbacks_active())
-    ImGui.PushStyleColor(ImGuiCol.Button, sel and COLOR_ACCENT or COLOR_DIM)
+    local locked = not sel and (JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or JitProfiler.is_scan_active() or JitProfiler.is_callbacks_active() or JitProfiler.is_frame_active())
+    ImGui.PushStyleColor(ImGuiCol.Button, sel and COLOR_ACCENT or COLOR_IDLE)
+    if locked then ImGui.BeginDisabled(true) end
     if ImGui.Button(label .. "##tab", VZERO) and not locked and active_tab ~= kind then
         active_tab = kind
         selected_frame = nil
         selected_neighbors = nil
         jitprofiler_ui_trace.clear_selection()
     end
+    if locked then ImGui.EndDisabled() end
     if TAB_TIP[kind] and ImGui.IsItemHovered() then ImGui.SetTooltip(TAB_TIP[kind]) end
     ImGui.PopStyleColor(1)
 end
@@ -403,6 +423,7 @@ local function render_bymod_table(cap)
     ImGui.TableSetupColumn("Own %", 0, 80, 0)
     ImGui.TableSetupColumn("Total %", 0, 150, 0)
     ImGui.TableSetupColumn("Value", 0, 90, 0)
+    ImGui.TableSetupScrollFreeze(0, 1)
     ImGui.TableNextRow()
     render_sort_header("Mod", SORT_NAME)
     render_sort_header("Own %", SORT_OWN)
@@ -444,6 +465,7 @@ local function render_view_table(cap, view)
     ImGui.TableSetupColumn("Mod", 0, 150, 0)
     ImGui.TableSetupColumn("%", 0, 140, 0)
     ImGui.TableSetupColumn("Value", 0, 90, 0)
+    ImGui.TableSetupScrollFreeze(0, 1)
     ImGui.TableNextRow()
     render_sort_header("Frame", SORT_NAME)
     render_sort_header("Mod", SORT_OWNER)
@@ -485,13 +507,14 @@ local function render_byscript_table(cap)
     local entries = get_rows(cap)
     render_colored_text(COLOR_DIM, "Own % = innermost frame (sums ~100%);  Total % = on the stack anywhere (exceeds 100%)")
     if not ImGui.BeginTable("jf_byscript", 5, TABLE_FLAGS, get_fill_size(selected_frame and DETAIL_H or 0), 0) then return end
-    ImGui.TableSetupColumn("Function", 0, 210, 0)
+    ImGui.TableSetupColumn("Script", 0, 210, 0)
     ImGui.TableSetupColumn("Mod", 0, 110, 0)
     ImGui.TableSetupColumn("Own %", 0, 70, 0)
     ImGui.TableSetupColumn("Total %", 0, 110, 0)
     ImGui.TableSetupColumn("Value", 0, 80, 0)
+    ImGui.TableSetupScrollFreeze(0, 1)
     ImGui.TableNextRow()
-    render_sort_header("Function", SORT_NAME)
+    render_sort_header("Script", SORT_NAME)
     render_sort_header("Mod", SORT_OWNER)
     render_sort_header("Own %", SORT_OWN)
     render_sort_header("Total %", SORT_TOTAL)
@@ -520,8 +543,8 @@ local function render_neighbors(cap)
     if not (selected_frame and selected_neighbors) then return end
     ImGui.Separator()
     ImGui.Text("SELECTED  " .. JitProfiler.compute_masked_name(selected_frame))
-    render_ranked("CALLERS (toward root)", selected_neighbors.callers, cap.total)
-    render_ranked("CALLEES (toward leaf)", selected_neighbors.callees, cap.total)
+    render_ranked("CALLERS (who called it)", selected_neighbors.callers, cap.total)
+    render_ranked("CALLEES (where its time went)", selected_neighbors.callees, cap.total)
 end
 
 local function render_vmstate_bar(state, weight, total)
@@ -559,6 +582,24 @@ local function render_engine_entry(cap)
         local entry_text = format("  %5.1f%%  %s", pct, JitProfiler.compute_masked_name(key))
         render_colored_text(get_mod_color(JitProfiler.get_owner(key)), entry_text)
     end
+end
+
+-- One ORIGIN row: the hot anomaly/engine row, then up to three calling mods under it in their mod colour.
+local function render_origin_row(leaf, total)
+    local mask = JitProfiler.compute_masked_name
+    ImGui.Text(format("  %5.1f%%  %s", total > 0 and 100 * leaf[2] / total or 0, mask(leaf[1])))
+    for j = 1, math.min(#leaf.drivers, 3) do
+        local owner, weight = leaf.drivers[j][1], leaf.drivers[j][2]
+        render_colored_text(get_mod_color(owner), format("      <- %5.1f%%  %s", total > 0 and 100 * weight / total or 0, mask(owner)))
+    end
+end
+
+-- ORIGIN: each hot anomaly/engine row with the first mod up its stack, the mod that called it; computed once at Stop.
+local function render_baseline_drivers(cap)
+    local drivers = cap.drivers
+    if not (drivers and #drivers.leaves > 0) then return end
+    if not ImGui.CollapsingHeader("ORIGIN  (the mod that called each hot anomaly/engine row)") then return end
+    for i = 1, math.min(#drivers.leaves, TOP_NEIGHBORS) do render_origin_row(drivers.leaves[i], cap.total) end
 end
 
 -- One GC-health row: the label, a heat bar for the clamped fraction, then the value text.
@@ -631,8 +672,10 @@ end
 -- Depth, drop, and resolver warnings for a retained capture.
 local function render_tab_health(cap)
     local at_cap = (cap.total > 0) and 100 * (cap.meta.clipped or 0) / cap.total or 0
-    ImGui.Text(format("stack depth %d / cap %d   %.1f%% at cap",
-        cap.meta.max_depth or 0, cap.meta.depth or 0, at_cap))
+    if at_cap > 0 then
+        render_colored_text(COLOR_WARN, format("stack depth %d / cap %d   %.1f%% at cap: raise Stack depth in Settings",
+            cap.meta.max_depth or 0, cap.meta.depth or 0, at_cap))
+    end
     local dropped = cap.meta.dropped or 0
     if dropped > 0 then
         ImGui.PushStyleColor(ImGuiCol.Text, COLOR_WARN)
@@ -665,6 +708,7 @@ local function render_tab(cap)
         render_vmstate(cap)
         render_engine_entry(cap)
     end
+    render_baseline_drivers(cap)
     ImGui.Separator()
     render_table(cap)
     render_neighbors(cap)
@@ -680,7 +724,8 @@ end
 local function render_status_line()
     local prog = JitProfiler.get_capture_progress()
     if prog then
-        local mode = JitProfiler.is_cpu_active() and "CPU" or (JitProfiler.is_mem_active() and "MEM" or (JitProfiler.is_scan_active() and "INSTRUMENT" or "CALLBACKS"))
+        local mode = JitProfiler.is_frame_active() and "HITCHES" or (JitProfiler.is_cpu_active() and "CPU"
+            or (JitProfiler.is_mem_active() and "MEM" or (JitProfiler.is_scan_active() and "INSTRUMENT" or "CALLBACKS")))
         local line = "REC  " .. mode .. "  " .. format_clock(prog.elapsed)
         if prog.limit > 0 then line = line .. " / " .. format_clock(prog.limit) end
         render_colored_text(COLOR_RUN, line)
@@ -726,6 +771,217 @@ local function render_sampling_body()
     end
 end
 
+-- The worst-frame hitch table for the FRAME tab, capped at FRAME_HITCH_ROWS; the full ledger is in the .txt.
+local function render_frame_hitches(cap)
+    local hitches = cap.hitches or {}
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_HEADER)
+    ImGui.Text("HITCHES  worst frames")
+    ImGui.PopStyleColor(1)
+    if #hitches == 0 then
+        ImGui.Text("  no hitches - smooth capture")
+        return
+    end
+    ImGui.Text(format("  %8s  %10s  %10s", "FRAME", "dt ms", "at ~s"))
+    for i = 1, math.min(#hitches, FRAME_HITCH_ROWS) do
+        local hitch = hitches[i]
+        ImGui.Text(format("  %8d  %10.1f  %10.1f", hitch.index, hitch.dt, hitch.at_s or 0))
+    end
+end
+
+-- The rhythm block: the top inter-hitch intervals, or nothing when there were too few hitches.
+local function render_frame_rhythm(cap)
+    if not (cap.rhythm and #cap.rhythm > 0) then return end
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+    ImGui.Text("RHYTHM")
+    ImGui.PopStyleColor(1)
+    for i = 1, math.min(#cap.rhythm, 3) do
+        ImGui.Text(format("  a hitch every ~%d s  (%d times)", cap.rhythm[i].sec, cap.rhythm[i].count))
+    end
+    ImGui.Separator()
+end
+
+-- One warning line in the warn colour, the render_tab_health idiom.
+local function render_frame_warn(text)
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_WARN)
+    ImGui.Text(text)
+    ImGui.PopStyleColor(1)
+end
+
+-- The window's worst frame as a heat colour: red over the gate, amber past 1.5x median, else a blue ramp by magnitude.
+local function get_heat_cell_color(peak, peak_all, gate, median)
+    if peak > gate then return COLOR_RUN end
+    if peak > median * 1.5 then return COLOR_WARN end
+    return get_heat_color(peak_all > 0 and 100 * peak / peak_all or 0)
+end
+
+-- The timeline: a single thin row of colour cells, time left to right, each cell the worst frame in its window.
+-- The ImPlot line chart for the frame series: dt over the capture, the hitch gate drawn as a flat line.
+local function render_frametime_plot(cap, series, count)
+    local xs, ys = {}, {}
+    for i = 1, count do xs[i] = i; ys[i] = series[i] end
+    if ximplot.start_plot("##frametime", -1, 120, 0) then
+        ximplot.set_axes("frame", "ms", 0, 0)
+        ximplot.add_line("dt", xs, ys, count)
+        local gate = (cap.metrics and cap.metrics.gate) or 0
+        if gate > 0 then ximplot.add_line("gate", { 1, count }, { gate, gate }, 2) end
+        ximplot.stop_plot()
+    end
+end
+
+-- The floor-exe fallback: a downsampled heat strip, coloured per cell by peak frame time. Exact ms in the hitch table.
+local function render_frametime_heatstrip(cap, series, count)
+    local cells = count < HEAT_CELLS and count or HEAT_CELLS
+    local per = count / cells
+    local peak_all = (cap.metrics and cap.metrics.max and cap.metrics.max > 0) and cap.metrics.max or 1
+    local gate = (cap.metrics and cap.metrics.gate) or 0
+    local median = (cap.metrics and cap.metrics.median) or 0
+    for c = 1, cells do
+        local first = floor((c - 1) * per) + 1
+        local last = floor(c * per)
+        if last < first then last = first end
+        local peak = 0
+        for i = first, last do if series[i] > peak then peak = series[i] end end
+        ImGui.PushStyleColor(ImGuiCol.PlotHistogram, get_heat_cell_color(peak, peak_all, gate, median))
+        ImGui.ProgressBar(1.0, HEATCELL_SIZE, "")
+        ImGui.PopStyleColor(1)
+        if c < cells then ImGui.SameLine(0, 1) end
+    end
+end
+
+-- The frame-time timeline: a real ImPlot line when the modded-exes bind is present, a heat strip otherwise.
+local function render_frametime_timeline(cap)
+    local series = cap.series or {}
+    local count = #series
+    if count == 0 then return end
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+    ImGui.Text("TIMELINE  frame time, left to right")
+    ImGui.PopStyleColor(1)
+    if ximplot.has_plot() then render_frametime_plot(cap, series, count)
+    else render_frametime_heatstrip(cap, series, count) end
+end
+
+-- One-line verdict read from the metrics, so the capture says what it is, not just the numbers.
+local function render_frametime_verdict(metrics)
+    local text, color
+    if metrics.hitch_count > 0 then
+        text = format("STUTTERING  %d hitches, worst %.0f ms", metrics.hitch_count, metrics.max)
+        color = COLOR_RUN
+    elseif metrics.median > LOW_FPS_MS then
+        text = format("LOW BASE FPS  median %.0f ms (%.0f fps)", metrics.median, metrics.fps_median)
+        color = COLOR_WARN
+    else
+        text = format("SMOOTH  median %.0f ms (%.0f fps)", metrics.median, metrics.fps_median)
+        color = COLOR_ACCENT
+    end
+    ImGui.PushStyleColor(ImGuiCol.Text, color)
+    ImGui.Text(text)
+    ImGui.PopStyleColor(1)
+end
+
+-- The garbage-collector share from the coupled CPU capture: GC is the top Anomaly stutter cause, so flag it.
+local function render_frametime_gc()
+    local cpu_cap = JitProfiler.get_last_capture(KIND_CPU)
+    if not (cpu_cap and cpu_cap.meta and cpu_cap.meta.vmstate and (cpu_cap.total or 0) > 0) then return end
+    local gc_samples = cpu_cap.meta.vmstate.G or 0
+    local gc_pct = 100 * gc_samples / cpu_cap.total
+    local color = COLOR_DIM
+    if gc_pct > GC_HIGH_PCT then color = COLOR_RUN elseif gc_pct > GC_MED_PCT then color = COLOR_WARN end
+    ImGui.PushStyleColor(ImGuiCol.Text, color)
+    ImGui.Text(format("GC  %.1f%% of CPU samples in the garbage collector", gc_pct))
+    ImGui.PopStyleColor(1)
+end
+
+-- Frame-time distribution: how many frames fall in each band, a bar per band, so the smooth-mass-plus-tail shape reads.
+local function render_frametime_dist(metrics)
+    local dist = metrics.dist
+    if not dist then return end
+    local total = metrics.n > 0 and metrics.n or 1
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
+    ImGui.Text("DISTRIBUTION  frames by time")
+    ImGui.PopStyleColor(1)
+    local buckets = {
+        { "<16 ms (60+ fps)", dist.b16, COLOR_ACCENT },
+        { "16-33 ms (30-60)", dist.b33, COLOR_ACCENT },
+        { "33-50 ms (20-30)", dist.b50, COLOR_WARN },
+        { "50-100 ms", dist.b100, COLOR_RUN },
+        { ">100 ms", dist.bover, COLOR_RUN },
+    }
+    for i = 1, #buckets do
+        local bucket = buckets[i]
+        ImGui.Text(format("  %-18s", bucket[1]))
+        ImGui.SameLine(0, 8)
+        ImGui.PushStyleColor(ImGuiCol.PlotHistogram, bucket[3])
+        ImGui.ProgressBar(bucket[2] / total, WATERFALL_SIZE, format("%d", bucket[2]))
+        ImGui.PopStyleColor(1)
+    end
+end
+
+-- The operators that ran: per-hitch CPU own when there were hitches (what ran DURING the stutter), else the overall.
+local function render_frametime_whatran(cap)
+    local leaf, total, header
+    if cap.hitch_views and (cap.hitch_sample_frames or 0) > 0 then
+        leaf, total = cap.hitch_views.leaf, cap.hitch_total or 0
+        header = format("WHAT RAN  during %d hitch frames (CPU own)", cap.hitch_sample_frames)
+    else
+        local cpu_cap = JitProfiler.get_last_capture(KIND_CPU)
+        if cpu_cap and cpu_cap.views then leaf, total = cpu_cap.views.leaf, cpu_cap.total or 0 end
+        header = "WHAT RAN  overall, no hitches (CPU own)"
+    end
+    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_HEADER)
+    ImGui.Text(header)
+    ImGui.PopStyleColor(1)
+    if not leaf then ImGui.Text("  no CPU data"); return end
+    local rows = {}
+    for key, weight in pairs(leaf) do rows[#rows + 1] = { key = key, weight = weight } end
+    table.sort(rows, function(left, right) return left.weight > right.weight end)
+    for i = 1, math.min(#rows, 8) do
+        local row = rows[i]
+        local pct = total > 0 and 100 * row.weight / total or 0
+        ImGui.Text(format("  %5.1f%%  %-26s %s", pct,
+            JitProfiler.compute_masked_name(JitProfiler.get_owner(row.key)),
+            JitProfiler.compute_masked_name(row.key)))
+    end
+end
+
+-- The FRAME tab: Start/Stop, the metric strip, the time-series chart, the rhythm, and the worst-frame hitch table.
+-- The chart is a real ImPlot line (dt over the capture, with the hitch gate) when the modded-exes bind is present, and a heat-strip otherwise.
+local function render_frame_body()
+    local this_on = JitProfiler.is_frame_active()
+    local other_on = JitProfiler.is_cpu_active() or JitProfiler.is_mem_active() or JitProfiler.is_scan_active() or JitProfiler.is_callbacks_active()
+    render_run_button("capframe", this_on, other_on, JitProfiler.start_frame, JitProfiler.stop_frame)
+    ImGui.SameLine(0, 20)
+    local live_on = JitProfiler.get_setting("frame_live") ~= false
+    local _, new_live = ImGui.Checkbox("Live corner readout", live_on)
+    if new_live ~= live_on then JitProfiler.set_setting("frame_live", new_live) end
+    ImGui.Separator()
+    local cap = JitProfiler.get_last_capture(KIND_FRAME)
+    if not cap then
+        ImGui.Text("No capture yet.  Press Start, play through the stutter, then Stop.")
+        return
+    end
+    local metrics = cap.metrics
+    ImGui.Text(format("%d frames   ~%.0fs   %s", metrics.n, cap.meta.duration or 0, cap.meta.stamp or "?"))
+    ImGui.Text(format("median %.1f ms (%.0f fps)   mean %.1f   min %.1f   max %.1f", metrics.median, metrics.fps_median, metrics.mean, metrics.min, metrics.max))
+    ImGui.Text(format("p95 %.1f   p99 %.1f   1%% low %.1f%s", metrics.p95, metrics.p99, metrics.low1,
+        metrics.low01 and format("   0.1%% low %.1f", metrics.low01) or ""))
+    ImGui.Text(format("hitches %d over %.0f ms   gate %.1f ms", metrics.hitch_count, metrics.hitch_time, metrics.gate))
+    render_frametime_verdict(metrics)
+    render_frametime_gc()
+    if cap.meta.truncated then render_frame_warn("series capped: capture auto-stopped and the tail was not recorded") end
+    if (cap.meta.dropped or 0) > 0 then
+        local dropped_msg = format("%d frame(s) the heartbeat skipped", cap.meta.dropped)
+        render_frame_warn(dropped_msg)
+    end
+    ImGui.Separator()
+    render_frametime_timeline(cap)
+    render_frametime_dist(metrics)
+    ImGui.Separator()
+    render_frame_rhythm(cap)
+    render_frametime_whatran(cap)
+    ImGui.Separator()
+    render_frame_hitches(cap)
+end
+
 -- The profiling view under a capture tab: status line, the active kind's body, then the Settings footer.
 local function render_active_view()
     render_status_line()
@@ -734,6 +990,8 @@ local function render_active_view()
         jitprofiler_ui_trace.render_instrument()
     elseif active_tab == KIND_CALLBACKS then
         jitprofiler_ui_trace.render_callbacks()
+    elseif active_tab == KIND_FRAME then
+        render_frame_body()
     else
         render_sampling_body()
     end
@@ -760,6 +1018,8 @@ local function render_panel()
         render_tab_button(KIND_SCAN, "INSTRUMENT")
         ImGui.SameLine()
         render_tab_button(KIND_CALLBACKS, "CALLBACKS")
+        ImGui.SameLine()
+        render_tab_button(KIND_FRAME, "HITCHES")
         render_active_view()
         pop_mono()
     end
@@ -776,18 +1036,28 @@ local function render_menu()
 end
 
 -- Always-on corner banner via the Unique group; renders every frame, shows only while a capture runs.
+-- The live frame-time and fps the running banner appends during a HITCHES capture.
+local function build_frame_live_suffix(prog)
+    if JitProfiler.get_setting("frame_live") == false then return "" end
+    local dt = device().time_delta
+    local fps = dt > 0 and 1000 / dt or 0
+    return format("   %d ms (%.0f fps)   %d frames", dt, fps, (prog and prog.frames) or 0)
+end
+
 local function render_banner()
     if not is_overlay_enabled() then return end
     local cpu_on = JitProfiler.is_cpu_active()
     local scan_on = JitProfiler.is_scan_active()
     local cb_on = JitProfiler.is_callbacks_active()
-    if not (cpu_on or JitProfiler.is_mem_active() or scan_on or cb_on) then return end
-    local label = cpu_on and "CPU PROFILER" or (scan_on and "INSTRUMENT" or (cb_on and "CALLBACKS" or "MEM PROFILER"))
+    local frame_on = JitProfiler.is_frame_active()
+    if not (cpu_on or JitProfiler.is_mem_active() or scan_on or cb_on or frame_on) then return end
+    local label = frame_on and "HITCHES" or (cpu_on and "CPU PROFILER" or (scan_on and "INSTRUMENT" or (cb_on and "CALLBACKS" or "MEM PROFILER")))
     local prog = JitProfiler.get_capture_progress()
     if prog then
         label = label .. "   " .. format_clock(prog.elapsed)
         if prog.limit > 0 then label = label .. " / " .. format_clock(prog.limit) end
     end
+    if frame_on then label = label .. build_frame_live_suffix(prog) end
     ImGui.SetNextWindowPos(BANNER_POS, ImGuiCond.Always)
     ImGui.PushStyleColor(ImGuiCol.WindowBg, COLOR_BG)
     ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)

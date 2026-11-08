@@ -1,4 +1,11 @@
 1.0.1-snapshot
+  Summary: added a HITCHES capture mode that records per-frame time, finds the stutter, and names what ran
+
+  - HITCHES mode: records the per-render-frame time and couples a CPU capture in the same run, so one
+    button ties the stutter to a cause. Reports median, mean, p95, p99, and the 1% low, lists the worst
+    frames, finds whether the hitches repeat on a fixed interval, and shows the top CPU own beside them.
+    The panel carries a per-window timeline, the rhythm, the worst-frame table, and a what-ran list, and
+    the corner banner shows a live frame-time and fps readout while it records.
 
 1.0.0
   Summary: first release, CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, in-game panel, page save, anonymize

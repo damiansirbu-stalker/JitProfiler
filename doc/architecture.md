@@ -70,6 +70,16 @@ An empty set arms nothing, so start_callbacks refuses it, the same as an empty i
 The report ranks every handler by own ms with its callback and owning mod, plus a per-callback rollup, answering which mod hooks a callback and what each handler costs, engine C included.
 It is opt-in, mutually exclusive with the other captures, and goes inert on a build where the intercepts upvalue is not reachable.
 
+## HITCHES: per-render-frame time
+The CPU, allocation, instrumentation, and callbacks modes rank Lua work; none says which FRAMES were slow. HITCHES records the per-render-frame time, names the hitches, and couples a CPU capture in so one button ties the stutter to a cause.
+It reads `device().time_delta` on the `actor_on_update` heartbeat, one value per frame. That field is the engine's raw frame delta, unsmoothed and unclamped, unlike `f_time_delta` which the engine low-passes and caps at 100ms. The actor registers in the realtime scheduler list and so updates every frame, so the heartbeat is per-frame and the delta it reads is that frame's time.
+The capture appends the delta and nothing else: one field read and one table append per frame. Every statistic is computed once at stop over the full series: median, mean, min, max, p95, p99, the 1% low, and the 0.1% low above a frame-count floor.
+A hitch is a frame whose delta clears both gates, more than k times the whole-capture median (default 2.0) AND more than an absolute floor (default 50ms). Both must hold, so jitter on a smooth run and the smooth frames on a slideshow are both excluded. The report ranks the hitches by frame time and carries each one's wall offset, so a hitch window lines up against a separate CPU capture of the same scene.
+The rhythm finder buckets the seconds between consecutive hitches and reports the top intervals, naming the background-cadence case where a hitch on a beat is a process cycling. It needs a minimum hitch count, below which it reports none.
+The capture couples the jit.profile CPU sampler in the backend: `start_frame` arms both the frame recorder and the CPU sampler through the shared `start_cpu_sampler`, and `stop_frame` stops both (`stop_cpu_sampler`) and writes both `last_capture.frame` and `last_capture.cpu`. One capture, near-zero cost on both axes. The front-end never orchestrates this; it calls `start_frame`/`stop_frame` and reads the two retained captures.
+Each CPU sample also banks into a per-frame accumulator, so "what ran" decomposes to the leaf view OVER THE HITCH FRAMES, not the whole session, the real correlation. The samples taken between two heartbeat ticks belong to the frame whose delta is read at the second tick, so they align with no off-by-one. The attribution is exact, not approximate: an over-floor frame parks its sample map as a hitch candidate, and at stop the same `k x median AND floor` gate the hitch list uses selects which candidates merge into the bucket. The floor is a valid pre-filter rather than a proxy, because a hitch must exceed it by definition, so no true hitch is missed and the selected set equals `metrics.hitch_count`. Parking only over-floor frames keeps the memory to the rare slow frames.
+The mode is mutually exclusive with allocation, instrumentation, and callbacks, which distort frame timing; it owns the CPU sampler for its own session. The panel shows the metric strip, a per-window timeline, the rhythm, the top CPU own (what ran), and the worst-frame table, and the corner banner carries a live frame-time and fps readout while it records, toggleable from the tab. The timeline is a single-row heat strip, one colour cell per time window left to right (a blue ramp by magnitude, amber past 1.5x the median, red over the gate), because the ImGui bind exposes no line-plot or draw-list primitive; the series downsamples max-preserving so a demonized ImGui-plot bind (todo-demonized-exes n074) can later draw a true line chart.
+
 ## Per-mod attribution
 Mods are merged into one `gamedata/scripts`, so the script path never names the mod.
 The resolver reads each script's real backing path through MO2/USVFS, over `GetFinalPathNameByHandle` on a LuaJIT FFI handle. A `mods\<X>` path takes X as the owner.
@@ -104,6 +114,9 @@ The views are BY MOD, BY SCRIPT, BY LEAF, BY ROOT, and FRAMEWORK vs handlers.
 CPU adds the VM-state split and the engine-C entry points, the Lua call sites that drive the engine bucket and the map for a native profiler like Optick.
 Each capture also reports the deepest stack it saw and how often a stack reached the depth cap, so an under-counted Total is visible.
 The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) from the owned views, leaving only mods.
+At Stop, `compute_baseline_drivers()` takes each CPU or MEM stack whose Self frame is not mod-owned and credits the first mod frame up that stack.
+The Self frame comes from `get_stack_anchor()`, the same rule as BY MOD Own. A stack with no mod frame counts as baseline with no mod on the stack.
+The panel and the .txt both show it as ORIGIN: each hot anomaly or engine row with the mods that called it. Every frame keeps its own Self.
 
 ## Anonymize
 A shared capture would print every third-party mod name beside its cost, which no author can be asked to share.
@@ -134,6 +147,7 @@ JitProfiler makes no network request. Sharing the page is a manual step you own:
 ## Output
 `appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
 The instrumentation and callbacks modes write `jitprofiler_inst_<timestamp>.txt` and `jitprofiler_callbacks_<timestamp>.txt`.
+The frame mode writes `jitprofiler_frame_<timestamp>.txt`: the metric block, the rhythm, and the ranked hitch list.
 `jitprofiler_{cpu,mem}[_snapN]_<timestamp>.folded` is the SpeedScope collapsed-stacks flamegraph.
 `jitprofiler_<kind>_<timestamp>.json` is the machine-readable capture, the ranked views plus meta.
 A minimal in-module writer encodes it, because Anomaly ships no JSON library. It honours the Anonymize toggle at write time.
@@ -207,6 +221,8 @@ The panel, menu, and banner read `show_imgui` through a cached flag and draw not
   A function reached through a saved reference (a registered callback, a stored upvalue, a local alias) still calls the original and is not timed.
   A script written mostly as local functions dispatched through callbacks or time-events exposes little on its module table, so a scan of it times almost nothing; a scan that records no called row says so in the panel and points to CPU sampling or the callbacks mode.
   The callbacks mode covers the dispatch case.
+
+- FRAME measures gameplay frames only: `actor_on_update` does not fire in a menu or a full load screen, so a paused or loading stretch is absent from the series, which is correct for a stutter hunt. A pause reads as near-zero deltas, not a hitch, because the engine freezes the timer.
 
 ## Requires
 A demonized build exposing `jit.profile` and `jit.allocprof` (and `jit.util.gcstat` for the GC-health strip), and xlibs for `xlog`.

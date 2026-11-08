@@ -6,6 +6,11 @@ local CPU_MAX_STACKS      = 50000
 local SCAN_MAX_DEPTH      = 200
 local AUTO_SNAP_PCT       = 90
 local BYTES_PER_MB        = 1048576
+
+-- FRAME mode tunables: series cap in frames, the hitch gate as a multiple of the median, the absolute hitch floor in ms.
+local FRAME_SERIES_CAP = 36000
+local FRAME_GATE_K     = 2.0
+local FRAME_FLOOR_MS   = 50
 local OWNER_ANOMALY       = "anomaly"
 local OWNER_UNKNOWN       = "unknown"
 local OWNER_ENGINE        = "engine"
@@ -21,7 +26,7 @@ local KEEP_FILE   = "jitprofiler_keep.txt"
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
 local pcall, tostring, tonumber, require, type = pcall, tostring, tonumber, require, type
 local format = string.format
-local time_global, jit = time_global, jit
+local time_global, jit, device = time_global, jit, device
 local RegisterScriptCallback = RegisterScriptCallback
 local rawget, rawset = rawget, rawset
 local error, unpack, select, next = error, unpack, select, next
@@ -86,6 +91,8 @@ if not (profile and allocprof) then
         log_absent, log_absent, log_absent, log_absent, log_absent, log_absent, log_absent
     start_callbacks, stop_callbacks = log_absent, log_absent
     is_callbacks_active = function() return false end
+    start_frame, stop_frame = log_absent, log_absent
+    is_frame_active = function() return false end
     add_callback_target, remove_callback_target = log_absent, log_absent
     is_callback_target = function() return false end
     get_callback_pick_count = function() return 0 end
@@ -139,7 +146,9 @@ local readable_cache, readable_sig
 local settings = rawget(_G, "__jitprofiler_settings")
 if not settings then
     settings = { interval = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH,
-                 auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false, anon = false }
+                 auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false, anon = false,
+                 frame_gate_k = FRAME_GATE_K, frame_floor_ms = FRAME_FLOOR_MS, frame_cap = FRAME_SERIES_CAP,
+                 frame_live = true }
     rawset(_G, "__jitprofiler_settings", settings)
 end
 
@@ -302,6 +311,7 @@ local function collect_cpu_sample(thread, count, vmstate)
         else
             cpu.dropped = cpu.dropped + count
         end
+        if frame.active then local cur = frame.cur_samples; cur[stack] = (cur[stack] or 0) + count end
     end
     cpu.state[vmstate] = (cpu.state[vmstate] or 0) + count
     cpu.total = cpu.total + count
@@ -317,11 +327,8 @@ local function build_gc_line(gc0, duration_sec)
         stat.total / BYTES_PER_MB, stat.threshold / BYTES_PER_MB, stat.estimate / BYTES_PER_MB, stat.debt, cycles, rate)
 end
 
-function start_cpu(interval_ms, depth)
-    if cpu.active then log("JitProfiler/cpu: already running -- JitProfiler.stop_cpu() first."); return end
-    if alloc.capturing then log("JitProfiler/cpu: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
-    if scan.active then log("JitProfiler/cpu: scanner is running -- JitProfiler.stop_scan() first."); return end
-    if callbacks.active then log("JitProfiler/cpu: callbacks profiler is running -- JitProfiler.stop_callbacks() first."); return end
+-- Arm the jit.profile CPU sampler into cpu state. Shared by start_cpu and the HITCHES capture, which couples CPU in.
+local function start_cpu_sampler(interval_ms, depth)
     cpu.stacks, cpu.state, cpu.total, cpu.nstacks, cpu.dropped = {}, {}, 0, 0, 0
     cpu.iv = math.floor(tonumber(interval_ms) or settings.interval); if cpu.iv < 1 then cpu.iv = 1 end
     cpu.depth = math.floor(tonumber(depth) or settings.depth); if cpu.depth < 1 then cpu.depth = 1 end
@@ -330,12 +337,10 @@ function start_cpu(interval_ms, depth)
     cpu.limit = settings.duration
     cpu.active = true
     profile.start("i" .. tostring(cpu.iv), collect_cpu_sample)
-    log("JitProfiler/cpu: sampling ON (every %d ms, depth %d). JIT stays on; play, then JitProfiler.stop_cpu().", cpu.iv, cpu.depth)
-    show_tip("JitProfiler CPU ON")
 end
 
-function stop_cpu()
-    if not cpu.active then log("JitProfiler/cpu: not running."); return end
+-- Stop the CPU sampler, compute its views, and retain last_capture.cpu. Shared by stop_cpu and the HITCHES stop.
+local function stop_cpu_sampler()
     cpu.active = false
     profile.stop()
     local v = compute_views(cpu.stacks, cpu.depth)
@@ -344,6 +349,22 @@ function stop_cpu()
     last_capture.cpu = jitprofiler_report.write_cpu(cpu, v,
         { total = cpu.total, duration = duration_sec, gc_line = gc_line, fold = get_fold() })
     jitprofiler_report.write_json(last_capture.cpu)
+end
+
+function start_cpu(interval_ms, depth)
+    if cpu.active then log("JitProfiler/cpu: already running -- JitProfiler.stop_cpu() first."); return end
+    if alloc.capturing then log("JitProfiler/cpu: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
+    if scan.active then log("JitProfiler/cpu: scanner is running -- JitProfiler.stop_scan() first."); return end
+    if callbacks.active then log("JitProfiler/cpu: callbacks profiler is running -- JitProfiler.stop_callbacks() first."); return end
+    if frame.active then log("JitProfiler/cpu: frame profiler is running -- JitProfiler.stop_frame() first."); return end
+    start_cpu_sampler(interval_ms, depth)
+    log("JitProfiler/cpu: sampling ON (every %d ms, depth %d). JIT stays on; play, then JitProfiler.stop_cpu().", cpu.iv, cpu.depth)
+    show_tip("JitProfiler CPU ON")
+end
+
+function stop_cpu()
+    if not cpu.active then log("JitProfiler/cpu: not running."); return end
+    stop_cpu_sampler()
     show_tip("JitProfiler CPU report written")
 end
 
@@ -376,6 +397,7 @@ function start_alloc(depth)
     if cpu.active then log("JitProfiler/alloc: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
     if scan.active then log("JitProfiler/alloc: scanner is running -- JitProfiler.stop_scan() first."); return end
     if callbacks.active then log("JitProfiler/alloc: callbacks profiler is running -- JitProfiler.stop_callbacks() first."); return end
+    if frame.active then log("JitProfiler/alloc: frame profiler is running -- JitProfiler.stop_frame() first."); return end
     alloc.depth = math.floor(tonumber(depth) or settings.depth); if alloc.depth < 2 then alloc.depth = 2 end
     alloc.t0 = get_time_ms()
     alloc.gc0 = gcstat_fn and gcstat_fn().cycles or 0
@@ -436,6 +458,15 @@ if not callbacks then
     rawset(_G, "__jitprofiler_callbacks", callbacks)
 end
 callbacks.set = callbacks.set or {}
+
+-- FRAME: per-frame dt (device().time_delta, raw) recorded on the heartbeat; metrics/hitches/rhythm computed at stop.
+frame = rawget(_G, "__jitprofiler_frame")
+if not frame then
+    frame = { series = {}, n = 0, t0 = 0, limit = 0, active = false, truncated = false, dropped = 0, last_dframe = 0,
+              cur_samples = {}, hitch_candidates = {} }
+    rawset(_G, "__jitprofiler_frame", frame)
+end
+
 local INTERCEPTS_UPVALUE = "intercepts"
 local intercepts_ref
 
@@ -598,6 +629,7 @@ function start_scan(script_name)
     if cpu.active then log("JitProfiler/inst: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
     if alloc.capturing then log("JitProfiler/inst: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
     if callbacks.active then log("JitProfiler/inst: callbacks profiler is running -- JitProfiler.stop_callbacks() first."); return end
+    if frame.active then log("JitProfiler/inst: frame profiler is running -- JitProfiler.stop_frame() first."); return end
     if script_name and tostring(script_name) ~= "" then add_target(script_name) end
     if scan.count == 0 then log("JitProfiler/inst: the set is empty -- add a script first."); return end
     scan.records, scan.saved, scan.wrapped, scan.frames, scan.sp, scan.edges = {}, {}, 0, 0, 0, {}
@@ -722,6 +754,7 @@ function start_callbacks()
     if cpu.active then log("JitProfiler/callbacks: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
     if alloc.capturing then log("JitProfiler/callbacks: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
     if scan.active then log("JitProfiler/callbacks: scanner is running -- JitProfiler.stop_scan() first."); return end
+    if frame.active then log("JitProfiler/callbacks: frame profiler is running -- JitProfiler.stop_frame() first."); return end
     if not resolve_intercepts() then log("!JitProfiler/callbacks: make_callback intercepts not reachable on this build; inert."); return end
     if next(callbacks.set) == nil then log("JitProfiler/callbacks: no callbacks picked -- Add all or pick some first."); return end
     callbacks.records, callbacks.saved, callbacks.sp, callbacks.wrapped = {}, {}, 0, 0
@@ -801,7 +834,85 @@ function get_registered_callbacks()
 end
 
 -- Per-frame heartbeat: count scan frames, auto-stop a capture at its duration limit, auto-snapshot before the alloc table fills. Near-free when idle.
+-- Merge a sample-count map into a destination, returning the weight added; the hitch-attribution accumulator.
+local function merge_samples(dest, src)
+    local added = 0
+    for stack, weight in pairs(src) do dest[stack] = (dest[stack] or 0) + weight; added = added + weight end
+    return added
+end
+
+--- Arm the FRAME profiler: record per-render-frame dt on the actor_on_update heartbeat. Play, then stop_frame().
+--- @novalidate(conventions.unused_export, reason:"console command + panel control surface")
+function start_frame()
+    if frame.active then log("JitProfiler/frame: already running -- JitProfiler.stop_frame() first."); return end
+    if cpu.active then log("JitProfiler/frame: CPU profiler is running -- JitProfiler.stop_cpu() first."); return end
+    if alloc.capturing then log("JitProfiler/frame: allocation profiler is running -- JitProfiler.stop_alloc() first."); return end
+    if scan.active then log("JitProfiler/frame: scanner is running -- JitProfiler.stop_scan() first."); return end
+    if callbacks.active then log("JitProfiler/frame: callbacks profiler is running -- JitProfiler.stop_callbacks() first."); return end
+    frame.series, frame.n, frame.truncated, frame.dropped = {}, 0, false, 0
+    frame.cur_samples, frame.hitch_candidates = {}, {}
+    frame.t0, frame.limit, frame.active = get_time_ms(), settings.duration, true
+    frame.last_dframe = device().frame
+    start_cpu_sampler(settings.interval, settings.depth)
+    log("JitProfiler/frametime: recording per-frame time + CPU samples. Play, then JitProfiler.stop_frame().")
+    show_tip("JitProfiler HITCHES ON")
+end
+
+--- Stop the FRAME profiler and write the report: metrics, the hitch list, and the rhythm histogram.
+--- @novalidate(conventions.unused_export, reason:"console command + panel control surface")
+function stop_frame()
+    if not frame.active then log("JitProfiler/frame: not running."); return end
+    frame.active = false
+    stop_cpu_sampler()
+    local duration_sec = (get_time_ms() - frame.t0) / 1000.0
+    last_capture.frame = jitprofiler_report.write_frame(frame.series,
+        { duration = duration_sec, t0 = frame.t0, truncated = frame.truncated, dropped = frame.dropped,
+          gate_k = settings.frame_gate_k, floor_ms = settings.frame_floor_ms })
+    local gate = (last_capture.frame.metrics.median or 0) * settings.frame_gate_k
+    local hitch_stacks, hitch_total, hitch_frames = {}, 0, 0
+    for i = 1, #frame.hitch_candidates do
+        local cand = frame.hitch_candidates[i]
+        if cand.dt > gate then
+            hitch_frames = hitch_frames + 1
+            hitch_total = hitch_total + merge_samples(hitch_stacks, cand.samples)
+        end
+    end
+    if hitch_frames > 0 then
+        last_capture.frame.hitch_views = compute_views(hitch_stacks, settings.depth)
+        last_capture.frame.hitch_total = hitch_total
+        last_capture.frame.hitch_sample_frames = hitch_frames
+    end
+    jitprofiler_report.write_json(last_capture.frame)
+    show_tip("JitProfiler HITCHES report written")
+end
+
+--- @novalidate(conventions.unused_export, reason:"panel control surface")
+function is_frame_active()
+    return frame.active
+end
+
+-- One HITCHES heartbeat tick: record this frame's dt, route the just-ended frame's samples by the hitch floor, auto-stop at the cap or limit.
+local function collect_frame_tick()
+    local dev = device()
+    local dframe = dev.frame
+    if frame.last_dframe > 0 and dframe > frame.last_dframe + 1 then frame.dropped = frame.dropped + (dframe - frame.last_dframe - 1) end
+    frame.last_dframe = dframe
+    local count = frame.n + 1
+    frame.series[count], frame.n = dev.time_delta, count
+    local cur = frame.cur_samples
+    if dev.time_delta > settings.frame_floor_ms then
+        local candidates = frame.hitch_candidates
+        candidates[#candidates + 1] = { dt = dev.time_delta, samples = cur }
+        frame.cur_samples = {}
+    else
+        for stack in pairs(cur) do cur[stack] = nil end
+    end
+    if count >= settings.frame_cap then frame.truncated = true; stop_frame(); return end
+    if frame.limit > 0 and (get_time_ms() - frame.t0) / 1000 >= frame.limit then stop_frame() end
+end
+
 local function update_capture()
+    if frame.active then collect_frame_tick(); return end
     if scan.active then
         scan.frames = scan.frames + 1
         if scan.limit > 0 and (get_time_ms() - scan.t0) / 1000 >= scan.limit then stop_scan() end
@@ -1037,6 +1148,16 @@ function get_short_frame(frame)
     return name and (name .. "@" .. file) or file
 end
 
+--- @return string the frame a leaf-first stack's Self books to (get_anchor_frame), so jitprofiler_report's driver walk uses the same leaf rule as by_mod.
+function get_stack_anchor(stack)
+    local first, second, nframes = nil, nil, 0
+    for frame in string.gmatch(stack, "[^;]+") do
+        nframes = nframes + 1
+        if nframes == 1 then first = frame elseif nframes == 2 then second = frame end
+    end
+    return get_anchor_frame(first or "?", second, nframes)
+end
+
 --- @return string the owner (mod / modded exes / anomaly / engine / unknown) for a view key, resolved through the script it names.
 function get_owner(key)
     if key:find("%[C%]") or key:find("%[GC%]") or key:find("%[JIT%]") then return OWNER_ENGINE end
@@ -1077,6 +1198,7 @@ end
 
 --- @return table|nil { elapsed, limit } in seconds for the running capture, or nil when idle.
 function get_capture_progress()
+    if frame.active then return { elapsed = (get_time_ms() - frame.t0) / 1000, limit = frame.limit, frames = frame.n } end
     if cpu.active then return { elapsed = (get_time_ms() - cpu.t0) / 1000, limit = cpu.limit } end
     if alloc.capturing then return { elapsed = (get_time_ms() - alloc.t0) / 1000, limit = alloc.limit } end
     if scan.active then return { elapsed = (get_time_ms() - scan.t0) / 1000, limit = scan.limit } end

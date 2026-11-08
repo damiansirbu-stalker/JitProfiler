@@ -15,7 +15,7 @@ local COLOR_LARGESET = fcolor():set(0.75, 0.55, 0.85, 1.0)
 local NO_TIMED_CALLS = "No timed calls: INSTRUMENT wraps module-table functions only. Try CPU sampling (catches locals) or CALLBACKS (times handlers)."
 -- The shared per-call stat columns of the scan and callbacks tables, one spec driving both setup and sortable headers.
 local STAT_COLUMNS = { { "Own ms", "self_us" }, { "Total ms", "total_us" }, { "Calls", "calls" },
-                       { "avg ms", "avg_us" }, { "min ms", "min_us" }, { "max ms", "max_us" } }
+                       { "Avg ms", "avg_us" }, { "Min ms", "min_us" }, { "Max ms", "max_us" } }
 
 local INST_SELECTED = "selected"
 local INST_BROWSE = "browse"
@@ -32,8 +32,27 @@ local cb_view = CB_RESULTS
 local cb_search = ""
 local cb_sort = { field = "self_us", asc = false }
 
+-- The stat columns, then the header-row freeze, which ImGui requires after every TableSetupColumn and before the first row.
 local function init_stat_columns()
     for i = 1, #STAT_COLUMNS do ImGui.TableSetupColumn(STAT_COLUMNS[i][1], 0, 65, 0) end
+    ImGui.TableSetupScrollFreeze(0, 1)
+end
+
+-- The "Filter [box]" row over the shared filter string, the same label placement as the CPU/MEM controls.
+local function render_filter(id)
+    ImGui.Text("Filter")
+    ImGui.SameLine()
+    ImGui.SetNextItemWidth(shared.FILTER_W)
+    local new_filter = ImGui.InputText(id, shared.get_filter(), 64)
+    if new_filter then shared.set_filter(new_filter) end
+end
+
+-- A "Search [box]" row, label on the left like Filter; returns the current text.
+local function render_search(id, text)
+    ImGui.Text("Search")
+    ImGui.SameLine()
+    ImGui.SetNextItemWidth(shared.FILTER_W)
+    return ImGui.InputText(id, text, 64) or text
 end
 
 local function render_stat_headers(header_fn)
@@ -55,7 +74,7 @@ end
 -- One sub-view tab button (INSTRUMENT and CALLBACKS subtabs); returns the active view.
 local function render_view_tab(current, view, label, id)
     local sel = (current == view)
-    ImGui.PushStyleColor(ImGuiCol.Button, sel and shared.COLOR_ACCENT or shared.COLOR_DIM)
+    ImGui.PushStyleColor(ImGuiCol.Button, sel and shared.COLOR_ACCENT or shared.COLOR_IDLE)
     if ImGui.Button(label .. id, shared.VZERO) then current = view end
     ImGui.PopStyleColor(1)
     return current
@@ -126,8 +145,7 @@ end
 -- The BROWSE modlist: scripts grouped by mod with a search box; each mod folds and the panel scrolls, so there is no nested box.
 local function render_tree()
     if not tree_cache then build_tree() end
-    local new_search = ImGui.InputText("Search##tree", tree_search, 64)
-    if new_search then tree_search = new_search end
+    tree_search = render_search("##tree", tree_search)
     ImGui.SameLine()
     if ImGui.Button("Refresh##tree") then build_tree() end
     local needle = tree_search:lower()
@@ -210,6 +228,7 @@ local function render_scan_tab(cap)
         ImGui.Text(format("%.1f ms own total over ~%.0fs   (menu capture, no actor frames)", (cap.total_us or 0) / 1000, cap.meta.duration or 0))
     end
     ImGui.Separator()
+    render_filter("##scanfilter")
     render_scan_table(cap)
     if #(cap.rows or {}) == 0 then shared.render_colored_text(shared.COLOR_DIM, NO_TIMED_CALLS) end
     render_scan_neighbors()
@@ -220,7 +239,7 @@ local function render_selected()
     local targets = JitProfiler.get_targets()
     if #targets == 0 then
         ImGui.Text("SELECTED  0")
-        ImGui.Text("  none.  use the BROWSE tab, or + on a SAMPLING by-script row")
+        ImGui.Text("  none.  use the BROWSE tab, or + on a CPU or MEM BY SCRIPT row")
         return
     end
     if not ImGui.CollapsingHeader(format("SELECTED  %d##selset", #targets)) then return end
@@ -281,7 +300,7 @@ end
 --- @novalidate(code.find_in_loop, reason:"substring search over the callback list on a typed needle, not an equality lookup")
 local function render_cb_browse()
     local list = JitProfiler.get_registered_callbacks()
-    if #list == 0 then ImGui.Text("make_callback intercepts not reachable on this build"); return end
+    if #list == 0 then ImGui.Text("No callback list: this build does not expose the script callback table."); return end
     if ImGui.Button("+Add all##cba", shared.VZERO) then
         for i = 1, #list do JitProfiler.add_callback_target(list[i].name) end
     end
@@ -291,8 +310,7 @@ local function render_cb_browse()
     end
     ImGui.SameLine()
     ImGui.Text(format("armed %d / %d", JitProfiler.get_callback_pick_count(), #list))
-    local new_search = ImGui.InputText("Search##cbb", cb_search, 64)
-    if new_search then cb_search = new_search end
+    cb_search = render_search("##cbb", cb_search)
     local needle = cb_search:lower()
     for i = 1, #list do
         if needle == "" or list[i].name:lower():find(needle, 1, true) then render_cb_item(list[i]) end
@@ -313,7 +331,7 @@ function render_instrument()
     shared.render_run_button("inst", active, busy, JitProfiler.start_scan, JitProfiler.stop_scan)
     ImGui.SameLine()
     if targets == 0 then
-        ImGui.Text("no scripts selected  -  add from BROWSE or a by-script row")
+        ImGui.Text("no scripts selected  -  add from BROWSE or a BY SCRIPT row")
     else
         ImGui.Text(format("%d scripts, %d functions", targets, wrapped))
         ImGui.SameLine()
@@ -347,9 +365,7 @@ function render_callbacks()
     ImGui.SameLine()
     ImGui.Text(npick == 0 and "no callbacks picked  -  BROWSE to Add all or pick some" or format("times %d picked callbacks (BROWSE to change)", npick))
     ImGui.SameLine(0, 20)
-    ImGui.SetNextItemWidth(shared.FILTER_W)
-    local new_filter = ImGui.InputText("##cbfilter", shared.get_filter(), 64)
-    if new_filter then shared.set_filter(new_filter) end
+    render_filter("##cbfilter")
     ImGui.Separator()
     cb_view = render_view_tab(cb_view, CB_RESULTS, "RESULTS", "##cbv")
     ImGui.SameLine()
