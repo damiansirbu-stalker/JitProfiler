@@ -78,7 +78,8 @@ A hitch is a frame whose delta clears both gates, more than k times the whole-ca
 The rhythm finder buckets the seconds between consecutive hitches and reports the top intervals, naming the background-cadence case where a hitch on a beat is a process cycling. It needs a minimum hitch count, below which it reports none.
 The capture couples the jit.profile CPU sampler in the backend: `start_frame` arms both the frame recorder and the CPU sampler through the shared `start_cpu_sampler`, and `stop_frame` stops both (`stop_cpu_sampler`) and writes both `last_capture.frame` and `last_capture.cpu`. One capture, near-zero cost on both axes. The front-end never orchestrates this; it calls `start_frame`/`stop_frame` and reads the two retained captures.
 Each CPU sample also banks into a per-frame accumulator, so "what ran" decomposes to the leaf view OVER THE HITCH FRAMES, not the whole session, the real correlation. The samples taken between two heartbeat ticks belong to the frame whose delta is read at the second tick, so they align with no off-by-one. The attribution is exact, not approximate: an over-floor frame parks its sample map as a hitch candidate, and at stop the same `k x median AND floor` gate the hitch list uses selects which candidates merge into the bucket. The floor is a valid pre-filter rather than a proxy, because a hitch must exceed it by definition, so no true hitch is missed and the selected set equals `metrics.hitch_count`. Parking only over-floor frames keeps the memory to the rare slow frames.
-The mode is mutually exclusive with allocation, instrumentation, and callbacks, which distort frame timing; it owns the CPU sampler for its own session. The panel shows the metric strip, a per-window timeline, the rhythm, the top CPU own (what ran), and the worst-frame table, and the corner banner carries a live frame-time and fps readout while it records, toggleable from the tab. The timeline is a single-row heat strip, one colour cell per time window left to right (a blue ramp by magnitude, amber past 1.5x the median, red over the gate), because the ImGui bind exposes no line-plot or draw-list primitive; the series downsamples max-preserving so a demonized ImGui-plot bind (todo-demonized-exes n074) can later draw a true line chart.
+The mode is mutually exclusive with allocation, instrumentation, and callbacks, which distort frame timing; it owns the CPU sampler for its own session. The panel shows the metric strip, a per-window timeline, the rhythm, the top CPU own (what ran), and the worst-frame table, and the corner banner carries a live frame-time and fps readout while it records, toggleable from the tab. The timeline is an ImPlot line of frame time with the hitch gate drawn flat when the exe binds ImPlot (through xlibs `ximplot`), and a single-row heat strip otherwise (a blue ramp by magnitude, amber past 1.5x the median, red over the gate); the series downsamples max-preserving so a spike survives either drawing.
+The hitch frames' stacks stay on the capture. The HITCHES tab shows ANOMALY COST over those frames alone, and the fixture check judges them.
 
 ## Per-mod attribution
 Mods are merged into one `gamedata/scripts`, so the script path never names the mod.
@@ -109,14 +110,22 @@ Verified on real 3-way conflicts: visual_memory_manager resolved to the active w
 Per unit, JitProfiler reports two numbers, Own and Total.
 Total is inclusive. A mod or script gets credit whenever it appears anywhere in a sample, counted once per sample. It does not sum to 100%.
 Own is exclusive, the innermost frame when the sample fired.
-Total is the primary ranking, per mod and per script, and Own is the second column.
+Own is the primary number, per mod and per script, and Total is the second column. A high Total over a low Own marks a dispatcher.
 The views are BY MOD, BY SCRIPT, BY LEAF, BY ROOT, and FRAMEWORK vs handlers.
 CPU adds the VM-state split and the engine-C entry points, the Lua call sites that drive the engine bucket and the map for a native profiler like Optick.
 Each capture also reports the deepest stack it saw and how often a stack reached the depth cap, so an under-counted Total is visible.
 The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) from the owned views, leaving only mods.
-At Stop, `compute_baseline_drivers()` takes each CPU or MEM stack whose Self frame is not mod-owned and credits the first mod frame up that stack.
-The Self frame comes from `get_stack_anchor()`, the same rule as BY MOD Own. A stack with no mod frame counts as baseline with no mod on the stack.
-The panel and the .txt both show it as ORIGIN: each hot anomaly or engine row with the mods that called it. Every frame keeps its own Self.
+At Stop, `compute_anomaly_cost()` takes each CPU, MEM or hitch-frame stack whose Self frame is not mod-owned and reads its caller chain. The chain is every mod on the stack, nearest the leaf first.
+The Self frame comes from `get_stack_anchor()`, the same rule as BY MOD Own. Here a mod is an MO2 mod or a loose install folder. Baseline is what remains.
+COST is the one table every tab shows (`compute_cost_rows()`). Each sample is booked to exactly one row. The Cost column therefore adds up to 100%.
+A sample whose Self frame is a mod's own code is Own on that function. A sample in vanilla or engine code is Caused on the first mod frame toward the root that was called to do a job.
+"Called to do a job" means the frame's caller is a vanilla dispatcher, the engine itself, or mod code.
+The dispatchers are `make_callback`, `SendScriptCallback`, `ProcessEventQueue` and the `xr_logic` condlist and event functions, matched by name and by live definition site.
+A mod frame whose caller is plain vanilla code is a patch, a wrapper or a replacement. It keeps Own and is passed over for Caused. The vanilla row's hover names it under "via".
+Functions under 80% of all stacks hook the callback system. They are passed over the same way and tagged.
+With no mod entry on the stack, the vanilla or engine function takes the sample as Own. Anomaly's own heavy code shows as itself at full weight and never on a mod.
+The rows can be summed by Function, Script or Mod. A row's hover lists what it caused and what it passed through. The panel, the .txt, the json and the saved page carry the same rows.
+This rule errs in one direction only. A dispatcher missing from the list, or a patch that calls heavier vanilla than the original did, makes a mod look cheaper than it is.
 
 ## Anonymize
 A shared capture would print every third-party mod name beside its cost, which no author can be asked to share.
@@ -163,9 +172,9 @@ Both are ASCII only.
 The panel opens at 90% of the live screen, centered, sized on appear from the `vid_mode` cvar so it never assumes a resolution, then resizes freely.
 CPU and MEM sampling render in `jitprofiler_ui.script`. `jitprofiler_ui_trace.script` holds the INSTRUMENT and CALLBACKS tabs, and `jitprofiler_ui_config.script` the footer, with the Settings, the Anonymize keep-set, and the Save page control.
 Both reach one set of render helpers and the single panel filter through `jitprofiler_ui.SHARED`, so the split keeps one copy of the drawing code and the filter state.
-The top tabs are CPU, MEM, INSTRUMENT, and CALLBACKS. A running capture locks the others, so no two run at once.
+The top tabs are CPU, MEM, INSTRUMENT, CALLBACKS, and HITCHES. A running capture locks the others, so no two run at once.
 CPU and MEM show the retained last capture through `get_last_capture`.
-A view selector switches the table between by mod, by script, by leaf, and by root. Each column header sorts, and a filter box narrows the rows.
+A Group by selector sums the COST rows per function, script or mod. Each column header sorts and explains itself on hover, and a filter box narrows the rows. A click on a Mod row filters to that mod and drops to Function.
 Each results table fills the height left below it and scrolls within that, sized by `get_fill_size` off `GetContentRegionAvail`, so the analysis grows with the window.
 The pickers above it, the SELECTED set and the BROWSE modlist and the callbacks list, fold or render inline, so the panel's own scrollbar carries them without a nested box.
 The by-script rows carry a per-row button that adds or removes the script from the instrumentation set.
@@ -181,8 +190,7 @@ Avg, min, and max per call are sortable columns, carried through the text report
 A frame-budget bar reads own ms per frame against a 60fps frame.
 Number columns right-align through CalcTextSize, so magnitude scans down the column.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
-The CPU tab adds the VM-state strip, one bar per state (native, interpreter, C, GC, JIT compile) each explained on hover.
-Then the engine-C entry points, the Lua call sites that drive the engine bucket, under a collapsing header closed by default.
+An Advanced fold, closed by default, holds the fold-baseline and parallel-GC switches, the VM-state strip (one bar per state, each explained on hover), and every engine-C entry point in a scroll box.
 The CALLBACKS tab arms `start_callbacks` and ranks each timed handler over the make_callback dispatch by own ms, with its callback and owning mod.
 A BROWSE subtab lists every registered callback with its handler count and a picker toggle.
 A dim line under a running MEM or wrapping capture notes the FPS drop and that accuracy holds.
@@ -222,6 +230,8 @@ The panel, menu, and banner read `show_imgui` through a cached flag and draw not
   A script written mostly as local functions dispatched through callbacks or time-events exposes little on its module table, so a scan of it times almost nothing; a scan that records no called row says so in the panel and points to CPU sampling or the callbacks mode.
   The callbacks mode covers the dispatch case.
 
+- A sample taken in engine C over a single Lua frame books to engine, because a single frame is read as a fresh entry from the engine.
+  The same holds for a coroutine body, which is also a single frame. Its C time books to engine until the sampler learns the thread identity from the engine.
 - FRAME measures gameplay frames only: `actor_on_update` does not fire in a menu or a full load screen, so a paused or loading stretch is absent from the series, which is correct for a stutter hunt. A pause reads as near-zero deltas, not a hitch, because the engine freezes the timer.
 
 ## Requires

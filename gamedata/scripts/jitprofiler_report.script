@@ -2,7 +2,7 @@
 
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
 local tostring, os, format = tostring, os, string.format
-local type, next = type, next
+local type, next, rawget, debug = type, next, rawget, debug
 local mfloor, mceil = math.floor, math.ceil
 local KIND_CPU, KIND_MEM, KIND_SCAN, KIND_CALLBACKS, KIND_FRAME = "cpu", "mem", "scan", "callbacks", "frame"
 
@@ -20,7 +20,14 @@ local BAR_WIDTH    = 20
 local BYTES_PER_MB = 1048576
 local BYTES_PER_KB = 1024
 local OWNER_MOD    = "mod: "
-local GENUINE_BASELINE = "(no mod on the stack)"
+local OWNER_LOOSE  = "loose: "
+-- A mod function under at least this share of all stacks hooks the callback system; it keeps Own, takes no Caused, and is tagged.
+WRAPPER_SHARE = 80
+-- The COST section header, shared by the .txt and the panel (jitprofiler_ui reads it).
+COST_TITLE = "COST   every sample on one row: Own is time in the code itself, Caused is vanilla or engine work a mod made run"
+-- Vanilla functions that call into mod-provided code, by name; a mod frame one of these called was called to do a job and owns what it caused.
+--- @novalidate(xray.cached_timer_global, reason:"a frame-name key in a lookup set; the live function is never cached")
+local DISPATCH_NAMES = { make_callback = true, SendScriptCallback = true, callback = true, callback_set = true, callback_unset = true, ProcessEventQueue = true }
 
 -- Per-sample VM state label for the CPU report header.
 local VMSTATE = {
@@ -28,6 +35,14 @@ local VMSTATE = {
     G = "garbage collector", J = "JIT compiler",
 }
 local VMORDER = { "N", "I", "C", "G", "J" }
+-- The same dispatchers as { module or false, name }, resolved to live functions at report time, so an overlay or a call-site alias still matches.
+local DISPATCH_SOURCES = {
+    { false, "ProcessEventQueue" }, { false, "SendScriptCallback" }, { "axr_main", "make_callback" },
+    { "xr_logic", "pick_section_from_condlist" }, { "xr_logic", "issue_event" },
+    { "xr_logic", "try_switch_to_another_section" }, { "xr_logic", "switch_to_section" },
+}
+-- The dispatcher definition sites, resolved once per Lua state on first use.
+local dispatch_sites
 
 -- xlog resolves lazily; the "JitProfiler" logger is shared with the front-end (get_logger returns the cached facade).
 local log_handle
@@ -141,6 +156,24 @@ local function build_frame_rows(map, with_owner)
     return rows
 end
 
+-- Masked { name, weight } pairs from a sorted entry list.
+local function build_named_rows(list)
+    local rows = {}
+    for i = 1, #list do rows[i] = { name = JitProfiler.compute_masked_name(list[i][1]), weight = list[i][2] } end
+    return rows
+end
+
+-- The masked COST rows for the json and the page, each with the vanilla functions it caused and the patches or hooks it passed through.
+local function build_cost_rows_doc(cost_rows)
+    local mask, rows = JitProfiler.compute_masked_name, {}
+    for i = 1, #cost_rows do
+        local row = cost_rows[i]
+        rows[i] = { name = mask(row.key), owner = mask(row.owner), own = row.own, caused = row.caused, total = row.total, hook = row.hook,
+                    caused_by = build_named_rows(row.caused_by), via = build_named_rows(row.via) }
+    end
+    return rows
+end
+
 -- Masked rows for the pre-sorted engine-C entry list of a CPU capture.
 local function build_engine_rows(list)
     local rows = {}
@@ -166,6 +199,7 @@ local function build_capture_doc(capture)
             root      = build_frame_rows(v.root, true),
         }
         if capture.engine_entry then doc.engine_entry = build_engine_rows(capture.engine_entry) end
+        if capture.cost_rows then doc.cost_rows = build_cost_rows_doc(capture.cost_rows) end
     elseif capture.kind == KIND_SCAN then
         local rows = {}
         for i = 1, #capture.rows do
@@ -199,6 +233,11 @@ local function build_capture_doc(capture)
             hitches[i] = { index = hitch.index, dt = hitch.dt, wall = hitch.wall, at_s = hitch.at_s }
         end
         doc.hitches = hitches
+        if capture.hitch_views then
+            doc.hitch_total = capture.hitch_total
+            doc.hitch_leaf = build_frame_rows(capture.hitch_views.leaf, true)
+        end
+        if capture.cost_rows then doc.cost_rows = build_cost_rows_doc(capture.cost_rows) end
     end
     return doc
 end
@@ -259,51 +298,121 @@ local function collect_edge_neighbors(edges, key)
     return callers, callees
 end
 
--- A stack's anchor (Self frame) and its first mod frame walking leaf-first; nil anchor when the anchor is mod-owned, nil driver when no mod.
-local function find_stack_driver(stack, mod_prefix, get_owner)
-    local anchor = JitProfiler.get_stack_anchor(stack)
-    if get_owner(anchor):sub(1, #mod_prefix) == mod_prefix then return nil, nil end
-    for frame in string.gmatch(stack, "[^;]+") do
-        local owner = get_owner(frame)
-        if owner:sub(1, #mod_prefix) == mod_prefix then return anchor, owner end
-    end
-    return anchor, nil
+-- A mod-owned owner: an MO2 mod or a loose install folder; anomaly, modded exes, engine, loadstring and unknown are the baseline.
+local function is_mod_owner(owner)
+    return owner:sub(1, #OWNER_MOD) == OWNER_MOD or owner:sub(1, #OWNER_LOOSE) == OWNER_LOOSE
 end
 
--- ORIGIN: each stack whose anchor is not mod-owned credits the first mod up the stack; no-mod stacks are genuine baseline.
---- @return table { rows = sorted {owner, weight}, leaves = sorted {leaf, weight, drivers = sorted {owner, weight}}, genuine = number }
-local function compute_baseline_drivers(by_stack)
-    local get_owner = JitProfiler.get_owner
-    local drivers, leaf_drivers, leaf_weight, genuine = {}, {}, {}, 0
-    for stack, weight in pairs(by_stack) do
-        local anchor, driver = find_stack_driver(stack, OWNER_MOD, get_owner)
-        if anchor then
-            local leaf_key = JitProfiler.get_short_frame(anchor)
-            local who = driver or GENUINE_BASELINE
-            if driver then drivers[driver] = (drivers[driver] or 0) + weight else genuine = genuine + weight end
-            leaf_drivers[leaf_key] = leaf_drivers[leaf_key] or {}
-            leaf_drivers[leaf_key][who] = (leaf_drivers[leaf_key][who] or 0) + weight
-            leaf_weight[leaf_key] = (leaf_weight[leaf_key] or 0) + weight
+-- The file:line of a short frame, the part a call-site alias cannot change.
+local function get_site(short)
+    return short:match("@(.+)$") or short
+end
+
+-- The dispatcher definition sites, read once from the live functions so an overlay or a renamed call site still matches.
+local function get_dispatch_sites()
+    if dispatch_sites then return dispatch_sites end
+    dispatch_sites = {}
+    for i = 1, #DISPATCH_SOURCES do
+        local holder, name = DISPATCH_SOURCES[i][1], DISPATCH_SOURCES[i][2]
+        local owner_table = holder and rawget(_G, holder) or _G
+        local fn = type(owner_table) == "table" and rawget(owner_table, name) or nil
+        local info = type(fn) == "function" and debug.getinfo(fn, "S") or nil
+        if info and info.short_src then
+            dispatch_sites[get_site(JitProfiler.get_short_frame("x@" .. info.short_src .. ":" .. tostring(info.linedefined)))] = true
         end
     end
-    local leaves = sort_entries(leaf_weight)
-    for i = 1, #leaves do leaves[i].drivers = sort_entries(leaf_drivers[leaves[i][1]]) end
-    return { rows = sort_entries(drivers), leaves = leaves, genuine = genuine }
+    return dispatch_sites
 end
 
--- The .txt ORIGIN section: the baseline cost per calling mod, then each hot baseline row with the mods that called it.
-local function build_driver_view(lines, drivers, total)
+local function is_dispatcher(short)
+    return DISPATCH_NAMES[short:match("^([%w_]+)@") or ""] == true or get_dispatch_sites()[get_site(short)] == true
+end
+
+-- The raw frames of a leaf-first stack as an array.
+local function split_frames(stack)
+    local frames = {}
+    for frame in string.gmatch(stack, "[^;]+") do frames[#frames + 1] = frame end
+    return frames
+end
+
+-- The caller a frame answers to: the next frame toward the root that is neither a C frame nor a hook; nil at the root.
+--- @novalidate(code.find_in_loop, reason:"a pattern test on each frame string for the [C] marker, not an equality lookup")
+local function find_caller(frames, index, is_hook)
+    for j = index + 1, #frames do
+        local frame = frames[j]
+        if not frame:find("%[C%]") and not is_hook(JitProfiler.get_short_frame(frame)) then return frame end
+    end
+    return nil
+end
+
+-- Whether a mod frame was called to do a job: by the engine (no caller), by mod code, or by a vanilla dispatcher. Anything else is a patch.
+local function check_entry(frames, index, is_hook)
+    local caller = find_caller(frames, index, is_hook)
+    if not caller then return true end
+    if is_mod_owner(JitProfiler.get_owner(caller)) then return true end
+    return is_dispatcher(JitProfiler.get_short_frame(caller))
+end
+
+-- The first mod entry toward the root past the Self frame, or nil; the mod frames passed over (patches and hooks) collect in passes.
+local function find_entry(frames, start, is_hook, passes)
+    for i = start + 1, #frames do
+        local short = JitProfiler.get_short_frame(frames[i])
+        local mod = is_mod_owner(JitProfiler.get_owner(frames[i]))
+        if mod and not is_hook(short) and check_entry(frames, i, is_hook) then return short end
+        if mod then passes[#passes + 1] = short end
+    end
+    return nil
+end
+
+-- Collect one stack: Own to a mod Self frame; else Caused to the first mod entry toward the root; else Own to the vanilla or engine Self frame.
+local function collect_stack_cost(stack, weight, get_row, is_hook)
+    local frames = split_frames(stack)
+    local anchor = JitProfiler.get_stack_anchor(stack)
+    local anchor_short = JitProfiler.get_short_frame(anchor)
+    if is_mod_owner(JitProfiler.get_owner(anchor)) then
+        local row = get_row(anchor_short)
+        row.own = row.own + weight
+        return
+    end
+    local start = 1
+    for i = 1, #frames do
+        if frames[i] == anchor then start = i; break end
+    end
+    local passes = {}
+    local entry = find_entry(frames, start, is_hook, passes)
+    if entry then
+        local row = get_row(entry)
+        row.caused = row.caused + weight
+        row.caused_by[anchor_short] = (row.caused_by[anchor_short] or 0) + weight
+        return
+    end
+    local row = get_row(anchor_short)
+    row.own = row.own + weight
+    for i = 1, #passes do row.via[passes[i]] = (row.via[passes[i]] or 0) + weight end
+end
+
+-- One COST line: total, function, owner, own, caused (a dash on a vanilla or engine row), and the hook tag.
+local function format_cost_row(row, total)
+    local tag, caused = "", "     -"
+    if row.hook then tag = "   (hooks the callback system)" end
+    if is_mod_owner(row.owner) then caused = format("%5.1f%%", compute_pct(row.caused, total)) end
+    return format("%5.1f%%  %-52s %-22s own %5.1f%%  caused %s%s", compute_pct(row.total, total), JitProfiler.compute_masked_name(row.key),
+        JitProfiler.compute_masked_name(row.owner), compute_pct(row.own, total), caused, tag)
+end
+
+-- The .txt COST section: every row, each followed by the vanilla functions it caused and the patches or hooks it passed through.
+local function build_cost_view(lines, rows, total)
     local mask = JitProfiler.compute_masked_name
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "-- ORIGIN   the mod that called each hot anomaly/engine row " .. string.rep("-", 6)
-    for i = 1, #drivers.rows do lines[#lines + 1] = format("  %5.1f%%  %s", compute_pct(drivers.rows[i][2], total), mask(drivers.rows[i][1])) end
-    lines[#lines + 1] = format("  %5.1f%%  %s", compute_pct(drivers.genuine, total), GENUINE_BASELINE)
-    for i = 1, math.min(#drivers.leaves, 20) do
-        local leaf = drivers.leaves[i]
-        lines[#lines + 1] = format("  %-58s %5.1f%%", mask(leaf[1]), compute_pct(leaf[2], total))
-        for j = 1, math.min(#leaf.drivers, 3) do lines[#lines + 1] = format("      <- %5.1f%%  %s", compute_pct(leaf.drivers[j][2], total), mask(leaf.drivers[j][1])) end
+    lines[#lines + 1] = "-- " .. COST_TITLE .. " " .. string.rep("-", 6)
+    for i = 1, #rows do
+        local row = rows[i]
+        lines[#lines + 1] = "  " .. format_cost_row(row, total)
+        for j = 1, math.min(#row.caused_by, 3) do lines[#lines + 1] = format("      caused %5.1f%%  %s", compute_pct(row.caused_by[j][2], total), mask(row.caused_by[j][1])) end
+        for j = 1, math.min(#row.via, 2) do lines[#lines + 1] = format("      via    %5.1f%%  %s", compute_pct(row.via[j][2], total), mask(row.via[j][1])) end
     end
 end
+
 
 -- The .txt call-graph for a sampling capture: the top leaves, each with its callers (toward root) and callees (toward leaf) from the retained stacks.
 local function build_call_graph(lines, by_stack, v, total)
@@ -446,8 +555,8 @@ function write_cpu(cpu, v, opts)
     build_view(lines, "BY LEAF   the hot function (Own)", v.leaf, total, format_count, { owned = true })
     build_view(lines, "BY ROOT   the outermost frame", v.root, total, format_count, { owned = true })
     build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", v.framework, total, format_count)
-    local drivers = compute_baseline_drivers(cpu.stacks)
-    build_driver_view(lines, drivers, total)
+    local cost_rows = compute_cost_rows(cpu.stacks)
+    build_cost_view(lines, cost_rows, total)
     build_call_graph(lines, cpu.stacks, v, total)
 
     local stamp = get_timestamp()
@@ -455,7 +564,7 @@ function write_cpu(cpu, v, opts)
     local folded_path = write_folded("cpu_" .. stamp, cpu.stacks)
     log("JitProfiler/cpu: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     return {
-        kind = KIND_CPU, by_stack = cpu.stacks, views = v, total = total, engine_entry = sort_entries(v.engine_entry), drivers = drivers,
+        kind = KIND_CPU, by_stack = cpu.stacks, views = v, total = total, engine_entry = sort_entries(v.engine_entry), cost_rows = cost_rows,
         meta = { samples = total, interval = cpu.iv, duration = duration_sec, stamp = stamp,
                  vmstate = cpu.state, dropped = cpu.dropped, depth = cpu.depth, max_depth = v.max_depth, clipped = v.clipped },
     }
@@ -500,8 +609,8 @@ function write_alloc(v, opts)
     build_view(lines, "BY LEAF   who allocates (Own)", v.leaf, total, format_bytes, { owned = true })
     build_view(lines, "BY ROOT   the outermost frame", v.root, total, format_bytes, { owned = true })
     build_view(lines, "FRAMEWORK vs HANDLERS   dispatch overhead vs real work", v.framework, total, format_bytes)
-    local drivers = compute_baseline_drivers(by_stack)
-    build_driver_view(lines, drivers, total)
+    local cost_rows = compute_cost_rows(by_stack)
+    build_cost_view(lines, cost_rows, total)
     build_call_graph(lines, by_stack, v, total)
 
     local stamp = get_timestamp()
@@ -510,7 +619,7 @@ function write_alloc(v, opts)
     log("JitProfiler/alloc: report -> %s | flamegraph -> %s (speedscope.app)", tostring(report_path), tostring(folded_path))
     if suffix ~= "" then return end
     return {
-        kind = KIND_MEM, by_stack = by_stack, views = v, total = total, drivers = drivers,
+        kind = KIND_MEM, by_stack = by_stack, views = v, total = total, cost_rows = cost_rows,
         meta = { bytes = total, duration = duration_sec, stamp = stamp, stacks = get_key_count(by_stack),
                  dropped = diag.dropped, depth = depth, max_depth = v.max_depth, clipped = v.clipped },
     }
@@ -745,9 +854,55 @@ function compute_neighbors(cap, frame)
     return { callers = sort_entries(out.callers), callees = sort_entries(out.callees) }
 end
 
+--- Write the hitch frames' stacks of a HITCHES capture as a SpeedScope .folded, the same raw dump CPU and MEM get.
+--- @return string|nil the written path
+function write_hitch_folded(stamp, by_stack)
+    local path = write_folded("hitches_" .. stamp, by_stack)
+    log("JitProfiler/frame: hitch flamegraph -> %s (speedscope.app)", tostring(path))
+    return path
+end
+
 --- @return table|nil { callers, callees } of a scanned function from a retained instrumentation capture's call graph, or nil.
 function compute_scan_neighbors(cap, key)
     if not (cap and cap.edges and key) then return nil end
     local callers, callees = collect_edge_neighbors(cap.edges, key)
     return { callers = callers, callees = callees }
+end
+
+--- COST rows over a capture's stacks: every sample lands on one row, as Own on a mod Self frame or on the vanilla row when no mod entry exists.
+--- Otherwise the first mod frame toward the root that was called to do a job takes it as Caused; patches and hooks are passed over and noted.
+--- @return table sorted { key, owner, own, caused, total, hook, caused_by = sorted {leaf, weight}, via = sorted {name, weight} }
+function compute_cost_rows(by_stack)
+    local get_owner, get_short = JitProfiler.get_owner, JitProfiler.get_short_frame
+    local on_stack, total = {}, 0
+    for stack, weight in pairs(by_stack) do
+        total = total + weight
+        local seen = {}
+        for frame in string.gmatch(stack, "[^;]+") do
+            local short = get_short(frame)
+            if not seen[short] then seen[short] = true; on_stack[short] = (on_stack[short] or 0) + weight end
+        end
+    end
+    local function is_hook(short)
+        return is_mod_owner(get_owner(short)) and compute_pct(on_stack[short] or 0, total) >= WRAPPER_SHARE
+    end
+    local rows = {}
+    local function get_row(short)
+        local row = rows[short]
+        if not row then
+            row = { key = short, owner = get_owner(short), own = 0, caused = 0, hook = is_hook(short), caused_by = {}, via = {} }
+            rows[short] = row
+        end
+        return row
+    end
+    for stack, weight in pairs(by_stack) do collect_stack_cost(stack, weight, get_row, is_hook) end
+    local list = {}
+    for _, row in pairs(rows) do
+        row.total = row.own + row.caused
+        row.caused_by = sort_entries(row.caused_by)
+        row.via = sort_entries(row.via)
+        list[#list + 1] = row
+    end
+    table.sort(list, function(left, right) return left.total > right.total end)
+    return list
 end

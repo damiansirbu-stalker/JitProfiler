@@ -45,6 +45,7 @@ const DATA = /*__JF_DATA__*/ null;
 const TABS = [["cpu","CPU"],["mem","MEM"],["scan","INSTRUMENT"],["callbacks","CALLBACKS"]];
 const VIEWDEFS = [["by_mod","BY MOD"],["by_script","BY SCRIPT"],["leaf","BY LEAF"],["root","BY ROOT"]];
 let vview = "by_mod";
+let gview = "function";
 const wrap = document.getElementById("wrap");
 
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
@@ -66,8 +67,46 @@ function fmtValue(kind,v){
   return Math.round(v)+" B";
 }
 
+const isMod=o=>/^(mod|loose): /.test(o||"");
+const groupKey=(r)=>gview==="mod"?r.owner:gview==="script"?((r.name.match(/@(.+)$/)||[,r.name])[1].replace(/:-?\d+$/,"")):r.name;
+function groupCostRows(rows){
+  const out=new Map();
+  for(const r of rows){
+    const k=groupKey(r);
+    let t=out.get(k);
+    if(!t){t={name:k,owner:r.owner,own:0,caused:0,total:0,hook:false,caused_by:new Map(),via:new Map()};out.set(k,t);}
+    t.own+=r.own;t.caused+=r.caused;t.total+=r.total;t.hook=t.hook||r.hook;
+    for(const c of (r.caused_by||[])) t.caused_by.set(c.name,(t.caused_by.get(c.name)||0)+c.weight);
+    for(const c of (r.via||[])) t.via.set(c.name,(t.via.get(c.name)||0)+c.weight);
+  }
+  return [...out.values()].sort((a,b)=>b.total-a.total);
+}
+function costTitle(r,total){
+  const pct=w=>(total?100*w/total:0).toFixed(1)+"%";
+  const l=[r.name,r.owner];
+  if(r.hook) l.push("hooks the callback system: keeps its own cost, is charged nothing it passes through");
+  for(const [n,w] of [...r.caused_by].sort((a,b)=>b[1]-a[1]).slice(0,6)) l.push(`caused ${pct(w)}  ${n}`);
+  for(const [n,w] of [...r.via].sort((a,b)=>b[1]-a[1]).slice(0,4)) l.push(`via    ${pct(w)}  ${n}`);
+  return l.join("\n");
+}
+function renderCost(cap,total){
+  const rows=groupCostRows(cap.cost_rows||[]);
+  if(!rows.length) return "";
+  const pct=w=>(total?100*w/total:0).toFixed(1)+"%";
+  const gtabs=[["function","Function"],["script","Script"],["mod","Mod"]].map(([k,lbl])=>`<button class="${k===gview?"on":""}" data-g="${k}">${lbl}</button>`).join("");
+  const h=[`<div class="tabs vtabs">Group by ${gtabs}</div>`,`<table><tr class="hd"><td class="nm">${gview==="mod"?"Mod":gview==="script"?"Script":"Function"}</td>${gview==="mod"?"":`<td class="ow">Mod</td>`}<td>Cost</td><td class="v">Own</td><td class="v">Caused</td><td class="v">Value</td></tr>`];
+  for(const r of rows){
+    const tag=r.hook?"  (hooks the callback system)":"";
+    h.push(`<tr class="${isMod(r.owner)?"":"ow"}" title="${esc(costTitle(r,total))}"><td class="nm">${esc(r.name)}${tag}</td>${gview==="mod"?"":`<td class="ow">${esc(r.owner)}</td>`}<td>${bar(total?100*r.total/total:0)}</td><td class="v">${pct(r.own)}</td><td class="v">${isMod(r.owner)?pct(r.caused):"-"}</td><td class="v">${fmtValue(cap.kind,r.total)}</td></tr>`);
+  }
+  h.push(`</table>`);
+  return h.join("");
+}
+
 function renderSampling(cap){
   const total=cap.total||0, h=[];
+  h.push(renderCost(cap,total));
+  h.push(`<details><summary class="vh">Advanced</summary>`);
   if(cap.kind==="cpu" && cap.meta && cap.meta.vmstate){
     h.push(`<div class="vh">VM state at each sample</div>`);
     for(const [c,lb] of [["N","native"],["I","interpreter"],["C","C / engine"],["G","GC"],["J","JIT compile"]]){
@@ -98,7 +137,7 @@ function renderSampling(cap){
     for(const r of rows)
       h.push(`<tr><td class="nm" title="${esc(r.name)}">${esc(r.name)}</td><td class="ow" title="${esc(r.owner||"")}">${esc(r.owner||"")}</td><td>${bar(total?100*r.value/total:0)}</td><td class="v">${fmtValue(cap.kind,r.value)}</td></tr>`);
   }
-  h.push(`</table>`);
+  h.push(`</table></details>`);
   return h.join("");
 }
 
@@ -133,7 +172,7 @@ function render(){
     const tabs=present.map(([k,lbl])=>`<button class="${k===active?"on":""}" data-k="${k}">${lbl}</button>`).join("");
     wrap.innerHTML=`<div class="tabs">${tabs}</div>${renderCapture(caps[active])}<p class="foot">JitProfiler · ${esc((DATA.mod_version||""))} · ${esc(DATA.generated||"")}</p>`;
     for(const b of wrap.querySelectorAll(".tabs button")) b.onclick=()=>{
-      if(b.dataset.v) vview=b.dataset.v; else active=b.dataset.k;
+      if(b.dataset.v) vview=b.dataset.v; else if(b.dataset.g) gview=b.dataset.g; else active=b.dataset.k;
       draw();
     };
   }

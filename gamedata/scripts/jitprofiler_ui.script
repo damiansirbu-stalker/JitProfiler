@@ -25,6 +25,7 @@ local TOP_NEIGHBORS = 8
 local BYTES_PER_MB  = 1048576
 local BYTES_PER_KB  = 1024
 local OWNER_MOD = "mod: "
+local OWNER_LOOSE = "loose: "
 local KIND_CPU = "cpu"
 local KIND_MEM = "mem"
 local KIND_SCAN = "scan"
@@ -35,15 +36,14 @@ local FRAME_HITCH_ROWS = 30
 -- HITCHES verdict and GC-share colour thresholds.
 local LOW_FPS_MS = 33
 local GC_HIGH_PCT, GC_MED_PCT = 20, 10
-local VIEW_BY_MOD = "by_mod"
-local VIEW_BY_SCRIPT = "by_script"
 local SORT_NAME = "name"
 local SORT_OWNER = "owner"
 local SORT_OWN = "own"
 local SORT_TOTAL = "total"
-local SORT_VALUE = "value"
-local PCT_OWN = "Own %"
-local PCT_TOTAL = "Total %"
+local SORT_CAUSED = "caused"
+local GROUP_FUNCTION, GROUP_SCRIPT, GROUP_MOD = "function", "script", "mod"
+-- Rows a scroll box shows before it scrolls.
+local BOX_ROWS = 8
 local GC_RATE_MS = 1000
 
 local COLOR_BG     = fcolor():set(0.09, 0.10, 0.12, 0.97)
@@ -74,6 +74,8 @@ local BANNER_POS  = vector2(24, 120)
 local WIN_SIZE  = vector2(WINDOW_W, WINDOW_H)
 local WIN_POS   = vector2(60, 60)
 local FILL_SIZE = vector2(0, 0)
+local HEADER_SIZE = vector2(0, 20)
+local BOX_SIZE = vector2(0, 0)
 
 -- The CPU VM-state strip, one colored bar per state code in cap.meta.vmstate, explained on hover.
 local VMSTATE = {
@@ -89,12 +91,17 @@ local VMSTATE = {
       tip = "The JIT compiler working; a spike means traces recompiling." },
 }
 
--- The selectable views over a retained capture; BY MOD and BY SCRIPT show Own + Total columns, frame views drill down. Each names its default sort column.
-local VIEWS = {
-    { key = VIEW_BY_MOD,    label = "BY MOD",    dual = true, own_key = "by_mod",    total_key = "by_mod_total",    default_sort = SORT_TOTAL },
-    { key = VIEW_BY_SCRIPT, label = "BY SCRIPT", dual = true, own_key = "by_script", total_key = "by_script_total", default_sort = SORT_TOTAL },
-    { key = "leaf",         label = "BY LEAF",   frame_keyed = true,  pct_label = PCT_OWN,   default_sort = SORT_VALUE },
-    { key = "root",         label = "BY ROOT",   frame_keyed = true,  pct_label = PCT_TOTAL, default_sort = SORT_VALUE },
+-- The groupings of the one cost table: the function rows as computed, or the same rows summed per script or per mod.
+local GROUPS = {
+    { key = GROUP_FUNCTION, label = "Function" },
+    { key = GROUP_SCRIPT,   label = "Script" },
+    { key = GROUP_MOD,      label = "Mod" },
+}
+-- Column meanings, shown on header hover.
+local COLUMN_TIPS = {
+    [SORT_TOTAL]  = "Own + Caused. The function's whole cost.",
+    [SORT_OWN]    = "Time in the function's own code.",
+    [SORT_CAUSED] = "Vanilla or engine time that ran because this mod function called it. A dash on a vanilla or engine row.",
 }
 
 local WF = ImGuiWindowFlags
@@ -105,8 +112,7 @@ local SPAN_ALL = ImGuiSelectableFlags.SpanAllColumns
 
 local panel_open = false
 local active_tab = KIND_CPU
--- default view BY SCRIPT: its rows carry the +/- add-to-instrumentation button
-local view_index = 2
+local group_index = 1
 local fold_baseline = false
 local filter_text = ""
 local samp_sort = { field = SORT_TOTAL, asc = false }
@@ -199,9 +205,9 @@ local function sort_key(entry)
     local col = samp_sort.field
     if col == SORT_NAME then return entry.key end
     if col == SORT_OWNER then return entry.owner or "" end
-    if col == SORT_OWN then return entry.own or entry.value or 0 end
-    if col == SORT_TOTAL then return entry.total or entry.value or 0 end
-    return entry.value or entry.total or 0
+    if col == SORT_OWN then return entry.own end
+    if col == SORT_CAUSED then return entry.caused end
+    return entry.total
 end
 
 local function sort_rows(entries)
@@ -213,24 +219,49 @@ local function sort_rows(entries)
     end)
 end
 
--- The retained capture is static, so build, resolve owners, and sort each row once per tab/view/sort/capture, not per frame.
+-- A weight map as a list of { key, weight } sorted by weight, the shape the report's lists use.
+local function sort_map(map)
+    local list = {}
+    for key, weight in pairs(map) do list[#list + 1] = { key, weight } end
+    table.sort(list, function(left, right) return left[2] > right[2] end)
+    return list
+end
+
+-- The script file of a function key: its file token without the line; a C or chunk key stays itself.
+local function get_group_script(key)
+    local file = key:match("@(.+)$") or key
+    return (file:gsub(":%-?%d+$", ""))
+end
+
+-- Merge one function row into a grouped row: sum the weights, keep the hook tag, and sum what it caused and passed through.
+local function merge_cost_row(target, row)
+    target.own, target.caused, target.total = target.own + row.own, target.caused + row.caused, target.total + row.total
+    target.hook = target.hook or row.hook
+    for i = 1, #row.caused_by do target.caused_map[row.caused_by[i][1]] = (target.caused_map[row.caused_by[i][1]] or 0) + row.caused_by[i][2] end
+    for i = 1, #row.via do target.via_map[row.via[i][1]] = (target.via_map[row.via[i][1]] or 0) + row.via[i][2] end
+end
+
+-- The capture's cost rows under the active grouping, sorted; built once per tab/group/sort/capture, never per frame.
 local function get_rows(cap)
-    local view = VIEWS[view_index]
-    local sig = active_tab .. ":" .. view_index .. ":" .. samp_sort.field .. ":" .. (samp_sort.asc and "a" or "d") .. ":" .. (cap.meta.stamp or "?")
+    local group = GROUPS[group_index].key
+    local sig = active_tab .. ":" .. group .. ":" .. samp_sort.field .. ":" .. (samp_sort.asc and "a" or "d") .. ":" .. (cap.meta.stamp or "?")
     if sig == rows_sig then return rows_cache end
-    local entries = {}
-    if view.dual then
-        local total_map, own_map = cap.views[view.total_key], cap.views[view.own_key]
-        local by_mod = (view.key == VIEW_BY_MOD)
-        for key, total in pairs(total_map) do
-            entries[#entries + 1] = { key = key, total = total, own = own_map[key] or 0,
-                                      owner = by_mod and key or JitProfiler.get_owner(key) }
+    local source, grouped, entries = cap.cost_rows or {}, {}, {}
+    for i = 1, #source do
+        local row = source[i]
+        local key = row.key
+        if group == GROUP_SCRIPT then key = get_group_script(row.key) elseif group == GROUP_MOD then key = row.owner end
+        local target = grouped[key]
+        if not target then
+            target = { key = key, owner = row.owner, own = 0, caused = 0, total = 0, hook = false, caused_map = {}, via_map = {} }
+            grouped[key] = target
+            entries[#entries + 1] = target
         end
-    else
-        local map = cap.views[view.key]
-        for key, weight in pairs(map) do
-            entries[#entries + 1] = { key = key, value = weight, owner = JitProfiler.get_owner(key) }
-        end
+        merge_cost_row(target, row)
+    end
+    for i = 1, #entries do
+        entries[i].caused_by = sort_map(entries[i].caused_map)
+        entries[i].via = sort_map(entries[i].via_map)
     end
     sort_rows(entries)
     rows_cache, rows_sig = entries, sig
@@ -273,7 +304,8 @@ local function render_header(state, prefix, label, field, right)
     local start_x = ImGui.GetCursorPosX()
     local avail = ImGui.GetContentRegionAvail().x
     if avail < 1 then avail = 1 end
-    if ImGui.InvisibleButton("##" .. prefix .. label, vector2(avail, 20)) then
+    HEADER_SIZE:set(avail, 20)
+    if ImGui.InvisibleButton("##" .. prefix .. label, HEADER_SIZE) then
         if state.field == field then state.asc = not state.asc else state.field, state.asc = field, false end
     end
     local hovered = ImGui.IsItemHovered()
@@ -287,12 +319,6 @@ local function render_header(state, prefix, label, field, right)
     ImGui.PopStyleColor(1)
 end
 local function render_sort_header(label, col, right) render_header(samp_sort, "h", label, col, right) end
-
-local function render_tooltip(cap, key, owner, weight)
-    if not ImGui.IsItemHovered() then return end
-    ImGui.SetTooltip(format("%s\n%s\nresolve: %s\n%s", JitProfiler.compute_masked_name(key), JitProfiler.compute_masked_name(owner),
-        JitProfiler.get_owner_method(key), format_weight(cap.kind, weight)))
-end
 
 local function select_frame(cap, key)
     selected_frame = key
@@ -376,157 +402,113 @@ local function render_tab_button(kind, label)
 end
 
 -- The view selector as a dropdown: one box shows the current view; the other three stay hidden until it opens.
-local function render_view_combo()
-    ImGui.Text("View")
+-- The grouping selector: one box shows the current grouping; the other two show when it opens.
+local function render_group_combo()
+    ImGui.SameLine(0, 20)
+    ImGui.Text("Group by")
     ImGui.SameLine()
-    ImGui.SetNextItemWidth(160)
-    if not ImGui.BeginCombo("##view", VIEWS[view_index].label, 0) then return end
-    for i = 1, #VIEWS do
-        if ImGui.Selectable(VIEWS[i].label, i == view_index, 0, VZERO) and i ~= view_index then
-            view_index = i
-            samp_sort.field, samp_sort.asc = VIEWS[i].default_sort, false
-            selected_frame = nil
-            selected_neighbors = nil
+    ImGui.SetNextItemWidth(110)
+    if not ImGui.BeginCombo("##group", GROUPS[group_index].label, 0) then return end
+    for i = 1, #GROUPS do
+        if ImGui.Selectable(GROUPS[i].label, i == group_index, 0, VZERO) and i ~= group_index then
+            group_index = i
+            selected_frame, selected_neighbors = nil, nil
         end
     end
     ImGui.EndCombo()
 end
 
--- A baseline owner is any owner without the "mod: " prefix, i.e. not resolved to a specific mod.
+-- A baseline owner is anomaly, modded exes, engine, loadstring or unknown: anything that is not an MO2 mod or a loose install folder.
 local function is_baseline(owner)
-    return owner:sub(1, #OWNER_MOD) ~= OWNER_MOD
+    return owner:sub(1, #OWNER_MOD) ~= OWNER_MOD and owner:sub(1, #OWNER_LOOSE) ~= OWNER_LOOSE
 end
 
-local function render_bymod_row(cap, entry)
-    local owner, own_weight, total_weight = entry.key, entry.own, entry.total
-    if fold_baseline and is_baseline(owner) then return end
-    if not check_filter(owner, owner) then return end
-    local total = cap.total
-    local own_pct = total > 0 and 100 * own_weight / total or 0
-    local total_pct = total > 0 and 100 * total_weight / total or 0
-    ImGui.TableNextRow()
-    ImGui.TableNextColumn()
-    render_colored_text(get_mod_color(owner), JitProfiler.compute_masked_name(owner))
-    if ImGui.IsItemHovered() then ImGui.SetTooltip(format("%s\n%s", JitProfiler.compute_masked_name(owner), format_weight(cap.kind, total_weight))) end
-    ImGui.TableNextColumn()
-    render_bar(own_pct)
-    ImGui.TableNextColumn()
-    render_bar(total_pct)
-    render_num(format("%10s", format_weight(cap.kind, total_weight)))
-    return true
+--- @novalidate(conventions.compat_shim, reason:"a share formatter over a total with a zero guard, not an alias of format")
+local function format_pct(value, total)
+    return format("%5.1f%%", total > 0 and 100 * value / total or 0)
 end
 
-local function render_bymod_table(cap)
-    local entries = get_rows(cap)
-    if not ImGui.BeginTable("jf_bymod", 4, TABLE_FLAGS, get_fill_size(selected_frame and DETAIL_H or 0), 0) then return end
-    ImGui.TableSetupColumn("Mod", 0, 180, 0)
-    ImGui.TableSetupColumn("Own %", 0, 80, 0)
-    ImGui.TableSetupColumn("Total %", 0, 150, 0)
-    ImGui.TableSetupColumn("Value", 0, 90, 0)
-    ImGui.TableSetupScrollFreeze(0, 1)
-    ImGui.TableNextRow()
-    render_sort_header("Mod", SORT_NAME)
-    render_sort_header("Own %", SORT_OWN)
-    render_sort_header("Total %", SORT_TOTAL)
-    render_sort_header("Value", SORT_TOTAL, true)
-    render_table_rows(entries, function(entry) return render_bymod_row(cap, entry) end)
-end
-
-local function render_view_row(cap, view, entry)
-    local key, weight, owner = entry.key, entry.value, entry.owner
-    if fold_baseline and is_baseline(owner) then return end
-    if not check_filter(key, owner) then return end
-    local pct = cap.total > 0 and 100 * weight / cap.total or 0
-    ImGui.TableNextRow()
-    ImGui.TableNextColumn()
-    if view.frame_keyed then
-        local is_sel = (selected_frame == key)
-        if ImGui.Selectable(JitProfiler.compute_masked_name(key) .. "##" .. key, is_sel, SPAN_ALL, VZERO) then
-            select_frame(cap, is_sel and nil or key)
-        end
-    else
-        ImGui.Text(JitProfiler.compute_masked_name(key))
-    end
-    render_tooltip(cap, key, owner, weight)
-    ImGui.TableNextColumn()
-    render_colored_text(get_mod_color(owner), JitProfiler.get_masked_label(key))
-    ImGui.TableNextColumn()
-    render_bar(pct)
-    render_num(format("%10s", format_weight(cap.kind, weight)))
-    return true
-end
-
-local function render_view_table(cap, view)
-    local entries = get_rows(cap)
-    local hint = view.pct_label == PCT_OWN and "Own % = innermost frame only; sums to ~100%" or "Total % = on the stack anywhere; exceeds 100%"
-    render_colored_text(COLOR_DIM, hint)
-    if not ImGui.BeginTable("jf_view", 4, TABLE_FLAGS, get_fill_size(selected_frame and DETAIL_H or 0), 0) then return end
-    ImGui.TableSetupColumn("Frame", 0, 260, 0)
-    ImGui.TableSetupColumn("Mod", 0, 150, 0)
-    ImGui.TableSetupColumn("%", 0, 140, 0)
-    ImGui.TableSetupColumn("Value", 0, 90, 0)
-    ImGui.TableSetupScrollFreeze(0, 1)
-    ImGui.TableNextRow()
-    render_sort_header("Frame", SORT_NAME)
-    render_sort_header("Mod", SORT_OWNER)
-    render_sort_header(view.pct_label or "%", SORT_VALUE)
-    render_sort_header("Value", SORT_VALUE, true)
-    render_table_rows(entries, function(entry) return render_view_row(cap, view, entry) end)
-end
-
--- One BY SCRIPT row: the +/- instrument button and script name, the owner colour, then Own% and Total% bars with the raw value.
-local function render_byscript_row(cap, entry)
-    local key, own_weight, total_weight, owner = entry.key, entry.own, entry.total, entry.owner
-    if fold_baseline and is_baseline(owner) then return end
-    if not check_filter(key, owner) then return end
-    local total = cap.total
-    local own_pct = total > 0 and 100 * own_weight / total or 0
-    local total_pct = total > 0 and 100 * total_weight / total or 0
-    ImGui.TableNextRow()
-    ImGui.TableNextColumn()
+-- The +/- button that adds or removes a script from the instrument set, on a Script-grouped row.
+local function render_instrument_button(key)
     local on = JitProfiler.is_target(key)
     if ImGui.Button((on and "-##" or "+##") .. key, VZERO) then
         if on then JitProfiler.remove_target(key) else JitProfiler.add_target(key) end
     end
     if ImGui.IsItemHovered() then ImGui.SetTooltip("Add or remove this script from the instrument set.") end
     ImGui.SameLine()
-    ImGui.Text(JitProfiler.compute_masked_name(key))
-    render_tooltip(cap, key, owner, total_weight)
+end
+
+-- The hover of a cost row: name, owner, value, then the vanilla functions it caused and the patches or hooks it passed through.
+local function build_cost_tooltip(entry, total, kind)
+    local mask = JitProfiler.compute_masked_name
+    local lines = { mask(entry.key), mask(entry.owner) .. "   " .. format_weight(kind, entry.total) }
+    if entry.hook then lines[#lines + 1] = "hooks the callback system: keeps its own cost, is charged nothing it passes through" end
+    for i = 1, math.min(#entry.caused_by, 6) do lines[#lines + 1] = "caused " .. format_pct(entry.caused_by[i][2], total) .. "  " .. mask(entry.caused_by[i][1]) end
+    for i = 1, math.min(#entry.via, 4) do lines[#lines + 1] = "via    " .. format_pct(entry.via[i][2], total) .. "  " .. mask(entry.via[i][1]) end
+    return table.concat(lines, "\n")
+end
+
+-- A click on a row: a Function row selects it for the callers/callees drill, a Mod row filters the table to that mod and drops to Function.
+local function select_cost_row(cap, key, is_sel)
+    local group = GROUPS[group_index].key
+    if group == GROUP_FUNCTION then select_frame(cap, is_sel and nil or key); return end
+    if group == GROUP_MOD then filter_text, group_index = key, 1 end
+end
+
+-- One cost row: the name (a + instrument button on a Script row, the hook tag), the owner, the Cost bar, Own, Caused, and the raw value.
+local function render_cost_row(cap, total, entry)
+    local key, owner = entry.key, entry.owner
+    if fold_baseline and is_baseline(owner) then return end
+    if not check_filter(key, owner) then return end
+    local group = GROUPS[group_index].key
+    ImGui.TableNextRow()
     ImGui.TableNextColumn()
-    render_colored_text(get_mod_color(owner), JitProfiler.get_masked_label(key))
+    if group == GROUP_SCRIPT then render_instrument_button(key) end
+    local is_sel = (selected_frame == key)
+    local name = JitProfiler.compute_masked_name(key)
+    if entry.hook then name = name .. "  (hooks the callback system)" end
+    if ImGui.Selectable(name .. "##" .. key, is_sel, SPAN_ALL, VZERO) then select_cost_row(cap, key, is_sel) end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip(build_cost_tooltip(entry, total, cap.kind)) end
+    if group ~= GROUP_MOD then
+        ImGui.TableNextColumn()
+        render_colored_text(get_mod_color(owner), JitProfiler.get_masked_label(key))
+    end
     ImGui.TableNextColumn()
-    render_bar(own_pct)
-    ImGui.TableNextColumn()
-    render_bar(total_pct)
-    render_num(format("%10s", format_weight(cap.kind, total_weight)))
+    render_bar(total > 0 and 100 * entry.total / total or 0)
+    render_num(format_pct(entry.own, total))
+    render_num(is_baseline(owner) and "     -" or format_pct(entry.caused, total))
+    render_num(format("%10s", format_weight(cap.kind, entry.total)))
     return true
 end
 
--- BY SCRIPT: Own and Total side by side like BY MOD, each column sortable, with the per-row instrument button kept.
-local function render_byscript_table(cap)
-    local entries = get_rows(cap)
-    render_colored_text(COLOR_DIM, "Own % = innermost frame (sums ~100%);  Total % = on the stack anywhere (exceeds 100%)")
-    if not ImGui.BeginTable("jf_byscript", 5, TABLE_FLAGS, get_fill_size(selected_frame and DETAIL_H or 0), 0) then return end
-    ImGui.TableSetupColumn("Script", 0, 210, 0)
-    ImGui.TableSetupColumn("Mod", 0, 110, 0)
-    ImGui.TableSetupColumn("Own %", 0, 70, 0)
-    ImGui.TableSetupColumn("Total %", 0, 110, 0)
-    ImGui.TableSetupColumn("Value", 0, 80, 0)
-    ImGui.TableSetupScrollFreeze(0, 1)
-    ImGui.TableNextRow()
-    render_sort_header("Script", SORT_NAME)
-    render_sort_header("Mod", SORT_OWNER)
-    render_sort_header("Own %", SORT_OWN)
-    render_sort_header("Total %", SORT_TOTAL)
-    render_sort_header("Value", SORT_TOTAL, true)
-    render_table_rows(entries, function(entry) return render_byscript_row(cap, entry) end)
+-- A sortable header with its meaning on hover.
+local function render_cost_header(label, col, right)
+    render_sort_header(label, col, right)
+    if COLUMN_TIPS[col] and ImGui.IsItemHovered() then ImGui.SetTooltip(COLUMN_TIPS[col]) end
 end
 
-local function render_table(cap)
-    local view = VIEWS[view_index]
-    if view.key == VIEW_BY_MOD then render_bymod_table(cap)
-    elseif view.key == VIEW_BY_SCRIPT then render_byscript_table(cap)
-    else render_view_table(cap, view) end
+-- The one results table over a capture's cost rows: Function/Script/Mod, Mod, Cost, Own, Caused, Value; sortable, scrolling, every row.
+local function render_cost_table(cap, total, reserve)
+    local entries = get_rows(cap)
+    local group = GROUPS[group_index]
+    local columns = 6
+    if group.key == GROUP_MOD then columns = 5 end
+    if not ImGui.BeginTable("jf_cost", columns, TABLE_FLAGS, get_fill_size(reserve), 0) then return end
+    ImGui.TableSetupColumn(group.label, 0, 260, 0)
+    if group.key ~= GROUP_MOD then ImGui.TableSetupColumn("Mod", 0, 150, 0) end
+    ImGui.TableSetupColumn("Cost", 0, 150, 0)
+    ImGui.TableSetupColumn("Own", 0, 70, 0)
+    ImGui.TableSetupColumn("Caused", 0, 70, 0)
+    ImGui.TableSetupColumn("Value", 0, 90, 0)
+    ImGui.TableSetupScrollFreeze(0, 1)
+    ImGui.TableNextRow()
+    render_sort_header(group.label, SORT_NAME)
+    if group.key ~= GROUP_MOD then render_sort_header("Mod", SORT_OWNER) end
+    render_cost_header("Cost", SORT_TOTAL)
+    render_cost_header("Own", SORT_OWN, true)
+    render_cost_header("Caused", SORT_CAUSED, true)
+    render_sort_header("Value", SORT_TOTAL, true)
+    render_table_rows(entries, function(entry) return render_cost_row(cap, total, entry) end)
 end
 
 local function render_ranked(title, list, total)
@@ -571,35 +553,20 @@ local function render_vmstate(cap)
 end
 
 -- The Lua call sites that drove the most engine C/GC this capture: what to reduce, and where to point Optick.
+-- Every engine-C entry point in a scroll box: the Lua call sites that drive engine time, the Optick targets.
 local function render_engine_entry(cap)
     local list = cap.engine_entry
     if not list or #list == 0 then return end
-    if not ImGui.CollapsingHeader("Engine-C entry points  (Lua call sites driving engine time; Optick targets)") then return end
-    local total = cap.total
-    for i = 1, math.min(#list, TOP_NEIGHBORS) do
-        local key, weight = list[i][1], list[i][2]
-        local pct = total > 0 and 100 * weight / total or 0
-        local entry_text = format("  %5.1f%%  %s", pct, JitProfiler.compute_masked_name(key))
-        render_colored_text(get_mod_color(JitProfiler.get_owner(key)), entry_text)
+    render_colored_text(COLOR_DIM, "Engine-C entry points  (Lua call sites driving engine time; Optick targets)")
+    BOX_SIZE:set(0, ImGui.GetTextLineHeightWithSpacing() * BOX_ROWS)
+    if ImGui.BeginChild("##engine_entry", BOX_SIZE, 0, 0) then
+        local total = cap.total
+        for i = 1, #list do
+            local key, weight = list[i][1], list[i][2]
+            render_colored_text(get_mod_color(JitProfiler.get_owner(key)), format("  %s  %s", format_pct(weight, total), JitProfiler.compute_masked_name(key)))
+        end
     end
-end
-
--- One ORIGIN row: the hot anomaly/engine row, then up to three calling mods under it in their mod colour.
-local function render_origin_row(leaf, total)
-    local mask = JitProfiler.compute_masked_name
-    ImGui.Text(format("  %5.1f%%  %s", total > 0 and 100 * leaf[2] / total or 0, mask(leaf[1])))
-    for j = 1, math.min(#leaf.drivers, 3) do
-        local owner, weight = leaf.drivers[j][1], leaf.drivers[j][2]
-        render_colored_text(get_mod_color(owner), format("      <- %5.1f%%  %s", total > 0 and 100 * weight / total or 0, mask(owner)))
-    end
-end
-
--- ORIGIN: each hot anomaly/engine row with the first mod up its stack, the mod that called it; computed once at Stop.
-local function render_baseline_drivers(cap)
-    local drivers = cap.drivers
-    if not (drivers and #drivers.leaves > 0) then return end
-    if not ImGui.CollapsingHeader("ORIGIN  (the mod that called each hot anomaly/engine row)") then return end
-    for i = 1, math.min(#drivers.leaves, TOP_NEIGHBORS) do render_origin_row(drivers.leaves[i], cap.total) end
+    ImGui.EndChild()
 end
 
 -- One GC-health row: the label, a heat bar for the clamped fraction, then the value text.
@@ -632,40 +599,56 @@ local function render_gc_health()
     end
 end
 
--- On MT the CPU G% is inflated while parallel GC runs; this toggle flips lua_parallel_gc for a clean read. Hidden when the cvar is absent (single-thread exe).
+-- The MT lua_parallel_gc toggle (hidden without the cvar): a clean CPU G% needs it off; the cvar is read once a second, never per panel frame.
 local has_pgc
+local pgc_on, pgc_t0 = false, 0
 -- Whether the MT parallel-GC cvar exists and is on; drives both the checkbox and the CPU inflation warning.
 local function is_pgc_on()
     if has_pgc == nil then has_pgc = get_console():get_string("lua_parallel_gc") ~= nil end
-    return has_pgc and get_console():get_integer("lua_parallel_gc") ~= 0
+    if not has_pgc then return false end
+    local now = time_global and time_global() or 0
+    if now - pgc_t0 >= GC_RATE_MS or pgc_t0 == 0 then pgc_on, pgc_t0 = get_console():get_integer("lua_parallel_gc") ~= 0, now end
+    return pgc_on
 end
 
 local function render_pgc_toggle()
-    if has_pgc == nil then has_pgc = get_console():get_string("lua_parallel_gc") ~= nil end
+    local on = is_pgc_on()
     if not has_pgc then return end
-    local on = get_console():get_integer("lua_parallel_gc") ~= 0
     local _, new_on = ImGui.Checkbox("Parallel GC", on)
-    if new_on ~= on then get_console():execute("lua_parallel_gc " .. (new_on and "1" or "0")) end
+    if new_on ~= on then get_console():execute("lua_parallel_gc " .. (new_on and "1" or "0")); pgc_on = new_on end
     if ImGui.IsItemHovered() then ImGui.SetTooltip("Off gives a clean CPU G%; the MT parallel GC inflates it.") end
 end
 
 -- The filter and fold row for a sampling tab, with the CPU-only Parallel GC toggle appended.
+-- The filter box and the grouping selector, the two controls a reader needs on every capture.
 local function render_controls()
     ImGui.Text("Filter")
     ImGui.SameLine()
     ImGui.SetNextItemWidth(FILTER_W)
     local new_filter = ImGui.InputText("##filter", filter_text, 64)
     if new_filter then filter_text = new_filter end
-    ImGui.SameLine(0, 20)
+    render_group_combo()
+end
+
+-- The fold switch: hide the anomaly, modded exes, engine and unknown rows, leaving mods only.
+local function render_fold_toggle()
     fold_baseline = JitProfiler.get_setting("fold")
     local _, new_fold = ImGui.Checkbox("Fold baseline", fold_baseline)
     if ImGui.IsItemHovered() then ImGui.SetTooltip("Hide the non-mod rows (anomaly, modded exes, engine, unknown), leaving mods only.") end
     if new_fold ~= fold_baseline then JitProfiler.set_setting("fold", new_fold) end
     fold_baseline = new_fold
-    if active_tab == KIND_CPU then
-        ImGui.SameLine(0, 20)
-        render_pgc_toggle()
-    end
+end
+
+-- Advanced, collapsed by default: the fold and parallel-GC switches, the VM-state strip, and every engine-C entry point in a scroll box.
+local function render_advanced(cap)
+    if not ImGui.CollapsingHeader("Advanced") then return end
+    render_fold_toggle()
+    if cap.kind ~= KIND_CPU then return end
+    ImGui.SameLine(0, 20)
+    render_pgc_toggle()
+    render_colored_text(COLOR_DIM, "VM state at each sample")
+    render_vmstate(cap)
+    render_engine_entry(cap)
 end
 
 
@@ -700,17 +683,9 @@ local function render_tab(cap)
         ImGui.Text(format("%s allocated   ~%.0fs   %s", format_weight(KIND_MEM, cap.total), cap.meta.duration or 0, cap.meta.stamp or "?"))
     end
     render_tab_health(cap)
-    if cap.kind == KIND_CPU then
-        ImGui.Separator()
-        ImGui.PushStyleColor(ImGuiCol.Text, COLOR_DIM)
-        ImGui.Text("VM state at each sample")
-        ImGui.PopStyleColor(1)
-        render_vmstate(cap)
-        render_engine_entry(cap)
-    end
-    render_baseline_drivers(cap)
+    render_advanced(cap)
     ImGui.Separator()
-    render_table(cap)
+    render_cost_table(cap, cap.total, selected_frame and DETAIL_H or 0)
     render_neighbors(cap)
 end
 
@@ -757,7 +732,6 @@ local function render_sampling_body()
         end
     end
     render_controls()
-    render_view_combo()
     ImGui.Separator()
     if active_tab == KIND_MEM then
         render_gc_health()
@@ -814,16 +788,24 @@ local function get_heat_cell_color(peak, peak_all, gate, median)
     return get_heat_color(peak_all > 0 and 100 * peak / peak_all or 0)
 end
 
+-- The frame-index axis for the plot, kept per capture and grown, never rebuilt each panel frame.
+local _plot_cap, _plot_xs = nil, {}
+-- The gate line's two endpoints, mutated in place each frame instead of two fresh tables.
+local GATE_XS, GATE_YS = { 1, 1 }, { 0, 0 }
+
 -- The timeline: a single thin row of colour cells, time left to right, each cell the worst frame in its window.
 -- The ImPlot line chart for the frame series: dt over the capture, the hitch gate drawn as a flat line.
 local function render_frametime_plot(cap, series, count)
-    local xs, ys = {}, {}
-    for i = 1, count do xs[i] = i; ys[i] = series[i] end
+    if _plot_cap ~= cap then _plot_cap, _plot_xs = cap, {} end
+    for i = #_plot_xs + 1, count do _plot_xs[i] = i end
     if ximplot.start_plot("##frametime", -1, 120, 0) then
         ximplot.set_axes("frame", "ms", 0, 0)
-        ximplot.add_line("dt", xs, ys, count)
+        ximplot.add_line("dt", _plot_xs, series, count)
         local gate = (cap.metrics and cap.metrics.gate) or 0
-        if gate > 0 then ximplot.add_line("gate", { 1, count }, { gate, gate }, 2) end
+        if gate > 0 then
+            GATE_XS[2], GATE_YS[1], GATE_YS[2] = count, gate, gate
+            ximplot.add_line("gate", GATE_XS, GATE_YS, 2)
+        end
         ximplot.stop_plot()
     end
 end
@@ -917,30 +899,14 @@ local function render_frametime_dist(metrics)
 end
 
 -- The operators that ran: per-hitch CPU own when there were hitches (what ran DURING the stutter), else the overall.
-local function render_frametime_whatran(cap)
-    local leaf, total, header
-    if cap.hitch_views and (cap.hitch_sample_frames or 0) > 0 then
-        leaf, total = cap.hitch_views.leaf, cap.hitch_total or 0
-        header = format("WHAT RAN  during %d hitch frames (CPU own)", cap.hitch_sample_frames)
-    else
-        local cpu_cap = JitProfiler.get_last_capture(KIND_CPU)
-        if cpu_cap and cpu_cap.views then leaf, total = cpu_cap.views.leaf, cpu_cap.total or 0 end
-        header = "WHAT RAN  overall, no hitches (CPU own)"
-    end
-    ImGui.PushStyleColor(ImGuiCol.Text, COLOR_HEADER)
-    ImGui.Text(header)
-    ImGui.PopStyleColor(1)
-    if not leaf then ImGui.Text("  no CPU data"); return end
-    local rows = {}
-    for key, weight in pairs(leaf) do rows[#rows + 1] = { key = key, weight = weight } end
-    table.sort(rows, function(left, right) return left.weight > right.weight end)
-    for i = 1, math.min(#rows, 8) do
-        local row = rows[i]
-        local pct = total > 0 and 100 * row.weight / total or 0
-        ImGui.Text(format("  %5.1f%%  %-26s %s", pct,
-            JitProfiler.compute_masked_name(JitProfiler.get_owner(row.key)),
-            JitProfiler.compute_masked_name(row.key)))
-    end
+-- What ran during the hitch frames: the same cost table, over the samples taken inside those frames only.
+local function render_hitch_cost(cap)
+    local frames = cap.hitch_sample_frames or 0
+    render_colored_text(COLOR_HEADER, format("WHAT RAN  during %d hitch frames", frames))
+    if not (cap.cost_rows and frames > 0) then ImGui.Text("  no hitch frames"); return end
+    render_controls()
+    render_cost_table(cap, cap.hitch_total or 0, DETAIL_H)
+    render_neighbors(cap)
 end
 
 -- The FRAME tab: Start/Stop, the metric strip, the time-series chart, the rhythm, and the worst-frame hitch table.
@@ -977,7 +943,7 @@ local function render_frame_body()
     render_frametime_dist(metrics)
     ImGui.Separator()
     render_frame_rhythm(cap)
-    render_frametime_whatran(cap)
+    render_hitch_cost(cap)
     ImGui.Separator()
     render_frame_hitches(cap)
 end
@@ -1000,14 +966,18 @@ local function render_active_view()
     jitprofiler_ui_config.render_footer()
 end
 
+-- The open size is read from vid_mode once per opening, not every frame; closing the panel re-arms it.
+local window_sized = false
+
 local function render_panel()
     if not (panel_open and is_overlay_enabled()) then return end
-    set_window_size()
+    if not window_sized then set_window_size(); window_sized = true end
     ImGui.PushStyleColor(ImGuiCol.WindowBg, COLOR_BG)
     ImGui.PushStyleColor(ImGuiCol.Text, COLOR_TEXT)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, COLOR_ACCENT)
     local expanded, open = ImGui.Begin("JitProfiler", panel_open, 0)
     panel_open = open
+    if not open then window_sized = false end
     if expanded then
         init_mono()
         push_mono()

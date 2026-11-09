@@ -225,11 +225,24 @@ local function is_string_frame(frame)
     return frame:find("%[string") ~= nil
 end
 
--- The frame Own weight books to: past a prepended [C]/[GC]/[JIT] pseudo-leaf or a [string] chunk, to the real Lua frame below that drove it.
-local function get_anchor_frame(first, second, nframes)
-    if PSEUDO_FRAME[first] and second and nframes >= 3 then return second end
-    if is_string_frame(first) and second and not PSEUDO_FRAME[second] and not is_string_frame(second) and get_script_id(second) then return second end
-    return first
+-- A [string] chunk frame books to the script frame below that ran it; any other frame books to itself.
+local function get_chunk_anchor(frame, below)
+    if is_string_frame(frame) and below and not PSEUDO_FRAME[below] and not is_string_frame(below) and get_script_id(below) then return below end
+    return frame
+end
+
+-- The frame Own books to: past a [C]/[GC]/[JIT] pseudo-leaf (when a third frame exists), then past a [string] chunk, to the real Lua frame.
+local function get_anchor_frame(first, second, third)
+    if PSEUDO_FRAME[first] and third then return get_chunk_anchor(second, third) end
+    return get_chunk_anchor(first, second)
+end
+
+-- The first three frames of a leaf-first stack; a missing frame is nil, a missing first frame is "?".
+local function get_head_frames(stack)
+    local first, second, third = stack:match("^([^;]*);?([^;]*);?([^;]*)")
+    if second == "" then second = nil end
+    if third == "" then third = nil end
+    return (first ~= "" and first) or "?", second, third
 end
 
 -- Frame count excluding a prepended pseudo-leaf, so the depth and at-cap metrics do not count the [C]/[GC]/[JIT] marker.
@@ -246,18 +259,16 @@ end
 
 -- Credit one captured stack into every ranked map and update the depth stats.
 local function collect_stack(v, stack, weight, cap)
-    local first, second, last, nframes = nil, nil, nil, 0
     local seen_owner, seen_script = {}, {}
+    local last, nframes = "?", 0
     for frame in string.gmatch(stack, "[^;]+") do
-        if not first then first = frame
-        elseif not second then second = frame end
         last = frame
         nframes = nframes + 1
         seen_owner[get_owner(frame)] = true
         seen_script[get_frame_script(frame)] = true
     end
-    first, last = first or "?", last or "?"
-    local anchor = get_anchor_frame(first, second, nframes)
+    local first, second, third = get_head_frames(stack)
+    local anchor = get_anchor_frame(first, second, third)
     local leaf_key = get_short_frame(anchor)
     local script_file = get_frame_script(anchor)
     local owner = get_owner(anchor)
@@ -284,8 +295,8 @@ local function compute_views(by_stack, cap)
     return v
 end
 
--- Forward-declared so the CPU, allocation, scan, and callbacks engines can see each other and stay mutually exclusive.
-local alloc, scan, callbacks
+-- Forward-declared so the CPU, allocation, scan, callbacks, and frame engines can see each other and stay mutually exclusive.
+local alloc, scan, callbacks, frame
 
 -- Anchored to _G: the chunk executes twice, so the actor_on_update heartbeat and the console entry points must share one table.
 local cpu = rawget(_G, "__jitprofiler_cpu") or { stacks = {}, state = {}, total = 0, nstacks = 0, dropped = 0, iv = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH, t0 = 0, limit = 0, active = false }
@@ -492,14 +503,14 @@ local function build_wrapper(rec, original)
         local sp = scan.sp + 1
         if sp > SCAN_MAX_DEPTH then return original(...) end
         scan.sp = sp
-        local frame = scan.stack[sp]
-        if not frame then frame = { timer = xprofiler.new() }; scan.stack[sp] = frame end
-        frame.rec, frame.child_us = rec, 0
-        frame.timer:reset(); frame.timer:start()
+        local slot = scan.stack[sp]
+        if not slot then slot = { timer = xprofiler.new() }; scan.stack[sp] = slot end
+        slot.rec, slot.child_us = rec, 0
+        slot.timer:reset(); slot.timer:start()
         local count, ret = collect_results(pcall(original, ...))
-        frame.timer:stop()
-        local elapsed = frame.timer:get_us()
-        local own = elapsed - frame.child_us
+        slot.timer:stop()
+        local elapsed = slot.timer:get_us()
+        local own = elapsed - slot.child_us
         rec.total_us = rec.total_us + elapsed
         rec.self_us  = rec.self_us + own
         rec.calls    = rec.calls + 1
@@ -706,14 +717,14 @@ local function build_callbacks_wrapper(rec, handler)
         local sp = callbacks.sp + 1
         if sp > SCAN_MAX_DEPTH then return handler(...) end
         callbacks.sp = sp
-        local frame = callbacks.stack[sp]
-        if not frame then frame = { timer = xprofiler.new() }; callbacks.stack[sp] = frame end
-        frame.child_us = 0
-        frame.timer:reset(); frame.timer:start()
+        local slot = callbacks.stack[sp]
+        if not slot then slot = { timer = xprofiler.new() }; callbacks.stack[sp] = slot end
+        slot.child_us = 0
+        slot.timer:reset(); slot.timer:start()
         local count, ret = collect_results(pcall(handler, ...))
-        frame.timer:stop()
-        local elapsed = frame.timer:get_us()
-        local own = elapsed - frame.child_us
+        slot.timer:stop()
+        local elapsed = slot.timer:get_us()
+        local own = elapsed - slot.child_us
         rec.total_us = rec.total_us + elapsed
         rec.self_us  = rec.self_us + own
         rec.calls    = rec.calls + 1
@@ -881,6 +892,9 @@ function stop_frame()
         last_capture.frame.hitch_views = compute_views(hitch_stacks, settings.depth)
         last_capture.frame.hitch_total = hitch_total
         last_capture.frame.hitch_sample_frames = hitch_frames
+        last_capture.frame.by_stack = hitch_stacks
+        last_capture.frame.cost_rows = jitprofiler_report.compute_cost_rows(hitch_stacks)
+        jitprofiler_report.write_hitch_folded(last_capture.frame.meta.stamp, hitch_stacks)
     end
     jitprofiler_report.write_json(last_capture.frame)
     show_tip("JitProfiler HITCHES report written")
@@ -1138,24 +1152,19 @@ function get_masked_label(key)
 end
 
 -- Reduce a frame to name@<scripts-relative path>:line; a frame with no file token returns unchanged. Global so jitprofiler_report can normalise frames.
-function get_short_frame(frame)
-    local file = frame:match("([%w_%.%-\\/]+%.script:%-?%d+)")
-              or frame:match("([%w_%.%-\\/]+%.lua:%-?%d+)")
-              or frame:match("(%[C%]:%-?%d+)")
-    if not file then return frame end
+function get_short_frame(raw)
+    local file = raw:match("([%w_%.%-\\/]+%.script:%-?%d+)")
+              or raw:match("([%w_%.%-\\/]+%.lua:%-?%d+)")
+              or raw:match("(%[C%]:%-?%d+)")
+    if not file then return raw end
     file = file:gsub("\\", "/"):gsub("^.*/scripts/", ""):gsub("^%.%.%.[^/]*/", "")
-    local name = frame:match("^([%w_]+)@")
+    local name = raw:match("^([%w_]+)@")
     return name and (name .. "@" .. file) or file
 end
 
 --- @return string the frame a leaf-first stack's Self books to (get_anchor_frame), so jitprofiler_report's driver walk uses the same leaf rule as by_mod.
 function get_stack_anchor(stack)
-    local first, second, nframes = nil, nil, 0
-    for frame in string.gmatch(stack, "[^;]+") do
-        nframes = nframes + 1
-        if nframes == 1 then first = frame elseif nframes == 2 then second = frame end
-    end
-    return get_anchor_frame(first or "?", second, nframes)
+    return get_anchor_frame(get_head_frames(stack))
 end
 
 --- @return string the owner (mod / modded exes / anomaly / engine / unknown) for a view key, resolved through the script it names.

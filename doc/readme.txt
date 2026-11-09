@@ -65,12 +65,13 @@ Then you take a named suspect to INSTRUMENT for exact per-call timing, or to CAL
 
 Sampling - CPU and MEM. Leave it running while you play, then read the ranking.
 
-CPU - the ranked breakdown of Lua time, by mod and by script.
+CPU - one table of every function with Own, the time in its own code, Caused, the vanilla or engine work it made run, and Cost, the two together, grouped by function, script or mod.
+A mod is charged for what its callbacks, timers and scheme functions caused and nothing else. A wrapper or a callback hook is passed over and named, and anomaly's own heavy code stays on its own row at full weight.
 It samples the running stack on the engine's own timer at 5 ms with the JIT on, so the overhead is near-zero.
 The interval is jittered on an exponential draw, so a mod on a schedule cannot phase-lock to it.
-It splits the time by VM state and lists the engine-C entry points, your Lua call sites that drive the engine cost, and where to point a native profiler like Optick.
+Advanced holds the VM-state split and the engine-C entry points, your Lua call sites that drive the engine cost, and where to point a native profiler like Optick.
 
-MEM - the ranked breakdown of allocation, the garbage the collector must clear.
+MEM - the same table over allocation, the garbage the collector must clear.
 It counts exact bytes at the allocator seam with the JIT off, the stutter source a script-side tool cannot measure.
 The framerate drops during the capture, so keep it short. The byte counts stay exact regardless.
 A live GC-health strip reads the heap toward the next collection, the live estimate, the debt, and the collection rate.

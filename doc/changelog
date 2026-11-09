@@ -1,5 +1,16 @@
 1.0.1-snapshot
-  Summary: added a HITCHES capture mode that records per-frame time, finds the stutter, and names what ran
+  Summary: HITCHES capture mode, one COST table, caused-by attribution, panel fixes
+
+  - Added: one COST table on CPU, MEM and HITCHES. Every function is a row with Own, the time in its own code,
+    Caused, the vanilla or engine work it made run, and Cost, the two together, grouped by function, script or mod.
+    A mod is charged for what its callbacks, timers and scheme functions caused and nothing else: a wrapper or a
+    callback hook is passed over and named, and anomaly's own heavy code stays on its own row at full weight.
+  - Changed: the BY MOD, BY SCRIPT, BY LEAF and BY ROOT views are now the COST table's Group by; the VM-state
+    split, the engine-C entry points, Fold baseline and Parallel GC moved under an Advanced fold.
+  - Changed: table headers stay in place while scrolling, percentages sit beside their bars, INSTRUMENT gained
+    a Filter box, hint text is readable, and a locked tab no longer lights up while a capture runs.
+  - Added: a HITCHES stop also writes the hitch frames' stacks as a SpeedScope .folded.
+  - Fixed: time inside a loadstring chunk now books to the script that ran it instead of to "loadstring".
 
   - HITCHES mode: records the per-render-frame time and couples a CPU capture in the same run, so one
     button ties the stutter to a cause. Reports median, mean, p95, p99, and the 1% low, lists the worst
