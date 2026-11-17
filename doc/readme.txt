@@ -43,8 +43,6 @@ My work is free and open source, ships in most modpacks, and integrates with est
 An organized group copies my work, defames, impersonates and review-bombs me across platforms.
 You can help with a review, a rating, a proper bug report, or a coffee on Ko-fi: https://ko-fi.com/damiansirbu
 
-Every release is stable and whole new systems may appear. Always understand the documentation.
-
 Early release. Some of the X-Ray crash fixes and optimizations this build relies on are not yet in the latest demonized exe, so run it with the exe from this fork release: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 It is the latest demonized MT build (2026.9.12) with a few X-Ray crash fixes and optimizations on top, nothing else.
 
