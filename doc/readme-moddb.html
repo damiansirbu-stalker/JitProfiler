@@ -97,9 +97,9 @@ The Lua layer is original, learned through reverse-engineering X-Ray and custom 
 It favors the engine's own mechanisms and minimal intervention, and adds no per-frame cost while idle.<br />
 It carries tracing and monitoring from the ground up, every flow timed off the log level.<br />
 It writes no engine values, keeping its state within engine bounds so a save can never corrupt.<br />
-Every commit runs the full pipeline locally and in CI, with luacheck, a custom STALKER selene build, and a load test on engine stubs.<br />
-Rule layers then check Lua practice, engine truth, conventions, contracts, release, security, and docs.<br />
-It depends on no other mod, not even the author's own, and needs only X-Ray and xlibs beneath it.<br />
+Every commit runs the full pipeline locally and in CI, with luacheck, a custom STALKER selene build, and a load test that runs every script on engine stubs.<br />
+Rule layers then check Lua practice, engine truth, conventions, contracts, release, security and docs, and a grade gate fails the build on any code or security finding.<br />
+It depends on no other mod, the author's other mods included, and needs only X-Ray and xlibs beneath it.<br />
 See the Health link up top for every test and smoke result, and the mod's real CPU and allocation cost.<br />
 <div style="border-top:1px solid #555555;width:40%;margin:20px auto;">&#8203;</div>
 <h3>Credits</h3>
@@ -115,7 +115,8 @@ Built for the themrdemonized modded exes (themrdemonized/xray-monolith).<br />
 <h3>Diagnostics and reporting</h3>
 Every release goes through careful engineering and testing, but bugs can still slip through.<br />
 To report one, reproduce with debug logging on, and the world log where the mod has one.<br />
-First rule this mod out: reproduce with it off, then on. The cleanest test is this mod alone on vanilla and xlibs.<br />
+First rule this mod out: reproduce with it off, then on.<br />
+The cleanest test is this mod alone on vanilla and xlibs.<br />
 Send the traces to my <a href="https://discord.com/channels/456765861953536020/1512539453791670402">Anomaly Discord thread</a>.<br />
 Join the server first through the <a href="https://discord.gg/c4RuJNs">Anomaly Discord invite</a>.<br />
 Or file a defect with the same information on <a href="https://github.com/damiansirbu-stalker/JitProfiler/issues">GitHub</a>.<br />
