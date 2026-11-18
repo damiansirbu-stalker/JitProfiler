@@ -1,61 +1,67 @@
 1.0.1-snapshot
-  Summary: HITCHES capture mode, one COST table, caused-by attribution, panel fixes
+  HITCHES, a shared COST table with caused-by attribution, and panel fixes
+    HITCHES is a new tab. It records the time of each rendered frame with a CPU capture in the same run. If the game stutters, a single capture names the code that ran in the slow frames.
+    CPU, MEM and HITCHES now share a COST table, where a mod is charged for the time in its code and for the vanilla or engine work it called.
+    Tables keep their headers in place, INSTRUMENT has a filter, and time in a loadstring chunk books to the script that ran it.
 
-  - Added: one COST table on CPU, MEM and HITCHES. Every function is a row with Own, the time in its own code,
-    Caused, the vanilla or engine work it made run, and Cost, the two together, grouped by function, script or mod.
-    A mod is charged for what its callbacks, timers and scheme functions caused and nothing else: a wrapper or a
-    callback hook is passed over and named, and anomaly's own heavy code stays on its own row at full weight.
-  - Changed: the BY MOD, BY SCRIPT, BY LEAF and BY ROOT views are now the COST table's Group by; the VM-state
-    split, the engine-C entry points, Fold baseline and Parallel GC moved under an Advanced fold.
-  - Changed: table headers stay in place while scrolling, percentages sit beside their bars, INSTRUMENT gained
-    a Filter box, hint text is readable, and a locked tab no longer lights up while a capture runs.
-  - Added: a HITCHES stop also writes the hitch frames' stacks as a SpeedScope .folded.
-  - Fixed: time inside a loadstring chunk now books to the script that ran it instead of to "loadstring".
+  HITCHES
+    - Added HITCHES, a capture of each rendered frame's time with a CPU capture in the same run.
+      The report gives the median, mean, p95, p99 and 1% low, the worst frames, and whether the hitches repeat on a fixed interval.
+      In the panel you get a frame-time timeline, the rhythm, the worst-frame table and what ran in the hitch frames. While it records, the corner banner shows the live frame time and fps.
+    - Added a SpeedScope .folded of the hitch frames' stacks, written at stop.
 
-  - HITCHES mode: records the per-render-frame time and couples a CPU capture in the same run, so one
-    button ties the stutter to a cause. Reports median, mean, p95, p99, and the 1% low, lists the worst
-    frames, finds whether the hitches repeat on a fixed interval, and shows the top CPU own beside them.
-    The panel carries a per-window timeline, the rhythm, the worst-frame table, and a what-ran list, and
-    the corner banner shows a live frame-time and fps readout while it records.
+  COST
+    - Added the COST table on CPU, MEM and HITCHES. Each function is a row with Own, the time in its code, Caused, the vanilla or engine work it made run, and Cost, the sum.
+      A mod is charged for what its callbacks, timers and scheme functions caused. A wrapper or a callback hook is passed over and named on the vanilla row.
+      Heavy Anomaly code keeps a separate row at full weight, and the Cost column adds up to 100%.
+    - Changed the 4 BY views into one Group by on the COST table, by function, script or mod.
+    - Changed the VM-state split, the engine C entry points, Fold baseline and Parallel GC to sit under an Advanced fold.
+    - Fixed time inside a loadstring chunk booking to "loadstring". It now books to the script that ran it.
+
+  Panel
+    - Changed the tables to keep their headers in place while scrolling, with each percentage beside its bar.
+    - Added a Filter box to INSTRUMENT.
+    - Fixed hint text that was hard to read, and a locked tab or a disabled Start that lit up while a capture ran.
 
 1.0.0
-  Summary: first release, CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, in-game panel, page save, anonymize
+  CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, the panel
+    JitProfiler samples the whole modpack at near-zero cost through jit.profile and jit.allocprof, engine primitives built for it in the modded exes.
+    INSTRUMENT times every call of a chosen script set, CALLBACKS times every handler, and each cost names the mod that owns the script.
+    The in-game panel on F11 runs every capture, masks other authors' names, and saves the masked captures as a local page.
 
-  - CPU profile via jit.profile: VM-state split (JIT / interpreter / C / GC / compiler) and ranked views by mod, script, leaf, and root, plus a SpeedScope flamegraph.
-  - Allocation profile via jit.allocprof: per-function bytes with the same views.
-  - Instrumentation mode: wrap every function of a chosen script set and time each call, own and
-    total wall-clock with the engine C included, per-call avg, min, and max as sortable columns,
-    per-mod subtotals, and a call graph of callers and callees. A BROWSE modlist adds one script
-    or a whole mod, searchable by mod or script name.
-  - Callbacks mode: time every registered handler over the make_callback dispatch, ranked by own
-    time with its callback and owning mod, and a picker that narrows the capture to chosen callbacks.
-  - Anonymize: masks every third-party mod and script name in the panel and every export, letters
-    and digits to #, separators kept so the shape reads. A persisted keep-list of patterns (3+
-    letters, matched from the start of a name) keeps your own mods readable.
-  - Save page: the footer's Save page control writes the retained captures as one self-contained page
-    to appdata/logs, masked except the keep-list, with the panel's tabs and views. A status line shows
-    which names stay readable, and JitProfiler makes no network request.
-  - Added an in-game panel, opened from the ImGui menu bar under JitProfiler. It carries
-    Start and Stop buttons for the CPU and allocation captures, a ranked table for each view
-    (by mod, script, leaf, root) with a bar per row, a caller and callee breakdown
-    for any selected frame, and the CPU VM-state strip. A corner banner marks a live capture.
-  - Capture settings live in the in-game panel and are session-only. The panel Settings section
-    holds the sample interval, stack depth, auto-snapshot threshold, auto-stop, and fold, and a
-    console argument still overrides one capture. MCM is an about page with a toggle for whether
-    JitProfiler shows in the ImGui overlay.
-  - Added an optional capture auto-stop. A duration set in the panel ends a running capture on
-    its own after that many seconds and writes its report. It is a safety limit for the
-    allocation profile, which holds the JIT off until the capture ends.
-  - Added a compatibility gate: without xlibs or a modded-exes build the mod stops at load
-    with a message naming what to install, and the boot log records the detected build.
-  - ASCII text reports to appdata/logs/ with an at-a-glance summary header.
-  - Timestamped filenames: each capture writes a uniquely named report and flamegraph, so successive runs no longer overwrite.
-  - Per-mod attribution now ranks by Total, the mod or script anywhere on the stack, with an
-    Own column for the innermost frame. A mod serving a stock-named file is flagged as an
-    override, so a near-identical copy is not misread as its own cost. Frames from the demonized
-    engine overlay and from engine C are labelled apart from a mod's own scripts.
-  - Each capture reports the deepest stack it recorded and how often a stack reached the depth
-    cap, so an under-counted Total shows at a glance.
-  - Configurable capture: start_cpu(interval_ms, depth) and start_alloc(depth) tune the sample rate and stack depth, with sane defaults otherwise.
-  - Fold toggle: drops the vanilla baseline so only mod cost shows.
-  - Capability guard: on an exe without the profiler primitives the commands no-op with a message naming the build needed.
+  CPU and MEM
+    - Added the CPU profile over jit.profile, with the VM-state split of JIT, interpreter, C, GC and compiler, and ranked views by mod, script, leaf and root.
+    - Added the allocation profile over jit.allocprof. It counts the exact bytes for each function, with the same views.
+    - Added per-mod attribution. A mod or script ranks by Total, anywhere on the stack, with Own for the innermost frame.
+      A mod serving a stock-named file is flagged as an override of that file. Frames from the modded exes overlay and from engine C carry separate labels.
+    - Added the deepest stack each capture recorded and how often a stack reached the depth cap. An under-counted Total shows at a glance.
+    - Added Fold, which drops the vanilla baseline and leaves only mod cost.
+
+  INSTRUMENT
+    - Added INSTRUMENT, which wraps every function of a chosen script set and times each call, own and total, with the engine C included.
+      Avg, min and max per call are sortable columns, with per-mod subtotals and a call graph of callers and callees.
+      The BROWSE modlist adds a single script or a whole mod, searchable by mod or script name.
+
+  CALLBACKS
+    - Added CALLBACKS, which times every registered handler over the make_callback dispatch, ranked by own time with its callback and owning mod.
+      If you only care about some callbacks, its picker narrows the capture to them.
+
+  Panel
+    - Added the in-game panel, opened from the ImGui menu bar under JitProfiler. It carries Start and Stop for each capture, a ranked table per view, and the callers and callees of a selected frame.
+      A corner banner marks a live capture.
+    - Added the panel Settings for the session: sample interval, stack depth, auto-snapshot threshold, auto-stop and fold. A console argument overrides one capture.
+    - Added auto-stop, which ends a running capture after a set time and writes its report. This is a safety limit for the allocation profile, which holds the JIT off until the capture ends.
+    - Added Anonymize, which masks every third-party mod and script name in the panel and in every export, letters and digits to #.
+      A saved keep-list of patterns, 3 letters or more matched from the start of a name, keeps your own mods readable.
+    - Added Save page, which writes the retained captures as one masked page to appdata/logs. You share this page by hand, because JitProfiler makes no network request.
+
+  Reports
+    - Added ASCII text reports to appdata/logs with a summary header, and a SpeedScope flamegraph per capture, each under a timestamped name.
+    - Added start_cpu(interval_ms, depth) and start_alloc(depth) on the console, to set the sample rate and stack depth of one capture.
+
+  MCM
+    - Added the MCM about page, with Show in ImGui overlay to take JitProfiler off the F11 menu bar.
+
+  Compatibility
+    - Added the load check. Without xlibs or the modded exes the game stops with a message naming what to install, and the log records the build.
+    - Added the capability guard. On an exe without the profiler primitives the commands print the build they need and skip the capture.
