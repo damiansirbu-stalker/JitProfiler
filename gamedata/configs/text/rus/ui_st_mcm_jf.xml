@@ -13,7 +13,7 @@
     <text>Нажмите F11 для оверлея ImGui и выберите JitProfiler в строке меню, затем запустите захват CPU или памяти. Из консоли (запуск с -dbg): run_string JitProfiler.start_cpu(), играйте, затем stop_cpu(). Отчёты пишутся в appdata\logs.</text>
   </string>
   <string id="ui_mcm_jf_speedscope">
-    <text>Чтобы прочитать флеймграф, откройте speedscope.app в браузере и перетащите туда файл .folded. Он работает локально, и ничто не покидает ваш компьютер.</text>
+    <text>Чтобы прочитать флеймграф, откройте speedscope.app в браузере и перетащите туда файл .folded. Speedscope работает локально, и ничто не покидает ваш компьютер.</text>
   </string>
   <string id="ui_mcm_jf_show_imgui">
     <text>Показывать в оверлее ImGui</text>
