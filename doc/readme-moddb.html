@@ -1,7 +1,7 @@
 <div style="border-top:1px solid #555555;width:40%;margin:20px auto;">&#8203;</div>
 <div style="text-align:center;padding:0 30px;">
 <div style="font-size:18px;font-weight:bold;">Version 1.0.1 (xlibs 1.9.0, demonized <a style="text-decoration:underline;" href="https://github.com/themrdemonized/xray-monolith/releases">latest</a>)</div>
-<h3><a style="text-decoration:underline;" href="https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog">Changelog</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://damiansirbu-stalker.github.io/JitProfiler/health/">Health</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://github.com/damiansirbu-stalker/JitProfiler/issues">Bugs</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler">Recommended exe</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt">Russian</a></h3>
+<h3><a style="text-decoration:underline;" href="https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog">Changelog</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://damiansirbu-stalker.github.io/JitProfiler/health/">Health</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://github.com/damiansirbu-stalker/JitProfiler/issues">Bugs</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt">Russian</a></h3>
 <div style="border-top:1px solid #555555;width:40%;margin:20px auto;">&#8203;</div>
 <div style="font-size:14px;text-align:left;display:inline-block;">
 <div><span style="display:inline-block;width:130px;font-weight:bold;">Alife mods:</span><a style="text-decoration:underline;" href="https://www.moddb.com/mods/stalker-anomaly/addons/alifeplus-v1-0-01">AlifePlus</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://www.moddb.com/mods/stalker-anomaly/addons/alifetactics">AlifeTactics</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://www.moddb.com/mods/stalker-anomaly/addons/alifebalance">AlifeBalance</a>&nbsp;&middot;&nbsp;<a style="text-decoration:underline;" href="https://www.moddb.com/mods/stalker-anomaly/addons/alifeguard-1001">AlifeGuard</a></div>
@@ -19,9 +19,6 @@ An organized group copies my work, defames, impersonates and review-bombs me acr
 You can help with a review, a rating, a proper bug report, or a coffee on <a href="https://ko-fi.com/damiansirbu">Ko-fi</a>.</span></div>
 </div>
 <div style="border-top:1px solid #555555;width:40%;margin:20px auto;">&#8203;</div>
-<br />
-Early release. Some of the X-Ray crash fixes and optimizations this build relies on are not yet in the latest demonized exe, so run it with the exe from <a href="https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler">this fork release</a>.<br />
-It is the latest demonized MT build (2026.9.12) with a few X-Ray crash fixes and optimizations on top, nothing else.<br />
 <br />
 Stop guessing, measure.<br />
 <br />
@@ -77,9 +74,8 @@ Every capture also writes a ranked text report, a flamegraph for speedscope.app,
 <h3>Requirements</h3>
 Anomaly 1.5.3<br />
 A modded-exes build with the JitProfiler primitives.<br />
-jit.profile and jit.allocprof are in the official 2026.9.12 modded exes.<br />
-jit.util.gcstat, which drives the GC-health readout, is not yet.<br />
-For the full feature set, use the preview exes from <a href="https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler">this fork release</a>.<br />
+jit.profile and jit.allocprof are in the official modded exes from 2026.9.12 on.<br />
+jit.util.gcstat, which drives the GC-health readout, is in them from 2026.10.11 on.<br />
 xlibs (used for logging)<br />
 Launch with -dbg (MO2 launch arguments) to use the console commands.<br />
 <br />
