@@ -2,7 +2,6 @@ Version: 1.0.1-snapshot (xlibs 1.9.0, demonized latest)
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
 Health: https://damiansirbu-stalker.github.io/JitProfiler/health/
 Bugs: https://github.com/damiansirbu-stalker/JitProfiler/issues
-Recommended exe: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 Russian / На русском: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme_ru.txt
 
 ---
@@ -42,9 +41,6 @@ Collaborations:
 My work is free and open source, ships in most modpacks, and integrates with established projects.
 An organized group copies my work, defames, impersonates and review-bombs me across platforms.
 You can help with a review, a rating, a proper bug report, or a coffee on Ko-fi: https://ko-fi.com/damiansirbu
-
-Early release. Some of the X-Ray crash fixes and optimizations this build relies on are not yet in the latest demonized exe, so run it with the exe from this fork release: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
-It is the latest demonized MT build (2026.9.12) with a few X-Ray crash fixes and optimizations on top, nothing else.
 
 Stop guessing, measure.
 
@@ -100,9 +96,8 @@ Every capture also writes a ranked text report, a flamegraph for speedscope.app,
 Requirements:
 Anomaly 1.5.3
 A modded-exes build with the JitProfiler primitives.
-jit.profile and jit.allocprof are in the official 2026.9.12 modded exes.
-jit.util.gcstat, which drives the GC-health readout, is not yet.
-For the full feature set, use the preview exes from this fork release: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
+jit.profile and jit.allocprof are in the official modded exes from 2026.9.12 on.
+jit.util.gcstat, which drives the GC-health readout, is in them from 2026.10.11 on.
 xlibs (used for logging)
 Launch with -dbg (MO2 launch arguments) to use the console commands.
 

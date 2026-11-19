@@ -11,7 +11,7 @@ local time_global, get_console, tonumber = time_global, get_console, tonumber
 local device = device
 -- Rolling GC-collection rate: cycle count and time at the last 1-second sample, and the derived per-second rate.
 local gc_c0, gc_t0, gc_rate = 0, 0, 0
--- jit.util.gcstat exists only on a profiler build; nil elsewhere, so the GC-health strip stays hidden.
+-- jit.util.gcstat ships in demonized 2026.10.11 and later; nil on older exes, so the GC-health strip stays hidden.
 local gcstat_fn = jit and jit.util and jit.util.gcstat
 
 local WINDOW_W = 840

@@ -328,7 +328,7 @@ local function collect_cpu_sample(thread, count, vmstate)
     cpu.total = cpu.total + count
 end
 
--- GC-pressure line for a report header: live gcstat plus collections and rate over the capture. nil on a stock exe.
+-- GC-pressure line for a report header: live gcstat plus collections and rate over the capture. nil on an exe older than demonized 2026.10.11.
 local function build_gc_line(gc0, duration_sec)
     if not gcstat_fn then return nil end
     local stat = gcstat_fn()

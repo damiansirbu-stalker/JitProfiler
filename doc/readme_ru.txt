@@ -2,7 +2,6 @@
 Changelog: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/changelog
 Health: https://damiansirbu-stalker.github.io/JitProfiler/health/
 Bugs: https://github.com/damiansirbu-stalker/JitProfiler/issues
-Recommended exe: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
 English / По-английски: https://github.com/damiansirbu-stalker/JitProfiler/blob/main/doc/readme.txt
 
 ---
@@ -42,9 +41,6 @@ English / По-английски: https://github.com/damiansirbu-stalker/JitPro
 Мои работы бесплатны и открыты, входят в большинство модпаков и интегрируются с известными проектами.
 Организованная группа копирует мои работы, клевещет на меня, выдаёт себя за меня и устраивает ревью-бомбинг на всех площадках.
 Помочь можно отзывом, оценкой, грамотным баг-репортом или кофе на Ko-fi: https://ko-fi.com/damiansirbu
-
-Ранний релиз. Часть исправлений вылетов X-Ray и оптимизаций, на которые опирается эта сборка, ещё не вошла в последний exe от demonized, поэтому запускайте её с exe из этого релиза форка: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
-Это последняя MT-сборка demonized (2026.9.12) с несколькими исправлениями вылетов X-Ray и оптимизациями сверху, и ничем больше.
 
 Хватит гадать, измеряйте.
 
@@ -100,9 +96,8 @@ Own считает самый внутренний кадр в момент ср
 Требования:
 Anomaly 1.5.3
 Сборка modded-exes с примитивами JitProfiler.
-jit.profile и jit.allocprof есть в официальных modded exes 2026.9.12.
-jit.util.gcstat, который питает полосу состояния GC, ещё нет.
-Для полного набора возможностей используйте preview-exe из этого релиза форка: https://github.com/damiansirbu-stalker/fork-xray-monolith/releases/tag/2026.9.12-mt-jitprofiler
+jit.profile и jit.allocprof есть в официальных modded exes начиная с 2026.9.12.
+jit.util.gcstat, который питает полосу состояния GC, есть в них начиная с 2026.10.11.
 xlibs (используется для логирования)
 Запускайте с -dbg (аргументы запуска MO2), чтобы пользоваться консольными командами.
 
