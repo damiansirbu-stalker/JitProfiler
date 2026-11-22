@@ -191,6 +191,7 @@ A frame-budget bar reads own ms per frame against a 60fps frame.
 Number columns right-align through CalcTextSize, so magnitude scans down the column.
 Each row's owner is tinted by a stable per-mod colour, hovering shows the full frame, and a selected frame ranks its callers and callees through `compute_neighbors`.
 An Advanced fold, closed by default, holds the fold-baseline and parallel-GC switches, the VM-state strip (one bar per state, each explained on hover), and every engine-C entry point in a scroll box.
+The box needs `ImGui.BeginChild` (modded exes PR #832), and on an exe without it the rows list inline.
 The CALLBACKS tab arms `start_callbacks` and ranks each timed handler over the make_callback dispatch by own ms, with its callback and owning mod.
 A BROWSE subtab lists every registered callback with its handler count and a picker toggle.
 A dim line under a running MEM or wrapping capture notes the FPS drop and that accuracy holds.

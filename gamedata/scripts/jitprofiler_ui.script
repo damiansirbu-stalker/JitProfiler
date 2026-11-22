@@ -7,7 +7,7 @@ local rawget, rawset = rawget, rawset
 local pairs, math, table, pcall = pairs, math, table, pcall
 local floor = math.floor
 local format, RegisterScriptCallback = string.format, RegisterScriptCallback
-local time_global, get_console, tonumber = time_global, get_console, tonumber
+local time_global, get_console, tonumber, type = time_global, get_console, tonumber, type
 local device = device
 -- Rolling GC-collection rate: cycle count and time at the last 1-second sample, and the derived per-second rate.
 local gc_c0, gc_t0, gc_rate = 0, 0, 0
@@ -552,20 +552,27 @@ local function render_vmstate(cap)
     end
 end
 
+-- One row per engine-C entry point, share of the capture first.
+local function render_engine_rows(list, total)
+    for i = 1, #list do
+        local key, weight = list[i][1], list[i][2]
+        render_colored_text(get_mod_color(JitProfiler.get_owner(key)), format("  %s  %s", format_pct(weight, total), JitProfiler.compute_masked_name(key)))
+    end
+end
+
+-- Whether the exe binds ImGui.BeginChild (modded exes PR #832); without it the rows render inline, unboxed.
+local has_child
+
 -- The Lua call sites that drove the most engine C/GC this capture: what to reduce, and where to point Optick.
 -- Every engine-C entry point in a scroll box: the Lua call sites that drive engine time, the Optick targets.
 local function render_engine_entry(cap)
     local list = cap.engine_entry
     if not list or #list == 0 then return end
     render_colored_text(COLOR_DIM, "Engine-C entry points  (Lua call sites driving engine time; Optick targets)")
+    if has_child == nil then has_child = type(ImGui.BeginChild) == "function" end
+    if not has_child then render_engine_rows(list, cap.total) return end
     BOX_SIZE:set(0, ImGui.GetTextLineHeightWithSpacing() * BOX_ROWS)
-    if ImGui.BeginChild("##engine_entry", BOX_SIZE, 0, 0) then
-        local total = cap.total
-        for i = 1, #list do
-            local key, weight = list[i][1], list[i][2]
-            render_colored_text(get_mod_color(JitProfiler.get_owner(key)), format("  %s  %s", format_pct(weight, total), JitProfiler.compute_masked_name(key)))
-        end
-    end
+    if ImGui.BeginChild("##engine_entry", BOX_SIZE, 0, 0) then render_engine_rows(list, cap.total) end
     ImGui.EndChild()
 end
 
