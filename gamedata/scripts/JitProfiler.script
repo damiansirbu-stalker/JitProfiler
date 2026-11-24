@@ -22,6 +22,8 @@ local OWNER_STRING        = "loadstring"
 local SETTING_ANON = "anon"
 -- The persisted keep-set lives at the writable appdata root, so clearing appdata/logs never wipes it. @src Layers/xrRenderPC_R4/r4.cpp:2027
 local KEEP_FILE   = "jitprofiler_keep.txt"
+-- Publish blocks the game thread for its two GitHub requests; this caps the whole wait.
+local PUBLISH_BUDGET_MS = 10000
 
 local string, table, math, pairs, ipairs = string, table, math, pairs, ipairs
 local pcall, tostring, tonumber, require, type = pcall, tostring, tonumber, require, type
@@ -83,6 +85,7 @@ if not (profile and allocprof) then
     is_kept = function() return false end
     get_readable_owners = function() return {} end
     save_page = function() return { ok = false } end
+    publish = function() return { ok = false } end
     is_scan_active = function() return false end
     is_target = function() return false end
     get_targets = function() return {} end
@@ -147,6 +150,7 @@ local settings = rawget(_G, "__jitprofiler_settings")
 if not settings then
     settings = { interval = CPU_INTERVAL_MS, depth = DEFAULT_STACK_DEPTH,
                  auto_snap = AUTO_SNAP_PCT, duration = 0, fold = false, anon = false,
+                 publish_repo = "", publish_branch = "", publish_token = "",
                  frame_gate_k = FRAME_GATE_K, frame_floor_ms = FRAME_FLOOR_MS, frame_cap = FRAME_SERIES_CAP,
                  frame_live = true }
     rawset(_G, "__jitprofiler_settings", settings)
@@ -995,24 +999,31 @@ function get_readable_owners()
     return list
 end
 
---- Save the retained captures as one masked web page to the logs folder. The user commits it to the mod's pages/jitprofiler.html by hand.
---- Masking is forced for the saved copy, independent of the live toggle, so a third-party name never leaks; it restores on both pcall arms.
---- @safety SAFE - a build or write failure returns { ok = false, reason = ... }, never raises.
---- @return table { ok = boolean, path = string|nil, reason = string|nil } - path is the saved page, reason names why a save was refused
-function save_page()
+--- The retained captures as one masked web page, or nil and the reason. The mask is forced for the page and restores on both pcall arms.
+--- @safety SAFE - a capture-build error is contained by pcall, logged, and returned as a reason; it crashed the game through raw ImGui dispatch.
+local function build_page()
     local captures, any = collect_captures()
-    if not any then return { ok = false, reason = "no capture yet" } end
+    if not any then return nil, "no capture yet" end
     local template = xfs.read_file(xfs.resolve_path("$game_scripts$", "jitprofiler_viewer.html"))
-    if not template then return { ok = false, reason = "viewer template missing" } end
+    if not template then return nil, "viewer template missing" end
 
     local saved = settings.anon
     settings.anon = true; mask_cache = {}
     local built, json = pcall(jitprofiler_report.build_page_json, captures, os.date("%Y-%m-%d %H:%M"))
     settings.anon = saved; mask_cache = {}
-    if not built then log("!JitProfiler/save_page: %s", tostring(json)); return { ok = false, reason = "capture build failed (see log)" } end
+    if not built then log("!JitProfiler/build_page: %s", tostring(json)); return nil, "capture build failed (see log)" end
 
     local page, marked = template:gsub("/%*__JF_DATA__%*/ null", (json:gsub("%%", "%%%%")), 1)
-    if marked ~= 1 then return { ok = false, reason = "viewer template marker missing" } end
+    if marked ~= 1 then return nil, "viewer template marker missing" end
+    return page
+end
+
+--- Save the retained captures as one masked web page to the logs folder. The user commits it to the mod's pages/jitprofiler.html by hand.
+--- @safety SAFE - a build or write failure returns { ok = false, reason = ... }, never raises.
+--- @return table { ok = boolean, path = string|nil, reason = string|nil } - path is the saved page, reason names why a save was refused
+function save_page()
+    local page, reason = build_page()
+    if not page then return { ok = false, reason = reason } end
     local base = xfs.resolve_path("$logs$", "")
     if not base or base == "" then return { ok = false, reason = "cannot resolve the logs folder" } end
     local page_path = base .. "jitprofiler_page.html"
@@ -1020,6 +1031,22 @@ function save_page()
         return { ok = false, reason = "cannot write the page" }
     end
     return { ok = true, path = page_path }
+end
+
+--- Publish the retained captures as one masked web page to pages/jitprofiler.html in the configured GitHub repo, through xlibs xnet.
+--- @safety SAFE - the token stays in the session settings and goes only into the request header; a failure returns { ok = false, reason }.
+--- @cost 2 blocking HTTPS requests through xnet, 10 s at most in total
+--- @return table { ok = boolean, code = number|nil, reason = string|nil } - reason names why a publish was refused or failed
+function publish()
+    local repo, branch, token = settings.publish_repo or "", settings.publish_branch or "", settings.publish_token or ""
+    if not (repo ~= "" and token ~= "") then return { ok = false, reason = "set repo and token above" } end
+    if not repo:match("^[%w%-%._]+/[%w%-%._]+$") then return { ok = false, reason = "repo must be owner/name" } end
+    if branch ~= "" and not branch:match("^[%w%-%._/]+$") then return { ok = false, reason = "branch has unsupported characters" } end
+    if not (type(xnet) == "table" and xnet.is_ready and xnet.is_ready()) then return { ok = false, reason = "xnet unavailable" } end
+    local page, reason = build_page()
+    if not page then return { ok = false, reason = reason } end
+    return xnet.push_github({ repo = repo, branch = (branch ~= "" and branch) or nil, path = "pages/jitprofiler.html",
+        content = page, token = token, message = "JitProfiler capture", budget_ms = PUBLISH_BUDGET_MS })
 end
 
 --- @return number|boolean the current session value for a capture setting.

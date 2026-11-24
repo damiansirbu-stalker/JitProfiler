@@ -1,4 +1,4 @@
---- jitprofiler_ui_config: the JitProfiler footer -- the capture Settings, the Anonymize keep-set editor, and the masked-page save.
+--- jitprofiler_ui_config: the JitProfiler footer -- the capture Settings, the Anonymize keep-set editor, the masked-page save and publish.
 
 local ImGui, ImGuiCol = ImGui, ImGuiCol
 local floor, min, tostring = math.floor, math.min, tostring
@@ -13,8 +13,13 @@ local BTN_SIZE  = vector2(96, 0)
 -- Readable-owners preview: names shown in full before the "+N more" tail.
 local READABLE_SHOWN = 3
 
+-- ImGuiInputTextFlags Password: asterisks on screen, copy disabled, paste allowed. Probed; 1 << 10 on a build without the enum export.
+local imgui_flags = rawget(_G, "ImGuiInputTextFlags")
+local INPUT_PASSWORD = (imgui_flags and imgui_flags.Password) or 1024
+
 local keep_input = ""
 local save_status = ""
+local publish_status = ""
 
 -- One line of text in a pushed colour, popped after: the panel's most repeated idiom.
 local function render_colored_text(color, text)
@@ -105,9 +110,48 @@ local function render_save_page()
     render_readable_line()
 end
 
---- Draw the panel footer under the profiling tabs: the capture Settings, the Anonymize keep-set, and the masked-page save.
+-- The session publish config: repo, branch, and token as text fields, held for the session only and never persisted.
+local function render_publish_config()
+    ImGui.SetNextItemWidth(FILTER_W)
+    local repo = ImGui.InputText("repo (owner/name)##pubrepo", JitProfiler.get_setting("publish_repo") or "", 128)
+    if ImGui.IsItemHovered() then ImGui.SetTooltip("owner/name of your GitHub repo, e.g. yourname/YourMod.") end
+    if repo then JitProfiler.set_setting("publish_repo", repo) end
+    ImGui.SetNextItemWidth(FILTER_W)
+    local branch = ImGui.InputText("branch (blank = default)##pubbranch", JitProfiler.get_setting("publish_branch") or "", 64)
+    if branch then JitProfiler.set_setting("publish_branch", branch) end
+    ImGui.SetNextItemWidth(FILTER_W)
+    local token = ImGui.InputText("token##pubtoken", JitProfiler.get_setting("publish_token") or "", 128, INPUT_PASSWORD)
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip("A GitHub token with Contents: write. This session only, never saved.\n" ..
+            "Type it in; pasting crashes on exes without the InputText fix.")
+    end
+    if token then JitProfiler.set_setting("publish_token", token) end
+end
+
+-- Push the retained captures as one masked page to the configured repo; the button greys out until repo and token are set.
+local function render_publish()
+    if not ImGui.CollapsingHeader("Publish") then return end
+    render_publish_config()
+    local ready = (JitProfiler.get_setting("publish_repo") or "") ~= "" and (JitProfiler.get_setting("publish_token") or "") ~= ""
+    if ready and ImGui.Button("Publish##pub", BTN_SIZE) then
+        local res = JitProfiler.publish()
+        if res.ok then publish_status = "published to pages/jitprofiler.html"
+        else publish_status = "failed: " .. tostring(res.reason or res.code or "?") end
+    elseif not ready then
+        ImGui.PushStyleColor(ImGuiCol.Button, COLOR_DIM)
+        ImGui.Button("Publish##pub", BTN_SIZE)
+        ImGui.PopStyleColor(1)
+    end
+    ImGui.SameLine()
+    local hint = ready and (publish_status ~= "" and publish_status or "commits the masked page to your repo; the game waits for it") or "set repo and token above"
+    render_colored_text(COLOR_DIM, hint)
+    if ready then render_readable_line() end
+end
+
+--- Draw the panel footer under the profiling tabs: the capture Settings, the Anonymize keep-set, the masked-page save and publish.
 function render_footer()
     render_settings()
     render_anonymize()
     render_save_page()
+    render_publish()
 end
