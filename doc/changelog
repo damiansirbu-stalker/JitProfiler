@@ -18,10 +18,19 @@
     - Changed the VM-state split, the engine C entry points, Fold baseline and Parallel GC to sit under an Advanced fold.
     - Fixed time inside a loadstring chunk booking to "loadstring". It now books to the script that ran it.
 
+  Publish
+    - Added Publish to the footer. It commits the masked page to pages/jitprofiler.html in your GitHub repo through xlibs xnet, with no exe, and the game waits 10 s at most.
+      The repo, branch and token last for the session only. It needs xlibs 1.10.1, and Save page still works without it.
+
   Panel
     - Changed the tables to keep their headers in place while scrolling, with each percentage beside its bar.
     - Added a Filter box to INSTRUMENT.
     - Fixed hint text that was hard to read, and a locked tab or a disabled Start that lit up while a capture ran.
+
+  Update check
+    - Added an update check. On the first save load of each launch the mod asks GitHub for its latest release, during the loading screen.
+      A newer version shows at the foot of the MCM page, and in a PDA message once a day. It needs xlibs 1.10.1.
+    - Added Check for update to the MCM page, which runs the same check right away.
 
 1.0.0
   CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, the panel

@@ -143,15 +143,17 @@ Each entry is a Lua pattern of at least 3 literal characters, matched case-insen
 It is the one persisted piece of panel state, a newline file at the writable appdata root edited from the footer, empty by default.
 The toggle rewrites the live panel and every export together, so a screenshot, a text report, and the json are safe at the source.
 
-## Save page
-A capture becomes a self-contained web page you save to disk, from the footer's Save page control.
+## Save page and Publish
+A capture becomes a self-contained web page, from the footer's Save page or Publish control.
 JitProfiler writes the retained captures as one JSON and injects it into a shipped viewer page.
-It writes the result to the appdata logs folder as jitprofiler_page.html.
-The viewer is a static page that draws the in-game panel from the JSON in the browser, so the saved page reads exactly like the tool.
-JitProfiler forces the mask on the saved copy regardless of the live toggle.
+The viewer is a static page that draws the in-game panel from the JSON in the browser, and the page reads exactly like the tool.
+JitProfiler forces the mask on the page regardless of the live toggle.
 Every mod name is masked except the ones the keep-list matches, so keeping only your own names leaves every other author's name masked.
-A status line under the Save button lists the names the keep-set leaves readable, before anything is written.
-JitProfiler makes no network request. Sharing the page is a manual step you own: commit the saved file to your repo as pages/jitprofiler.html and push.
+A status line under each button lists the names the keep-set leaves readable, before anything is written or sent.
+Save page writes the page to the appdata logs folder as jitprofiler_page.html.
+Publish commits it to pages/jitprofiler.html in your GitHub repo through xlibs `xnet.push_github`, which calls the OS winhttp.dll from Lua and ships no binary.
+The repo, branch and token are session-only fields that are never saved, and the token goes only into the request header. The game waits while the two requests run, 10 s at most in total.
+Without xnet, from xlibs before 1.10.1, Publish reports xnet unavailable and Save page still works.
 
 ## Output
 `appdata/logs/jitprofiler_{cpu,mem}[_snapN]_<timestamp>.txt` is the ranked text.
@@ -170,7 +172,8 @@ Both are ASCII only.
 ## In-game panel
 `jitprofiler_ui.script` registers the panel and a menu entry through the base ImGui Groups API and draws in the Main group, so it appears while the F11 ImGui overlay is open.
 The panel opens at 90% of the live screen, centered, sized on appear from the `vid_mode` cvar so it never assumes a resolution, then resizes freely.
-CPU and MEM sampling render in `jitprofiler_ui.script`. `jitprofiler_ui_trace.script` holds the INSTRUMENT and CALLBACKS tabs, and `jitprofiler_ui_config.script` the footer, with the Settings, the Anonymize keep-set, and the Save page control.
+CPU and MEM sampling render in `jitprofiler_ui.script`. `jitprofiler_ui_trace.script` holds the INSTRUMENT and CALLBACKS tabs, and `jitprofiler_ui_config.script` the footer.
+The footer holds the Settings, the Anonymize keep-set, and the Save page and Publish controls.
 Both reach one set of render helpers and the single panel filter through `jitprofiler_ui.SHARED`, so the split keeps one copy of the drawing code and the filter state.
 The top tabs are CPU, MEM, INSTRUMENT, CALLBACKS, and HITCHES. A running capture locks the others, so no two run at once.
 CPU and MEM show the retained last capture through `get_last_capture`.

@@ -21,4 +21,4 @@
   <string id="ui_mcm_jf_show_imgui_desc">
     <text>Добавляет JitProfiler в строку меню ImGui (F11). При выключении скрывает панель и баннер. Консольные команды продолжают работать.</text>
   </string>
-</string_table>
+<string id="ui_mcm_jf_btn_update_check"><text>Проверить обновление</text></string><string id="ui_mcm_jf_btn_update_check_desc"><text>Сейчас запрашивает у GitHub, вышла ли новая версия этого мода, — та же проверка, что при загрузке сохранения. Меню закрывается, и ответ появляется на экране.</text></string></string_table>

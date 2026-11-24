@@ -82,10 +82,11 @@ It wraps the handlers you pick over the game's make_callback dispatch and ranks 
 It wraps each handler where the game dispatches it, so it times even a handler registered as a local function.
 Dispatch order and semantics stay untouched, so the reading matches what actually runs.
 
-SAVE PAGE - write a capture as a masked web page you can share, without exposing other authors' mods.
+SAVE PAGE AND PUBLISH - share a capture as a masked web page, without exposing other authors' mods.
 The footer's Save page control turns a capture into a self-contained page written to appdata/logs, the in-game view drawn in the browser.
+Publish commits the same page to pages/jitprofiler.html in your GitHub repo, with a token you type for the session, which stays in memory and is gone on the next load.
 Every third-party mod name is masked in the panel and in every export unless your keep-list frees it, so another author's mod never stands beside a cost.
-JitProfiler makes no network request. You share the page yourself, by hand.
+Publish and the update check below are its only requests. They go through the winhttp.dll that Windows and Wine already carry, and JitProfiler ships no exe and no dll.
 
 The panel opens over the F11 overlay, JitProfiler in the menu bar, and holds the profiling tabs.
 Own counts the innermost frame when the sample fired, Total counts every frame on the stack.
@@ -100,6 +101,11 @@ jit.profile and jit.allocprof are in the official modded exes from 2026.9.12 on.
 jit.util.gcstat, which drives the GC-health readout, is in them from 2026.10.11 on.
 xlibs (used for logging)
 Launch with -dbg (MO2 launch arguments) to use the console commands.
+
+Update check:
+On the first save load of each game launch, the mod asks GitHub during the loading screen whether a newer release is out. It needs xlibs 1.10.1 or newer.
+A newer version shows at the foot of its MCM page, and in a PDA message once a day. Check for update on the MCM page asks right away, whenever you want.
+GitHub sees your IP address and the names of the mods it checks. Each request carries only the mod's name and the word xlibs, with no save data, settings or player name.
 
 Compatibility:
 Coexists with everything. A developer profiler with no gameplay of its own. It samples only while you run a capture and stays dormant otherwise.

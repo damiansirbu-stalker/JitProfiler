@@ -24,6 +24,7 @@ function on_mcm_load()
             { id = "speedscope", type = "desc", text = "ui_mcm_jf_speedscope" },
             { id = "div_toggle", type = "line" },
             { id = "show_imgui", type = "check", val = 1, def = true },
+            { id = "btn_update_check", type = "button", functor_ui = { _jitprofiler_init.show_update_check } },
             { id = "div_footer", type = "line" },
             { id = "platform", type = "desc", text = "ui_mcm_xmcm_footer",
                 ui_hook_functor = { _jitprofiler_init.get_platform_functor() }, clr = {255, 212, 201, 168} },
