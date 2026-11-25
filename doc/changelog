@@ -28,9 +28,10 @@
     - Fixed hint text that was hard to read, and a locked tab or a disabled Start that lit up while a capture ran.
 
   Update check
-    - Added an update check. On the first save load of each launch the mod asks GitHub for its latest release, during the loading screen.
-      A newer version shows at the foot of the MCM page, and in a PDA message once a day. It needs xlibs 1.10.1.
+    - Added an update check. On the first save load of each launch the mod looks for a newer version, during the loading screen.
+      A newer version on moddb shows at the foot of the MCM page, and in a PDA message once a day. It needs xlibs 1.10.1.
     - Added Check for update to the MCM page, which runs the same check right away.
+    - Added an update line under the version line at the foot of the MCM page. It shows the installed and the latest version, or the newer version on moddb.
 
 1.0.0
   CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, the panel

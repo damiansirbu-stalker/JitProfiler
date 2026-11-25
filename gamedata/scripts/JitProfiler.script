@@ -47,7 +47,8 @@ local DISPATCH = {
 local log_handle
 local function log(fmt, ...)
     if not log_handle then
-        log_handle = xlog.get_logger("JitProfiler", { outfile = "jitprofiler.log", level = "INFO" })
+        log_handle = xlog.get_logger("JitProfiler", { outfile = "jitprofiler.log" })
+        log_handle.set_level("INFO")
     end
     log_handle.info(fmt, ...)
 end
