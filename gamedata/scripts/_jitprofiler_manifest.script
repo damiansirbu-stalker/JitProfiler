@@ -3,6 +3,6 @@
 MANIFEST = {
     name    = "JitProfiler",
     version = "1.0.1-snapshot",
-    xlibs   = "1.9.0",
+    xlibs   = "1.10.1",
     moddb   = "jitprofiler",
 }
