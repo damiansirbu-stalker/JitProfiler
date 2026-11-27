@@ -17,6 +17,7 @@
     - Changed the 4 BY views into one Group by on the COST table, by function, script or mod.
     - Changed the VM-state split, the engine C entry points, Fold baseline and Parallel GC to sit under an Advanced fold.
     - Fixed time inside a loadstring chunk booking to "loadstring". It now books to the script that ran it.
+    - Fixed 5 scripts of the 2026 modded exes booking as another mod's code. They now book to the modded exes.
 
   Publish
     - Added Publish to the footer. It commits the masked page to pages/jitprofiler.html in your GitHub repo through xlibs xnet, with no exe, and the game waits 10 s at most.

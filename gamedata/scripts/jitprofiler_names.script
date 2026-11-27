@@ -1,4 +1,4 @@
---- jitprofiler_names: baked script-name sets for owner classification, regenerated from the unpacked Anomaly tree and the demonized overlay.
+--- jitprofiler_names: baked script-name sets for owner classification, from anomaly-1.5.3 and every demonized overlay build since 2025.
 -- @novalidate(xray.early_script_access, reason:"script names are string keys in a lookup set, not module-level accesses")
 
 local type = type
@@ -431,10 +431,12 @@ local MODDED_EXES = {
     ["class_registrator_modded_exes.script"] = true,
     ["dxml_core.script"] = true,
     ["dynamic_callbacks.lua"] = true,
+    ["dynamic_items_by_level.script"] = true,
     ["fakelens.script"] = true,
     ["global.lua"] = true,
     ["imgui_helper.script"] = true,
     ["imgui_lua_debug.script"] = true,
+    ["imgui_shader_bus.script"] = true,
     ["item_weapon.script"] = true,
     ["ltx_help_ex.script"] = true,
     ["lua_help_ex.script"] = true,
@@ -456,6 +458,7 @@ local MODDED_EXES = {
     ["options_modded_exes_crash_saves.script"] = true,
     ["options_modded_exes_crosshair.script"] = true,
     ["options_modded_exes_debug.script"] = true,
+    ["options_modded_exes_debug_visual.script"] = true,
     ["options_modded_exes_doppler.script"] = true,
     ["options_modded_exes_errors.script"] = true,
     ["options_modded_exes_first_person_death.script"] = true,
@@ -473,6 +476,7 @@ local MODDED_EXES = {
     ["options_modded_exes_saves.script"] = true,
     ["options_modded_exes_sound.script"] = true,
     ["options_modded_exes_sound_delay.script"] = true,
+    ["options_modded_exes_sound_distance.script"] = true,
     ["options_modded_exes_stalkers.script"] = true,
     ["options_modded_exes_ui_hud.script"] = true,
     ["options_modded_exes_visual.script"] = true,
@@ -485,6 +489,7 @@ local MODDED_EXES = {
     ["sim_squad_scripted.script"] = true,
     ["slaxml.script"] = true,
     ["socket.lua"] = true,
+    ["start_locations_by_level.script"] = true,
     ["true_first_person_death.script"] = true,
     ["ui_options_modded_exes.script"] = true,
     ["xr_combat_ignore.script"] = true,
