@@ -20,7 +20,7 @@
 
   Publish
     - Added Publish to the footer. It commits the masked page to pages/jitprofiler.html in your GitHub repo through xlibs xnet, with no exe, and the game waits 10 s at most.
-      The repo, branch and token last for the session only. It needs xlibs 1.10.1, and Save page still works without it.
+      The repo, branch and token last for the session only.
 
   Panel
     - Changed the tables to keep their headers in place while scrolling, with each percentage beside its bar.
@@ -28,10 +28,8 @@
     - Fixed hint text that was hard to read, and a locked tab or a disabled Start that lit up while a capture ran.
 
   Update check
-    - Added an update check. On the first save load of each launch the mod looks for a newer version, during the loading screen.
-      A newer version on moddb shows at the foot of the MCM page, and in a PDA message once a day. It needs xlibs 1.10.1.
-    - Added Check for update to the MCM page, which runs the same check right away.
-    - Added an update line under the version line at the foot of the MCM page. It shows the installed and the latest version, or the newer version on moddb.
+    - Added an update check. The mod asks GitHub for a newer release and shows it at the foot of the MCM page and in a daily PDA message.
+      Check for update on the MCM page asks right away.
 
 1.0.0
   CPU and allocation sampling, instrumentation, callbacks, per-mod attribution, the panel
