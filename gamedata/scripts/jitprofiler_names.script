@@ -1,4 +1,4 @@
---- jitprofiler_names: baked script-name sets for owner classification, from anomaly-1.5.3 and every demonized overlay build since 2025.
+--- jitprofiler_names: baked script-name sets for owner classification, from anomaly-1.5.3 and the demonized overlay files, those of earlier builds kept.
 -- @novalidate(xray.early_script_access, reason:"script names are string keys in a lookup set, not module-level accesses")
 
 local type = type
