@@ -113,6 +113,7 @@ Own is exclusive, the innermost frame when the sample fired.
 Own is the primary number, per mod and per script, and Total is the second column. A high Total over a low Own marks a dispatcher.
 The views are BY MOD, BY SCRIPT, BY LEAF, BY ROOT, and FRAMEWORK vs handlers.
 CPU adds the VM-state split and the engine-C entry points, the Lua call sites that drive the engine bucket and the map for a native profiler like Optick.
+A sample books to the callback dispatch when its leaf is a dispatcher, or when the frame `make_callback` called is the `spairs` iteration, the overlay's `(for generator)` included, and to handler work otherwise (`get_stack_bucket`).
 Each capture also reports the deepest stack it saw and how often a stack reached the depth cap, so an under-counted Total is visible.
 The fold toggle drops the baseline rows (anomaly, modded exes, engine, unknown) from the owned views, leaving only mods.
 At Stop, `compute_anomaly_cost()` takes each CPU, MEM or hitch-frame stack whose Self frame is not mod-owned and reads its caller chain. The chain is every mod on the stack, nearest the leaf first.
