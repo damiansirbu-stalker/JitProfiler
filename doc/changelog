@@ -2,7 +2,7 @@
   HITCHES, a shared COST table with caused-by attribution, and panel fixes
     HITCHES is a new tab. It records the time of each rendered frame with a CPU capture in the same run. If the game stutters, a single capture names the code that ran in the slow frames.
     CPU, MEM and HITCHES now share a COST table, where a mod is charged for the time in its code and for the vanilla or engine work it called.
-    Tables keep their headers in place, INSTRUMENT has a filter, and time in a loadstring chunk books to the script that ran it.
+    Tables keep their headers in place, MEM tunes the parallel GC live, INSTRUMENT has a filter, and time in a loadstring chunk books to the script that ran it.
 
   HITCHES
     - Added HITCHES, a capture of each rendered frame's time with a CPU capture in the same run.
@@ -18,6 +18,9 @@
     - Changed the VM-state split, the engine C entry points, Fold baseline and Parallel GC to sit under an Advanced fold.
     - Fixed time inside a loadstring chunk booking to "loadstring". It now books to the script that ran it.
     - Fixed 5 scripts of the 2026 modded exes booking as another mod's code. They now book to the modded exes.
+
+  MEM
+    - Added GC step size and GC steps per frame, two sliders under the GC-health strip that tune the parallel GC while you watch the heap. On modded exes from 2026.2.14.
 
   Publish
     - Added Publish to the footer. It commits the masked page to pages/jitprofiler.html in your GitHub repo through xlibs xnet, with no exe, and the game waits 10 s at most.

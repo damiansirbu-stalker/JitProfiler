@@ -199,7 +199,8 @@ The CALLBACKS tab arms `start_callbacks` and ranks each timed handler over the m
 A BROWSE subtab lists every registered callback with its handler count and a picker toggle.
 A dim line under a running MEM or wrapping capture notes the FPS drop and that accuracy holds.
 The MEM view carries a live GC-health strip from `jit.util.gcstat`, a bar for the heap toward the next collection plus the live estimate and debt, hidden when the exe lacks the getter.
-On the multi-thread exe a Parallel GC toggle flips the `lua_parallel_gc` cvar, so a CPU capture reads a clean G share.
+On modded exes from 2026.2.14 a Parallel GC toggle flips the `lua_parallel_gc` cvar, so a CPU capture reads a clean G share.
+Under the GC-health strip, `GC_KNOBS` sliders set `lua_parallel_gcstep` (1-100) and `lua_parallel_gc_call_amount` (1-50), read once a second and written only on a move, since a console var persists in `user.ltx`.
 The panel renders in white JetBrains Mono when the font is present, so digits line up as a column, over a blue accent scheme. Each cost bar carries a single-hue blue heat shade by share.
 A fold-baseline toggle drops the non-mod rows, leaving only mods.
 A corner banner in the Unique group renders every frame and shows only while a capture runs.

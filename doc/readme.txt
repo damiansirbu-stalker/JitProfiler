@@ -68,6 +68,7 @@ MEM - the same table over allocation, the garbage the collector must clear.
 It counts exact bytes at the allocator seam with the JIT off, the stutter source a script-side tool cannot measure.
 The framerate drops during the capture, so keep it short. The byte counts stay exact regardless.
 A live GC-health strip reads the heap toward the next collection, the live estimate, the debt, and the collection rate.
+Two sliders under it set the parallel GC's step size and its steps per frame while you watch the heap, on modded exes from 2026.2.14.
 
 Instrumentation - INSTRUMENT and CALLBACKS. Use these on the mod that sampling named.
 

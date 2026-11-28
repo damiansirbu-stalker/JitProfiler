@@ -45,6 +45,13 @@ local GROUP_FUNCTION, GROUP_SCRIPT, GROUP_MOD = "function", "script", "mod"
 -- Rows a scroll box shows before it scrolls.
 local BOX_ROWS = 8
 local GC_RATE_MS = 1000
+-- The parallel-GC tuning vars of the modded exes from 2026.2.14, each hidden without its cvar, read once a second and written only when a slider moves.
+local GC_KNOBS = {
+    { var = "lua_parallel_gcstep", label = "GC step size", low = 1, high = 100,
+      tip = "How much the parallel GC collects in one step. Higher frees memory sooner and costs more per step." },
+    { var = "lua_parallel_gc_call_amount", label = "GC steps per frame", low = 1, high = 50,
+      tip = "How many steps the parallel GC may run in one rendered frame." },
+}
 
 local COLOR_BG     = fcolor():set(0.09, 0.10, 0.12, 0.97)
 local COLOR_TEXT   = fcolor():set(0.86, 0.89, 0.94, 1.0)
@@ -626,6 +633,37 @@ local function render_pgc_toggle()
     if ImGui.IsItemHovered() then ImGui.SetTooltip("Off gives a clean CPU G%; the MT parallel GC inflates it.") end
 end
 
+local knob_present, knob_value, knob_t0 = {}, {}, 0
+
+-- Refresh which knob cvars exist and their values, at most once per GC_RATE_MS.
+local function update_gc_knobs()
+    local now = time_global and time_global() or 0
+    if knob_t0 ~= 0 and now - knob_t0 < GC_RATE_MS then return end
+    knob_t0 = now
+    for i = 1, #GC_KNOBS do
+        local var = GC_KNOBS[i].var
+        if knob_present[var] == nil then knob_present[var] = get_console():get_string(var) ~= nil end
+        if knob_present[var] then knob_value[var] = get_console():get_integer(var) end
+    end
+end
+
+-- The step-size and steps-per-frame sliders under the GC-health strip.
+local function render_gc_knobs()
+    update_gc_knobs()
+    for i = 1, #GC_KNOBS do
+        local knob = GC_KNOBS[i]
+        if not knob_present[knob.var] then goto continue end
+        local changed, value = ImGui.SliderFloat(knob.label, knob_value[knob.var], knob.low, knob.high, "%.0f")
+        local rounded = changed and floor(value + 0.5)
+        if rounded and rounded ~= knob_value[knob.var] then
+            get_console():execute(knob.var .. " " .. rounded)
+            knob_value[knob.var] = rounded
+        end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip(knob.tip) end
+        ::continue::
+    end
+end
+
 -- The filter and fold row for a sampling tab, with the CPU-only Parallel GC toggle appended.
 -- The filter box and the grouping selector, the two controls a reader needs on every capture.
 local function render_controls()
@@ -742,6 +780,7 @@ local function render_sampling_body()
     ImGui.Separator()
     if active_tab == KIND_MEM then
         render_gc_health()
+        render_gc_knobs()
         ImGui.Separator()
     end
     local cap = JitProfiler.get_last_capture(active_tab)
