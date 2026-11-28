@@ -18,6 +18,7 @@
     - Changed the VM-state split, the engine C entry points, Fold baseline and Parallel GC to sit under an Advanced fold.
     - Fixed time inside a loadstring chunk booking to "loadstring". It now books to the script that ran it.
     - Fixed 5 scripts of the 2026 modded exes booking as another mod's code. They now book to the modded exes.
+    - Fixed the callback dispatch's own sorting booking as handler work. It now books to the callback dispatch.
 
   MEM
     - Added GC step size and GC steps per frame, two sliders under the GC-health strip that tune the parallel GC while you watch the heap. On modded exes from 2026.2.14.

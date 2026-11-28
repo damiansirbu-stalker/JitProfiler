@@ -39,9 +39,13 @@ local PSEUDO_FRAME = { ["[C]:-1"] = true, ["[GC]:-1"] = true, ["[JIT]:-1"] = tru
 
 -- Callback-dispatch machinery, matched by leaf name to split framework cost from real handler work.
 local DISPATCH = {
-    make_callback = true, SendScriptCallback = true, callback = true,
+    make_callback = true, SendScriptCallback = true,
     callback_set = true, callback_unset = true, spairs = true,
 }
+-- The spairs entry points make_callback iterates with: vanilla's, and the overlay's heap and merge variants (_g_patches.script).
+local SPAIRS_NAMES = { spairs = true, hspairs = true, mspairs_default = true }
+local BUCKET_FRAMEWORK, BUCKET_HANDLERS = "[framework] callback dispatch", "[handlers] mod + engine work"
+local DISPATCHER = "make_callback"
 
 -- xlog resolves at call time: JitProfiler evaluates before xlibs, so the logger is built on first use.
 local log_handle
@@ -220,9 +224,22 @@ local function get_fold()
     return fold
 end
 
--- Split the leaf frame into callback-dispatch overhead versus real handler work.
-local function get_stack_bucket(leaf_frame)
-    return DISPATCH[get_leaf_name(leaf_frame)] and "[framework] callback dispatch" or "[handlers] mod + engine work"
+-- Whether the frame make_callback called is its own iteration: the spairs generator, or spairs itself.
+local function is_dispatch_callee(frame)
+    return frame:find("^%(for generator%)@") ~= nil or SPAIRS_NAMES[get_leaf_name(frame)] == true
+end
+
+-- Split a stack into callback-dispatch overhead versus real handler work, by its leaf and by what make_callback was running.
+local function get_stack_bucket(leaf_frame, stack)
+    if DISPATCH[get_leaf_name(leaf_frame)] then return BUCKET_FRAMEWORK end
+    local callee
+    for frame in string.gmatch(stack, "[^;]+") do
+        if get_leaf_name(frame) == DISPATCHER then
+            return (callee and is_dispatch_callee(callee)) and BUCKET_FRAMEWORK or BUCKET_HANDLERS
+        end
+        callee = frame
+    end
+    return BUCKET_HANDLERS
 end
 
 -- A runtime-compiled chunk (loadstring/loadfile) frame: no backing file, so it can own no mod.
@@ -287,7 +304,7 @@ local function collect_stack(v, stack, weight, cap)
     local real_frames = get_real_frame_count(first, nframes)
     if real_frames > v.max_depth then v.max_depth = real_frames end
     if cap and real_frames >= cap then v.clipped = v.clipped + weight end
-    local bucket = get_stack_bucket(anchor)
+    local bucket = get_stack_bucket(anchor, stack)
     v.framework[bucket]           = (v.framework[bucket] or 0) + weight
 end
 

@@ -27,7 +27,7 @@ WRAPPER_SHARE = 80
 COST_TITLE = "COST   every sample on one row: Own is time in the code itself, Caused is vanilla or engine work a mod made run"
 -- Vanilla functions that call into mod-provided code, by name; a mod frame one of these called was called to do a job and owns what it caused.
 --- @novalidate(xray.cached_timer_global, reason:"a frame-name key in a lookup set; the live function is never cached")
-local DISPATCH_NAMES = { make_callback = true, SendScriptCallback = true, callback = true, callback_set = true, callback_unset = true, ProcessEventQueue = true }
+local DISPATCH_NAMES = { make_callback = true, SendScriptCallback = true, callback_set = true, callback_unset = true, ProcessEventQueue = true }
 
 -- Per-sample VM state label for the CPU report header.
 local VMSTATE = {
